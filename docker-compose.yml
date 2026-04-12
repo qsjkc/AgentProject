@@ -1,0 +1,55 @@
+services:
+  postgres:
+    image: docker.m.daocloud.io/library/postgres:14-alpine
+    container_name: agentproject-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: agent_project
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data:Z
+    networks:
+      - agentproject-network
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: agentproject-backend
+    restart: unless-stopped
+    env_file:
+      - ./.env
+    volumes:
+      - ./data/uploads:/app/data/uploads:Z
+      - ./data/chroma:/app/data/chroma:Z
+      - ./data/downloads:/app/data/downloads:Z
+      - ./logs:/app/logs:Z
+    depends_on:
+      - postgres
+    networks:
+      - agentproject-network
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:5000/health')\""]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  nginx:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.nginx
+    container_name: agentproject-nginx
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "80:80"
+    volumes:
+      - ./data/downloads:/usr/share/nginx/html/download:ro,Z
+    networks:
+      - agentproject-network
+
+networks:
+  agentproject-network:
+    driver: bridge
