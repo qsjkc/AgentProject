@@ -8,6 +8,34 @@
 
 ## 1. 服务器首次拉取
 
+如果服务器上之前跑过旧版 Python 服务或宿主机 Nginx，先停掉，避免占用 `80` 端口：
+
+```bash
+systemctl stop agent.service || true
+systemctl disable agent.service || true
+systemctl stop nginx.service || true
+systemctl disable nginx.service || true
+```
+
+如果 Docker 曾经配置过异常镜像代理，可先重置：
+
+```bash
+printf '{}\n' > /etc/docker/daemon.json
+systemctl restart docker
+```
+
+2G 内存机器建议先加 swap：
+
+```bash
+fallocate -l 2G /swapfile || dd if=/dev/zero of=/swapfile bs=1M count=2048
+chmod 600 /swapfile
+mkswap /swapfile
+swapon /swapfile
+grep -q '^/swapfile ' /etc/fstab || echo '/swapfile swap swap defaults 0 0' >> /etc/fstab
+```
+
+然后再拉代码：
+
 ```bash
 cd /root
 mkdir -p PersonalSpace
@@ -61,12 +89,21 @@ data/downloads/DetachymAgentPet1.0.exe
 docker compose up -d --build
 ```
 
+当前仓库里的 Docker 基础镜像已经切到 `docker.m.daocloud.io` 前缀，适合大陆网络环境，不需要你再手动改 Dockerfile。
+
 ## 5. 查看状态
 
 ```bash
 docker compose ps
 docker compose logs -f backend
 docker compose logs -f nginx
+```
+
+公网验证：
+
+```bash
+curl http://detachym.top/health
+curl http://detachym.top/api/v1/public/version/win-x64
 ```
 
 ## 6. 后续更新
