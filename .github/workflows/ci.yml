@@ -14,6 +14,15 @@ concurrency:
 jobs:
   test-backend:
     runs-on: ubuntu-latest
+    env:
+      PYTHONPATH: .
+      DATABASE_URL: sqlite+aiosqlite:///./tests/.runtime/test.db
+      CHROMA_PERSIST_DIR: ./tests/.runtime/chroma
+      UPLOAD_DIR: ./tests/.runtime/uploads
+      DOWNLOAD_DIR: ./tests/.runtime/downloads
+      INITIAL_ADMIN_USERNAME: admin
+      INITIAL_ADMIN_EMAIL: admin@example.com
+      INITIAL_ADMIN_PASSWORD: ChangeThisPassword123!
     defaults:
       run:
         working-directory: backend

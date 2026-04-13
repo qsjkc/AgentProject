@@ -78,6 +78,8 @@ build/
 !desktop/build/
 !desktop/build/icon.ico
 !desktop/build/icon.png
+!frontend/src/lib/
+!frontend/src/lib/errors.ts
 
 # OS
 .DS_Store
