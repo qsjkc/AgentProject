@@ -7,16 +7,44 @@ import {
   clearSessionToken,
   desktopApi,
   getApiBaseUrl,
+  getLanguage,
   getSessionToken,
   login,
   setApiBaseUrl,
+  setLanguage,
 } from './shared/api'
+import { normalizeLanguage, SUPPORTED_LANGUAGES, t } from './shared/i18n'
 
 function formatError(error, fallbackMessage) {
   return error instanceof Error ? error.message : fallbackMessage
 }
 
-function LoginView({ apiBaseUrl, onApiBaseUrlChange, onSaveApiBaseUrl, onLoggedIn, statusText }) {
+function LanguageSelector({ language, onChange }) {
+  return (
+    <label style={{ display: 'grid', gap: 6, minWidth: 164 }}>
+      <span style={{ fontSize: 12, color: '#64748b', letterSpacing: '0.14em', textTransform: 'uppercase' }}>
+        {t(language, 'language')}
+      </span>
+      <select className="select" value={language} onChange={(event) => onChange(event.target.value)}>
+        {SUPPORTED_LANGUAGES.map((item) => (
+          <option key={item.value} value={item.value}>
+            {t(language, item.labelKey)}
+          </option>
+        ))}
+      </select>
+    </label>
+  )
+}
+
+function LoginView({
+  apiBaseUrl,
+  onApiBaseUrlChange,
+  onSaveApiBaseUrl,
+  onLoggedIn,
+  statusText,
+  language,
+  onLanguageChange,
+}) {
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [loading, setLoading] = useState(false)
@@ -29,7 +57,7 @@ function LoginView({ apiBaseUrl, onApiBaseUrlChange, onSaveApiBaseUrl, onLoggedI
     try {
       await onSaveApiBaseUrl()
     } catch (connectionError) {
-      setError(formatError(connectionError, 'Unable to reach the Detachym service.'))
+      setError(formatError(connectionError, t(language, 'unableToReachService')))
     } finally {
       setTesting(false)
     }
@@ -44,12 +72,12 @@ function LoginView({ apiBaseUrl, onApiBaseUrlChange, onSaveApiBaseUrl, onLoggedI
       await onSaveApiBaseUrl()
       await login(username, password)
       await window.desktopBridge?.showNotification?.({
-        title: 'Detachym',
-        body: 'Desktop client login succeeded.',
+        title: t(language, 'appName'),
+        body: t(language, 'desktopClientLoginSucceeded'),
       })
       await onLoggedIn()
     } catch (loginError) {
-      setError(formatError(loginError, 'Login failed.'))
+      setError(formatError(loginError, t(language, 'loginFailed')))
     } finally {
       setLoading(false)
     }
@@ -57,43 +85,46 @@ function LoginView({ apiBaseUrl, onApiBaseUrlChange, onSaveApiBaseUrl, onLoggedI
 
   return (
     <div className="window-shell" style={{ display: 'grid', placeItems: 'center' }}>
-      <div className="panel" style={{ width: 520, padding: 28 }}>
-        <div style={{ fontSize: 12, letterSpacing: '0.24em', textTransform: 'uppercase', color: '#64748b' }}>
-          Desktop Access
+      <div className="panel" style={{ width: 560, padding: 28 }}>
+        <div className="toolbar" style={{ alignItems: 'flex-start' }}>
+          <div>
+            <div style={{ fontSize: 12, letterSpacing: '0.24em', textTransform: 'uppercase', color: '#64748b' }}>
+              {t(language, 'desktopAccess')}
+            </div>
+            <div style={{ marginTop: 16, fontSize: 36, fontWeight: 700 }}>{t(language, 'desktopTitle')}</div>
+          </div>
+          <LanguageSelector language={language} onChange={onLanguageChange} />
         </div>
-        <div style={{ marginTop: 16, fontSize: 36, fontWeight: 700 }}>Detachym Desktop</div>
-        <p style={{ marginTop: 12, color: '#475569', lineHeight: 1.8 }}>
-          Configure the server address first, then sign in to use chat sessions and knowledge base tools.
-        </p>
+        <p style={{ marginTop: 12, color: '#475569', lineHeight: 1.8 }}>{t(language, 'desktopIntro')}</p>
 
         <form onSubmit={handleSubmit} style={{ display: 'grid', gap: 14, marginTop: 24 }}>
           <input
             className="input"
             value={apiBaseUrl}
             onChange={(event) => onApiBaseUrlChange(event.target.value)}
-            placeholder="Server URL, for example https://your-domain.com/api/v1"
+            placeholder={t(language, 'serverUrlPlaceholder')}
           />
           <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
             <button className="button-secondary" type="button" onClick={handleTestConnection} disabled={testing || loading}>
-              {testing ? 'Testing...' : 'Test Connection'}
+              {testing ? t(language, 'testing') : t(language, 'testConnection')}
             </button>
           </div>
           <input
             className="input"
             value={username}
             onChange={(event) => setUsername(event.target.value)}
-            placeholder="Username or email"
+            placeholder={t(language, 'usernameOrEmail')}
           />
           <input
             className="input"
             type="password"
             value={password}
             onChange={(event) => setPassword(event.target.value)}
-            placeholder="Password"
+            placeholder={t(language, 'password')}
           />
           {(error || statusText) && <div style={{ color: error ? '#be123c' : '#475569', fontSize: 14 }}>{error || statusText}</div>}
           <button className="button-primary" type="submit" disabled={loading}>
-            {loading ? 'Signing in...' : 'Sign In'}
+            {loading ? t(language, 'signingIn') : t(language, 'signIn')}
           </button>
         </form>
       </div>
@@ -115,11 +146,17 @@ function MainPanelApp() {
   const [statusText, setStatusText] = useState('')
   const [loading, setLoading] = useState(false)
   const [apiBaseUrl, setApiBaseUrlState] = useState('')
+  const [language, setLanguageState] = useState('zh-CN')
 
   const activeSession = useMemo(
     () => sessions.find((session) => session.id === activeSessionId) ?? null,
     [sessions, activeSessionId]
   )
+
+  const updateLanguage = async (nextLanguage) => {
+    const savedLanguage = await setLanguage(nextLanguage)
+    setLanguageState(normalizeLanguage(savedLanguage))
+  }
 
   const loadDashboard = async () => {
     const [me, sessionList, documentList] = await Promise.all([
@@ -145,7 +182,7 @@ function MainPanelApp() {
     const verifiedApiBaseUrl = await checkApiConnection(apiBaseUrl)
     await setApiBaseUrl(verifiedApiBaseUrl)
     setApiBaseUrlState(verifiedApiBaseUrl)
-    setStatusText('Server connection verified.')
+    setStatusText(t(language, 'serverConnectionVerified'))
     return verifiedApiBaseUrl
   }
 
@@ -154,12 +191,17 @@ function MainPanelApp() {
 
     const bootstrap = async () => {
       try {
-        const savedApiBaseUrl = await getApiBaseUrl()
+        const [savedApiBaseUrl, token, savedLanguage] = await Promise.all([
+          getApiBaseUrl(),
+          getSessionToken(),
+          getLanguage(),
+        ])
+
         if (active) {
           setApiBaseUrlState(savedApiBaseUrl || '')
+          setLanguageState(normalizeLanguage(savedLanguage))
         }
 
-        const token = await getSessionToken()
         if (!token || !savedApiBaseUrl) {
           return
         }
@@ -168,7 +210,7 @@ function MainPanelApp() {
       } catch (error) {
         if (active) {
           setAuthenticated(false)
-          setStatusText(formatError(error, 'Unable to initialize the desktop client.'))
+          setStatusText(formatError(error, t(language, 'unableToReachService')))
         }
       } finally {
         if (active) {
@@ -177,7 +219,7 @@ function MainPanelApp() {
       }
     }
 
-    bootstrap()
+    void bootstrap()
 
     return () => {
       active = false
@@ -192,7 +234,7 @@ function MainPanelApp() {
     const outgoingMessage = prompt.trim()
     setPrompt('')
     setLoading(true)
-    setStatusText('Waiting for a response...')
+    setStatusText(t(language, 'waitingResponse'))
     setMessages((current) => [...current, { role: 'user', content: outgoingMessage }])
 
     try {
@@ -210,9 +252,9 @@ function MainPanelApp() {
       if (currentSession) {
         setMessages(currentSession.messages || [])
       }
-      setStatusText('Latest response received.')
+      setStatusText(t(language, 'latestResponseReceived'))
     } catch (error) {
-      setStatusText(formatError(error, 'Message delivery failed.'))
+      setStatusText(formatError(error, t(language, 'messageDeliveryFailed')))
     } finally {
       setLoading(false)
     }
@@ -224,7 +266,7 @@ function MainPanelApp() {
       setActiveSessionId(session.id)
       setMessages(session.messages || [])
     } catch (error) {
-      setStatusText(formatError(error, 'Unable to load the session.'))
+      setStatusText(formatError(error, t(language, 'unableToLoadSession')))
     }
   }
 
@@ -237,9 +279,9 @@ function MainPanelApp() {
     try {
       await desktopApi.uploadDocument(file)
       setDocuments(await desktopApi.getDocuments())
-      setStatusText('Document uploaded and indexed.')
+      setStatusText(t(language, 'documentUploadedIndexed'))
     } catch (error) {
-      setStatusText(formatError(error, 'Upload failed.'))
+      setStatusText(formatError(error, t(language, 'uploadFailed')))
     } finally {
       event.target.value = ''
     }
@@ -249,9 +291,9 @@ function MainPanelApp() {
     try {
       await desktopApi.deleteDocument(documentId)
       setDocuments((current) => current.filter((item) => item.id !== documentId))
-      setStatusText('Document deleted.')
+      setStatusText(t(language, 'documentDeleted'))
     } catch (error) {
-      setStatusText(formatError(error, 'Delete failed.'))
+      setStatusText(formatError(error, t(language, 'deleteFailed')))
     }
   }
 
@@ -263,7 +305,7 @@ function MainPanelApp() {
     setActiveSessionId(null)
     setMessages([])
     setDocuments([])
-    setStatusText('Signed out.')
+    setStatusText(t(language, 'signedOut'))
   }
 
   const handleServerSetup = async () => {
@@ -274,13 +316,13 @@ function MainPanelApp() {
     setActiveSessionId(null)
     setMessages([])
     setDocuments([])
-    setStatusText('Update the server URL and sign in again.')
+    setStatusText(t(language, 'updateServerUrlHint'))
   }
 
   if (!initialized) {
     return (
       <div className="window-shell" style={{ display: 'grid', placeItems: 'center' }}>
-        Starting the desktop client...
+        {t(language, 'startingDesktopClient')}
       </div>
     )
   }
@@ -296,6 +338,8 @@ function MainPanelApp() {
           setInitialized(true)
         }}
         statusText={statusText}
+        language={language}
+        onLanguageChange={updateLanguage}
       />
     )
   }
@@ -304,26 +348,39 @@ function MainPanelApp() {
     <div className="window-shell">
       <div className="window-card" style={{ gap: 18 }}>
         <div className="panel" style={{ padding: 18 }}>
-          <div className="toolbar">
+          <div className="toolbar" style={{ alignItems: 'flex-start' }}>
             <div>
               <div style={{ fontSize: 12, letterSpacing: '0.22em', textTransform: 'uppercase', color: '#64748b' }}>
-                Desktop Main Panel
+                {t(language, 'desktopMainPanel')}
               </div>
-              <div style={{ fontSize: 28, fontWeight: 700 }}>Welcome, {user?.username}</div>
-              <div style={{ marginTop: 8, fontSize: 13, color: '#64748b' }}>Server: {apiBaseUrl}</div>
+              <div style={{ fontSize: 28, fontWeight: 700 }}>{t(language, 'welcomeUser', { username: user?.username ?? '' })}</div>
+              <div style={{ marginTop: 8, fontSize: 13, color: '#64748b' }}>
+                {t(language, 'serverLabel', { server: apiBaseUrl })}
+              </div>
             </div>
-            <div style={{ display: 'flex', gap: 10 }}>
-              <button type="button" className="button-secondary" onClick={() => setTab('chat')}>
-                Chat
+            <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+              <LanguageSelector language={language} onChange={updateLanguage} />
+              <button
+                type="button"
+                className="button-secondary"
+                style={{ background: tab === 'chat' ? '#cbd5e1' : '#e2e8f0' }}
+                onClick={() => setTab('chat')}
+              >
+                {t(language, 'chat')}
               </button>
-              <button type="button" className="button-secondary" onClick={() => setTab('knowledge')}>
-                Knowledge Base
+              <button
+                type="button"
+                className="button-secondary"
+                style={{ background: tab === 'knowledge' ? '#cbd5e1' : '#e2e8f0' }}
+                onClick={() => setTab('knowledge')}
+              >
+                {t(language, 'knowledgeBase')}
               </button>
               <button type="button" className="button-secondary" onClick={handleServerSetup}>
-                Change Server
+                {t(language, 'changeServer')}
               </button>
               <button type="button" className="button-primary" onClick={handleLogout}>
-                Sign Out
+                {t(language, 'signOut')}
               </button>
             </div>
           </div>
@@ -333,7 +390,7 @@ function MainPanelApp() {
         {tab === 'chat' ? (
           <div style={{ display: 'grid', gridTemplateColumns: '280px 1fr', gap: 18, flex: 1, minHeight: 0 }}>
             <aside className="panel" style={{ padding: 18, overflow: 'auto' }}>
-              <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 12 }}>Sessions</div>
+              <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 12 }}>{t(language, 'sessions')}</div>
               <div style={{ display: 'grid', gap: 10 }}>
                 {sessions.map((session) => (
                   <button
@@ -350,11 +407,7 @@ function MainPanelApp() {
                     {session.title}
                   </button>
                 ))}
-                {sessions.length === 0 && (
-                  <div style={{ color: '#64748b', fontSize: 14 }}>
-                    No session yet. Send the first message to create one.
-                  </div>
-                )}
+                {sessions.length === 0 && <div style={{ color: '#64748b', fontSize: 14 }}>{t(language, 'noSessionYet')}</div>}
               </div>
             </aside>
 
@@ -362,23 +415,18 @@ function MainPanelApp() {
               <div className="toolbar" style={{ marginBottom: 12 }}>
                 <div>
                   <div style={{ fontSize: 12, color: '#64748b', letterSpacing: '0.18em', textTransform: 'uppercase' }}>
-                    Current Session
+                    {t(language, 'currentSession')}
                   </div>
-                  <div style={{ fontSize: 20, fontWeight: 700 }}>{activeSession?.title || 'New Session'}</div>
+                  <div style={{ fontSize: 20, fontWeight: 700 }}>{activeSession?.title || t(language, 'newSession')}</div>
                 </div>
                 <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                   <input type="checkbox" checked={useRag} onChange={(event) => setUseRag(event.target.checked)} />
-                  Enable knowledge base
+                  {t(language, 'enableKnowledgeBase')}
                 </label>
               </div>
 
               <div className="chat-stream" style={{ flex: 1, minHeight: 0 }}>
-                {messages.length === 0 && (
-                  <div className="message assistant">
-                    The desktop panel connects to the cloud API. Ask questions here and optionally use your private
-                    knowledge base.
-                  </div>
-                )}
+                {messages.length === 0 && <div className="message assistant">{t(language, 'desktopPanelIntro')}</div>}
                 {messages.map((item, index) => (
                   <div key={`${item.role}-${index}`} className={`message ${item.role}`}>
                     {item.content}
@@ -392,11 +440,11 @@ function MainPanelApp() {
                   rows={5}
                   value={prompt}
                   onChange={(event) => setPrompt(event.target.value)}
-                  placeholder="Type a message for the cloud assistant..."
+                  placeholder={t(language, 'typeMessagePlaceholder')}
                 />
                 <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
                   <button type="button" className="button-primary" onClick={handleSend} disabled={loading}>
-                    {loading ? 'Sending...' : 'Send Message'}
+                    {loading ? t(language, 'sending') : t(language, 'sendMessage')}
                   </button>
                 </div>
               </div>
@@ -407,19 +455,19 @@ function MainPanelApp() {
             <div className="toolbar">
               <div>
                 <div style={{ fontSize: 12, color: '#64748b', letterSpacing: '0.18em', textTransform: 'uppercase' }}>
-                  Knowledge Base
+                  {t(language, 'knowledgeBase')}
                 </div>
-                <div style={{ fontSize: 24, fontWeight: 700 }}>Manage Documents</div>
+                <div style={{ fontSize: 24, fontWeight: 700 }}>{t(language, 'manageDocuments')}</div>
               </div>
               <label className="button-secondary" style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
-                Upload Document
+                {t(language, 'uploadDocument')}
                 <input type="file" accept=".txt,.md,.pdf" style={{ display: 'none' }} onChange={handleUpload} />
               </label>
             </div>
 
             <div style={{ display: 'grid', gap: 12 }}>
               {documents.length === 0 ? (
-                <div style={{ fontSize: 14, color: '#64748b' }}>No document uploaded yet.</div>
+                <div style={{ fontSize: 14, color: '#64748b' }}>{t(language, 'noDocumentYet')}</div>
               ) : (
                 documents.map((document) => (
                   <div
@@ -437,11 +485,15 @@ function MainPanelApp() {
                     <div>
                       <div style={{ fontWeight: 700 }}>{document.filename}</div>
                       <div style={{ marginTop: 6, fontSize: 13, color: '#64748b' }}>
-                        {document.status} | {document.chunk_count} chunks | {Math.round((document.file_size || 0) / 1024)} KB
+                        {t(language, 'documentMeta', {
+                          status: document.status,
+                          count: document.chunk_count,
+                          size: Math.round((document.file_size || 0) / 1024),
+                        })}
                       </div>
                     </div>
                     <button type="button" className="button-secondary" onClick={() => handleDeleteDocument(document.id)}>
-                      Delete
+                      {t(language, 'delete')}
                     </button>
                   </div>
                 ))

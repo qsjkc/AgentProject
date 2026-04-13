@@ -1,3 +1,4 @@
+import json
 from functools import lru_cache
 from typing import List, Optional
 
@@ -75,7 +76,17 @@ class Settings(BaseSettings):
         if isinstance(value, list):
             return value
         if isinstance(value, str):
-            return [item.strip() for item in value.split(",") if item.strip()]
+            trimmed = value.strip()
+            if not trimmed:
+                return []
+            if trimmed.startswith("["):
+                try:
+                    parsed = json.loads(trimmed)
+                except json.JSONDecodeError:
+                    parsed = None
+                if isinstance(parsed, list):
+                    return [str(item).strip() for item in parsed if str(item).strip()]
+            return [item.strip().strip('"').strip("'") for item in trimmed.split(",") if item.strip()]
         return []
 
 

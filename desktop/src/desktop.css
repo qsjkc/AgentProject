@@ -1,6 +1,12 @@
+html,
+body,
+#root {
+  height: 100%;
+}
+
 body {
   margin: 0;
-  font-family: 'Segoe UI', 'PingFang SC', system-ui, sans-serif;
+  font-family: 'Microsoft YaHei UI', 'PingFang SC', 'Segoe UI', system-ui, sans-serif;
   color: #0f172a;
   background: transparent;
 }
@@ -20,55 +26,123 @@ select {
   width: 100vw;
   height: 100vh;
   display: grid;
-  place-items: center;
+  place-items: end center;
   background: transparent;
-  padding: 10px;
-  -webkit-app-region: drag;
+  padding: 0;
+  overflow: visible;
+}
+
+.pet-scene {
+  position: relative;
+  display: grid;
+  place-items: center;
+  min-width: 160px;
+  min-height: 220px;
+  padding: 0 8px 8px;
 }
 
 .pet-button {
-  width: 132px;
-  height: 152px;
   border: none;
-  border-radius: 38px;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(219, 234, 254, 0.86));
-  color: #fff;
-  box-shadow: 0 20px 40px rgba(15, 23, 42, 0.18);
+  background: transparent;
+  padding: 0;
+  margin: 0;
   cursor: pointer;
-  -webkit-app-region: drag;
-  border: 1px solid rgba(148, 163, 184, 0.28);
-  transition: transform 160ms ease, box-shadow 160ms ease;
-  -webkit-app-region: no-drag;
+  transition: transform 160ms ease, filter 160ms ease;
+  touch-action: none;
 }
 
 .pet-button:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 26px 52px rgba(15, 23, 42, 0.22);
+  transform: translateY(-2px) scale(1.01);
+  filter: brightness(1.02);
 }
 
 .pet-button-inner {
   display: grid;
   place-items: center;
-  height: 100%;
-  padding: 12px 12px 14px;
-  gap: 8px;
+  padding: 6px;
 }
 
 .pet-image {
-  width: 108px;
-  height: 108px;
+  width: 126px;
+  height: 126px;
   object-fit: contain;
   pointer-events: none;
   user-select: none;
-  filter: drop-shadow(0 16px 24px rgba(15, 23, 42, 0.16));
+  transition: transform 180ms ease, filter 180ms ease, opacity 180ms ease;
+  filter: drop-shadow(0 16px 24px rgba(15, 23, 42, 0.2));
 }
 
-.pet-label {
-  font-size: 12px;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
+.mood-happy .pet-image {
+  transform: translateY(-2px) scale(1.03);
+  filter: drop-shadow(0 18px 28px rgba(15, 23, 42, 0.22)) saturate(1.04);
+}
+
+.mood-excited .pet-image {
+  animation: pet-bounce 420ms ease;
+  filter: drop-shadow(0 20px 32px rgba(15, 23, 42, 0.24)) saturate(1.08);
+}
+
+.mood-sad .pet-image {
+  transform: translateY(2px) scale(0.98);
+  filter: drop-shadow(0 10px 18px rgba(15, 23, 42, 0.16)) saturate(0.9) brightness(0.96);
+}
+
+.pet-bubble {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  width: max-content;
+  max-width: 210px;
+  padding: 10px 14px;
+  border-radius: 18px;
+  border: 1px solid rgba(148, 163, 184, 0.32);
+  background: rgba(255, 255, 255, 0.96);
   color: #0f172a;
-  font-weight: 700;
+  font-size: 12px;
+  line-height: 1.5;
+  box-shadow: 0 16px 38px rgba(15, 23, 42, 0.16);
+  transform: translateX(-50%);
+  pointer-events: none;
+  animation: bubble-rise 180ms ease;
+}
+
+.pet-bubble::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  bottom: -7px;
+  width: 14px;
+  height: 14px;
+  background: rgba(255, 255, 255, 0.96);
+  border-right: 1px solid rgba(148, 163, 184, 0.32);
+  border-bottom: 1px solid rgba(148, 163, 184, 0.32);
+  transform: translateX(-50%) rotate(45deg);
+}
+
+@keyframes bubble-rise {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+}
+
+@keyframes pet-bounce {
+  0% {
+    transform: translateY(0) scale(1);
+  }
+  35% {
+    transform: translateY(-6px) scale(1.04);
+  }
+  70% {
+    transform: translateY(1px) scale(0.99);
+  }
+  100% {
+    transform: translateY(0) scale(1);
+  }
 }
 
 .window-shell {

@@ -60,6 +60,7 @@ Mry/
 backend/data/
 backend/logs/
 backend/tests/.runtime/
+backend/pytest-cache-files-*/
 backend/**/*.pyc
 backend/**/__pycache__/
 

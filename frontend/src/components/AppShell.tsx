@@ -4,8 +4,10 @@ import { useAuthStore } from '../stores'
 
 const navClass = ({ isActive }: { isActive: boolean }) =>
   [
-    'rounded-full px-4 py-2 text-sm transition-colors',
-    isActive ? 'bg-slate-900 text-white' : 'text-slate-700 hover:bg-white/70',
+    'rounded-full px-4 py-2 text-sm transition-all duration-200',
+    isActive
+      ? 'bg-stone-950 text-stone-50 shadow-[0_14px_32px_rgba(24,19,15,0.18)]'
+      : 'text-stone-600 hover:bg-white/70 hover:text-stone-950',
   ].join(' ')
 
 export default function AppShell() {
@@ -13,81 +15,94 @@ export default function AppShell() {
   const { user, logout } = useAuthStore()
 
   return (
-    <div className="min-h-screen bg-[radial-gradient(circle_at_top_left,_rgba(243,244,246,0.95),_rgba(255,255,255,0.88)_40%,_rgba(224,242,254,0.75)_100%)]">
-      <header className="sticky top-0 z-20 border-b border-slate-200/70 bg-white/75 backdrop-blur-xl">
-        <div className="mx-auto flex w-full max-w-7xl items-center justify-between gap-4 px-6 py-4">
-          <button type="button" onClick={() => navigate('/')} className="text-left">
-            <div className="font-mono text-xl font-semibold text-slate-950">Detachym</div>
-            <div className="text-xs uppercase tracking-[0.25em] text-slate-500">Desktop Pet Cloud</div>
-          </button>
-
-          <nav className="flex items-center gap-2 rounded-full border border-slate-200 bg-slate-50/90 p-1">
-            <NavLink to="/" className={navClass} end>
-              首页
-            </NavLink>
-            <NavLink to="/download" className={navClass}>
-              下载
-            </NavLink>
-            {user && (
-              <NavLink to="/account" className={navClass}>
-                用户中心
-              </NavLink>
-            )}
-            {user?.is_superuser && (
-              <NavLink to="/admin" className={navClass}>
-                管理后台
-              </NavLink>
-            )}
-          </nav>
-
-          <div className="flex items-center gap-3">
-            {user ? (
-              <>
-                <div className="hidden text-right sm:block">
-                  <div className="text-sm font-medium text-slate-900">{user.username}</div>
-                  <div className="text-xs text-slate-500">{user.email}</div>
+    <div className="app-backdrop min-h-screen">
+      <header className="sticky top-0 z-30 px-4 pt-4 sm:px-6 lg:px-8">
+        <div className="mx-auto max-w-[1320px]">
+          <div className="surface-panel rounded-full px-4 py-4 sm:px-6">
+            <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+              <button type="button" onClick={() => navigate('/')} className="flex items-center gap-4 text-left">
+                <div className="flex h-12 w-12 items-center justify-center rounded-full border border-amber-300/40 bg-amber-200/20 text-xs font-semibold tracking-[0.32em] text-amber-800">
+                  DT
                 </div>
-                <button
-                  type="button"
-                  onClick={() => navigate('/account')}
-                  className="rounded-full bg-slate-900 px-4 py-2 text-sm text-white transition hover:bg-slate-700"
-                >
-                  控制台
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    logout()
-                    navigate('/login')
-                  }}
-                  className="rounded-full border border-slate-300 px-4 py-2 text-sm text-slate-700 transition hover:border-slate-950 hover:text-slate-950"
-                >
-                  退出
-                </button>
-              </>
-            ) : (
-              <>
-                <button
-                  type="button"
-                  onClick={() => navigate('/login')}
-                  className="rounded-full border border-slate-300 px-4 py-2 text-sm text-slate-700 transition hover:border-slate-950 hover:text-slate-950"
-                >
-                  登录
-                </button>
-                <button
-                  type="button"
-                  onClick={() => navigate('/register')}
-                  className="rounded-full bg-slate-900 px-4 py-2 text-sm text-white transition hover:bg-slate-700"
-                >
-                  注册
-                </button>
-              </>
-            )}
+                <div>
+                  <div className="font-display text-3xl leading-none text-stone-950">Detachym</div>
+                  <div className="mt-1 text-[11px] uppercase tracking-[0.36em] text-stone-500">
+                    Desktop Pet Cloud
+                  </div>
+                </div>
+              </button>
+
+              <div className="flex flex-col gap-4 lg:flex-row lg:items-center">
+                <nav className="flex flex-wrap items-center gap-2 rounded-full border border-stone-200/80 bg-white/55 p-1">
+                  <NavLink to="/" className={navClass} end>
+                    首页
+                  </NavLink>
+                  <NavLink to="/download" className={navClass}>
+                    下载
+                  </NavLink>
+                  {user && (
+                    <NavLink to="/account" className={navClass}>
+                      我的账户
+                    </NavLink>
+                  )}
+                  {user?.is_superuser && (
+                    <NavLink to="/admin" className={navClass}>
+                      管理后台
+                    </NavLink>
+                  )}
+                </nav>
+
+                <div className="flex flex-wrap items-center gap-3">
+                  {user ? (
+                    <>
+                      <div className="hidden text-right lg:block">
+                        <div className="text-sm font-medium text-stone-950">{user.username}</div>
+                        <div className="text-xs text-stone-500">{user.email}</div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => navigate('/account')}
+                        className="primary-button text-sm font-medium"
+                      >
+                        进入控制台
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          logout()
+                          navigate('/login')
+                        }}
+                        className="secondary-button text-sm"
+                      >
+                        退出登录
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => navigate('/login')}
+                        className="secondary-button text-sm"
+                      >
+                        登录
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => navigate('/register')}
+                        className="primary-button text-sm font-medium"
+                      >
+                        创建账户
+                      </button>
+                    </>
+                  )}
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       </header>
 
-      <main className="mx-auto w-full max-w-7xl px-6 py-10">
+      <main className="mx-auto w-full max-w-[1320px] px-4 pb-14 pt-10 sm:px-6 lg:px-8">
         <Outlet />
       </main>
     </div>

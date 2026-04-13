@@ -8,6 +8,12 @@ import { useAuthStore } from '../stores'
 
 type AuthMode = 'login' | 'reset'
 
+const portalHighlights = [
+  '网页负责注册、登录、下载、账户配置与后台入口。',
+  '客户端负责透明桌宠、快捷聊天、气泡反馈与主面板交互。',
+  '所有账户、偏好和版本信息都通过同一套云端 API 管理。',
+]
+
 export default function Login() {
   const navigate = useNavigate()
   const { setToken, setUser } = useAuthStore()
@@ -36,7 +42,7 @@ export default function Login() {
       setUser(user)
       navigate('/account')
     } catch (err) {
-      setError(getErrorMessage(err, '登录失败，请检查用户名、邮箱或密码。'))
+      setError(getErrorMessage(err, '登录失败，请检查用户名、邮箱或密码是否正确。'))
     } finally {
       setLoading(false)
     }
@@ -44,7 +50,7 @@ export default function Login() {
 
   const handleForgot = async () => {
     if (!email.trim()) {
-      setError('请输入邮箱后再发送验证码')
+      setError('请先输入邮箱，再发送验证码。')
       setMessage('')
       return
     }
@@ -58,7 +64,7 @@ export default function Login() {
       setMessage(response.message)
       start()
     } catch (err) {
-      setError(getErrorMessage(err, '发送重置验证码失败。'))
+      setError(getErrorMessage(err, '发送重置验证码失败，请稍后再试。'))
     } finally {
       setSendingCode(false)
     }
@@ -79,148 +85,169 @@ export default function Login() {
       setVerificationCode('')
       setNewPassword('')
     } catch (err) {
-      setError(getErrorMessage(err, '重置密码失败。'))
+      setError(getErrorMessage(err, '重置密码失败，请确认验证码和新密码。'))
     } finally {
       setLoading(false)
     }
   }
 
   return (
-    <div className="mx-auto max-w-4xl rounded-[2rem] border border-slate-200 bg-white/90 p-8 shadow-[0_24px_80px_rgba(15,23,42,0.08)]">
-      <div className="grid gap-8 lg:grid-cols-[0.9fr_1.1fr]">
-        <div className="rounded-[1.75rem] bg-slate-950 p-8 text-white">
-          <div className="text-xs uppercase tracking-[0.3em] text-slate-400">Detachym Portal</div>
-          <h1 className="mt-6 text-4xl font-semibold">登录云端控制台</h1>
-          <p className="mt-4 text-sm leading-7 text-slate-300">
-            登录后可以下载桌宠安装包、同步宠物偏好、修改密码，并在管理员账号下查看用户与文档数据。
+    <div className="mx-auto max-w-6xl">
+      <div className="grid gap-8 xl:grid-cols-[0.95fr_1.05fr]">
+        <section className="ink-panel reveal-rise rounded-[2.75rem] p-8 md:p-10 xl:p-12">
+          <div className="eyebrow eyebrow-light">Detachym Portal</div>
+          <h1 className="display-title mt-6">登录你的桌宠云账户</h1>
+          <p className="body-copy-light mt-5 max-w-xl text-base">
+            当网页与桌面端共享同一套账号、偏好和下载链路时，产品才真正完整。登录之后，你可以继续配置桌宠、修改密码，或者进入后台管理用户。
           </p>
-          <div className="mt-10 space-y-3 text-sm text-slate-300">
-            <div>1. Web 门户负责注册、登录、下载和账户管理</div>
-            <div>2. Windows 客户端负责桌宠、快捷聊天和主面板交互</div>
-            <div>3. 所有账户与知识库数据统一由云端 API 承载</div>
-          </div>
-        </div>
 
-        <div className="space-y-6">
-          <div className="inline-flex rounded-full border border-slate-200 bg-slate-50 p-1 text-sm">
-            <button
-              type="button"
-              onClick={() => setMode('login')}
-              className={`rounded-full px-4 py-2 ${mode === 'login' ? 'bg-slate-900 text-white' : 'text-slate-600'}`}
-            >
-              登录
-            </button>
-            <button
-              type="button"
-              onClick={() => setMode('reset')}
-              className={`rounded-full px-4 py-2 ${mode === 'reset' ? 'bg-slate-900 text-white' : 'text-slate-600'}`}
-            >
-              重置密码
-            </button>
+          <div className="mt-10 space-y-4">
+            {portalHighlights.map((item, index) => (
+              <article
+                key={item}
+                className="rounded-[1.7rem] border border-white/10 bg-white/5 p-5"
+                style={{ animationDelay: `${100 + index * 80}ms` }}
+              >
+                <div className="text-[0.72rem] uppercase tracking-[0.32em] text-stone-300">Capability {index + 1}</div>
+                <p className="mt-3 text-sm leading-7 text-stone-100">{item}</p>
+              </article>
+            ))}
           </div>
+        </section>
+
+        <section className="surface-panel reveal-rise rounded-[2.75rem] p-8 md:p-10" style={{ animationDelay: '140ms' }}>
+          <div className="flex flex-wrap items-center justify-between gap-4">
+            <div>
+              <div className="eyebrow">Account Access</div>
+              <h2 className="section-title mt-3 text-stone-950">{mode === 'login' ? '登录' : '重置密码'}</h2>
+            </div>
+
+            <div className="inline-flex rounded-full border border-stone-200 bg-white/55 p-1">
+              <button
+                type="button"
+                onClick={() => setMode('login')}
+                className={`rounded-full px-4 py-2 text-sm transition ${mode === 'login' ? 'bg-stone-950 text-stone-50' : 'text-stone-600'}`}
+              >
+                登录
+              </button>
+              <button
+                type="button"
+                onClick={() => setMode('reset')}
+                className={`rounded-full px-4 py-2 text-sm transition ${mode === 'reset' ? 'bg-stone-950 text-stone-50' : 'text-stone-600'}`}
+              >
+                找回密码
+              </button>
+            </div>
+          </div>
+
+          <p className="body-copy mt-4 text-sm">
+            {mode === 'login'
+              ? '使用用户名或邮箱登录，即可进入账户中心和下载页。'
+              : '输入邮箱并获取验证码后，你可以在网页端直接完成密码重置。'}
+          </p>
 
           {mode === 'login' ? (
-            <form onSubmit={handleLogin} className="space-y-4">
-              <label className="block">
-                <span className="mb-2 block text-sm text-slate-600">用户名或邮箱</span>
+            <form onSubmit={handleLogin} className="mt-8 space-y-5">
+              <label className="field-label">
+                <span className="field-title">用户名或邮箱</span>
                 <input
                   value={identifier}
                   onChange={(event) => setIdentifier(event.target.value)}
                   required
                   autoComplete="username"
-                  className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 outline-none transition focus:border-slate-950"
+                  className="field-input"
                 />
               </label>
 
-              <label className="block">
-                <span className="mb-2 block text-sm text-slate-600">密码</span>
+              <label className="field-label">
+                <span className="field-title">密码</span>
                 <input
                   type="password"
                   value={password}
                   onChange={(event) => setPassword(event.target.value)}
                   required
                   autoComplete="current-password"
-                  className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 outline-none transition focus:border-slate-950"
+                  className="field-input"
                 />
               </label>
 
-              {error && <div className="rounded-2xl bg-rose-50 px-4 py-3 text-sm text-rose-700">{error}</div>}
-              {message && <div className="rounded-2xl bg-emerald-50 px-4 py-3 text-sm text-emerald-700">{message}</div>}
+              {error && <div className="message-banner message-error">{error}</div>}
+              {message && <div className="message-banner message-success">{message}</div>}
 
-              <button
-                type="submit"
-                disabled={loading}
-                className="w-full rounded-2xl bg-slate-950 px-4 py-3 font-medium text-white transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {loading ? '登录中...' : '登录'}
+              <button type="submit" disabled={loading} className="primary-button w-full text-sm font-medium">
+                {loading ? '正在登录...' : '进入账户中心'}
               </button>
 
-              <p className="text-sm text-slate-500">
-                还没有账号？
-                <Link to="/register" className="ml-2 font-medium text-slate-950">
+              <p className="text-sm text-stone-600">
+                还没有账户？
+                <Link to="/register" className="action-link ml-2">
                   立即注册
                 </Link>
               </p>
             </form>
           ) : (
-            <form onSubmit={handleReset} className="space-y-4">
-              <label className="block">
-                <span className="mb-2 block text-sm text-slate-600">邮箱</span>
+            <form onSubmit={handleReset} className="mt-8 space-y-5">
+              <label className="field-label">
+                <span className="field-title">邮箱</span>
                 <input
                   type="email"
                   value={email}
                   onChange={(event) => setEmail(event.target.value)}
                   required
                   autoComplete="email"
-                  className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 outline-none transition focus:border-slate-950"
+                  className="field-input"
                 />
               </label>
 
-              <button
-                type="button"
-                onClick={handleForgot}
-                disabled={sendingCode || isCountingDown}
-                className="rounded-full border border-slate-300 px-4 py-2 text-sm text-slate-700 transition hover:border-slate-950 hover:text-slate-950 disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {sendingCode ? '发送中...' : isCountingDown ? `${formattedTime} 后重试` : '发送验证码'}
-              </button>
+              <div className="subtle-panel rounded-[1.7rem] p-4">
+                <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                  <div>
+                    <div className="text-sm font-medium text-stone-950">邮箱验证码</div>
+                    <div className="mt-1 text-sm text-stone-600">验证码 180 秒内有效，倒计时结束后可重新发送。</div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleForgot}
+                    disabled={sendingCode || isCountingDown}
+                    className="secondary-button text-sm font-medium"
+                  >
+                    {sendingCode ? '发送中...' : isCountingDown ? `${formattedTime} 后重试` : '发送验证码'}
+                  </button>
+                </div>
+              </div>
 
-              <label className="block">
-                <span className="mb-2 block text-sm text-slate-600">验证码</span>
+              <label className="field-label">
+                <span className="field-title">验证码</span>
                 <input
                   value={verificationCode}
                   onChange={(event) => setVerificationCode(event.target.value)}
                   required
                   autoComplete="one-time-code"
-                  className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 outline-none transition focus:border-slate-950"
+                  className="field-input"
                 />
               </label>
 
-              <label className="block">
-                <span className="mb-2 block text-sm text-slate-600">新密码</span>
+              <label className="field-label">
+                <span className="field-title">新密码</span>
                 <input
                   type="password"
                   value={newPassword}
                   onChange={(event) => setNewPassword(event.target.value)}
                   required
                   autoComplete="new-password"
-                  className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 outline-none transition focus:border-slate-950"
+                  className="field-input"
                 />
               </label>
 
-              {error && <div className="rounded-2xl bg-rose-50 px-4 py-3 text-sm text-rose-700">{error}</div>}
-              {message && <div className="rounded-2xl bg-emerald-50 px-4 py-3 text-sm text-emerald-700">{message}</div>}
+              {error && <div className="message-banner message-error">{error}</div>}
+              {message && <div className="message-banner message-success">{message}</div>}
 
-              <button
-                type="submit"
-                disabled={loading}
-                className="w-full rounded-2xl bg-slate-950 px-4 py-3 font-medium text-white transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {loading ? '提交中...' : '重置密码'}
+              <button type="submit" disabled={loading} className="primary-button w-full text-sm font-medium">
+                {loading ? '正在提交...' : '确认重置密码'}
               </button>
             </form>
           )}
-        </div>
+        </section>
       </div>
     </div>
   )

@@ -1,6 +1,6 @@
 const path = require('node:path')
 
-const { app, BrowserWindow, ipcMain, Menu, Notification, Tray, nativeImage } = require('electron')
+const { app, BrowserWindow, ipcMain, Menu, Notification, Tray, nativeImage, screen } = require('electron')
 
 let store
 let petWindow
@@ -11,7 +11,35 @@ let quitting = false
 
 const isDev = !app.isPackaged
 const rendererUrl = process.env.ELECTRON_RENDERER_URL
-const defaultApiBaseUrl = process.env.DETACHYM_API_BASE_URL || process.env.VITE_API_BASE_URL || (isDev ? 'http://127.0.0.1:5000/api/v1' : '')
+const defaultApiBaseUrl =
+  process.env.DETACHYM_API_BASE_URL ||
+  process.env.VITE_API_BASE_URL ||
+  (isDev ? 'http://127.0.0.1:5000/api/v1' : '')
+
+const DEFAULT_LANGUAGE = 'zh-CN'
+const PET_WINDOW_WIDTH = 220
+const PET_WINDOW_HEIGHT = 240
+const PET_VISIBLE_WIDTH = 126
+const PET_VISIBLE_HEIGHT = 148
+
+const trayMessages = {
+  'zh-CN': {
+    trayTooltip: 'Detachym 桌宠',
+    openMainPanel: '打开主面板',
+    toggleQuickChat: '切换快捷聊天',
+    autoLaunch: '开机启动',
+    muteNotifications: '静音通知',
+    quit: '退出',
+  },
+  en: {
+    trayTooltip: 'Detachym Desktop Pet',
+    openMainPanel: 'Open Main Panel',
+    toggleQuickChat: 'Toggle Quick Chat',
+    autoLaunch: 'Launch at Startup',
+    muteNotifications: 'Mute Notifications',
+    quit: 'Quit',
+  },
+}
 
 function getAssetPath(fileName) {
   return path.join(__dirname, '..', fileName)
@@ -19,6 +47,21 @@ function getAssetPath(fileName) {
 
 function getWindowIconPath() {
   return getAssetPath(path.join('build', 'icon.ico'))
+}
+
+function normalizeLanguage(value) {
+  const normalizedValue = String(value || '').trim().toLowerCase()
+  if (normalizedValue.startsWith('zh')) {
+    return 'zh-CN'
+  }
+  if (normalizedValue.startsWith('en')) {
+    return 'en'
+  }
+  return DEFAULT_LANGUAGE
+}
+
+function getLanguageMessages() {
+  return trayMessages[normalizeLanguage(getStore().get('language'))] || trayMessages[DEFAULT_LANGUAGE]
 }
 
 function getTrayIcon() {
@@ -34,13 +77,14 @@ async function createStore() {
   const { default: Store } = await import('electron-store')
   return new Store({
     defaults: {
-      petBounds: { width: 156, height: 176, x: 90, y: 90 },
+      petBounds: { width: PET_WINDOW_WIDTH, height: PET_WINDOW_HEIGHT, x: 90, y: 90 },
       quickBounds: { width: 400, height: 560 },
       mainBounds: { width: 1100, height: 780 },
       autoLaunch: false,
       mute: false,
       apiBaseUrl: defaultApiBaseUrl,
       sessionToken: null,
+      language: DEFAULT_LANGUAGE,
     },
   })
 }
@@ -55,8 +99,8 @@ function getStore() {
 function getPetBounds() {
   const petBounds = getStore().get('petBounds')
   return {
-    width: Math.max(156, petBounds.width || 0),
-    height: Math.max(176, petBounds.height || 0),
+    width: Math.max(PET_WINDOW_WIDTH, petBounds.width || 0),
+    height: Math.max(PET_WINDOW_HEIGHT, petBounds.height || 0),
     x: petBounds.x,
     y: petBounds.y,
   }
@@ -110,6 +154,32 @@ function persistBounds(key, window, options = { saveSize: true }) {
 
   window.on('move', save)
   window.on('resize', save)
+}
+
+function clampPetPosition(x, y, width, height) {
+  const point = {
+    x: Math.round(Number(x) || 0),
+    y: Math.round(Number(y) || 0),
+  }
+  const display = screen.getDisplayNearestPoint(point)
+  const workArea = display.workArea
+
+  return {
+    x: Math.min(Math.max(point.x, workArea.x), workArea.x + workArea.width - width),
+    y: Math.min(Math.max(point.y, workArea.y), workArea.y + workArea.height - height),
+  }
+}
+
+function setPetPosition(x, y) {
+  if (!petWindow || petWindow.isDestroyed()) {
+    return null
+  }
+
+  const currentBounds = petWindow.getBounds()
+  const nextPosition = clampPetPosition(x, y, currentBounds.width, currentBounds.height)
+  petWindow.setPosition(nextPosition.x, nextPosition.y)
+  getStore().set('petBounds', { ...getStore().get('petBounds'), x: nextPosition.x, y: nextPosition.y })
+  return nextPosition
 }
 
 function createPetWindow() {
@@ -198,80 +268,89 @@ function createMainPanelWindow() {
 
 function toggleQuickChat() {
   if (!quickChatWindow || !petWindow) {
-    return
+    return false
   }
 
   if (quickChatWindow.isVisible()) {
     quickChatWindow.hide()
-    return
+    return false
   }
 
   const petBounds = petWindow.getBounds()
   const quickBounds = quickChatWindow.getBounds()
-  quickChatWindow.setPosition(petBounds.x + petBounds.width + 12, petBounds.y)
+  const quickChatX = petBounds.x + Math.round((petBounds.width + PET_VISIBLE_WIDTH) / 2) + 12
+  const quickChatY = petBounds.y + petBounds.height - PET_VISIBLE_HEIGHT
+
+  quickChatWindow.setPosition(quickChatX, quickChatY)
   quickChatWindow.setSize(quickBounds.width, quickBounds.height)
   quickChatWindow.show()
   quickChatWindow.focus()
+  return true
 }
 
 function openMainPanel() {
   if (!mainPanelWindow) {
-    return
+    return false
   }
 
   mainPanelWindow.show()
   mainPanelWindow.focus()
+  return true
+}
+
+function buildTrayMenu() {
+  const messages = getLanguageMessages()
+
+  return Menu.buildFromTemplate([
+    { label: messages.openMainPanel, click: openMainPanel },
+    { label: messages.toggleQuickChat, click: toggleQuickChat },
+    {
+      label: messages.autoLaunch,
+      type: 'checkbox',
+      checked: Boolean(getStore().get('autoLaunch')),
+      click: ({ checked }) => {
+        getStore().set('autoLaunch', checked)
+        app.setLoginItemSettings({ openAtLogin: checked })
+      },
+    },
+    {
+      label: messages.muteNotifications,
+      type: 'checkbox',
+      checked: Boolean(getStore().get('mute')),
+      click: ({ checked }) => {
+        getStore().set('mute', checked)
+      },
+    },
+    { type: 'separator' },
+    {
+      label: messages.quit,
+      click: () => {
+        quitting = true
+        app.quit()
+      },
+    },
+  ])
 }
 
 function createTray() {
   tray = new Tray(getTrayIcon())
-  tray.setToolTip('Detachym Desktop Pet')
-
-  const buildMenu = () =>
-    Menu.buildFromTemplate([
-      { label: '打开主面板', click: openMainPanel },
-      { label: '切换快捷聊天', click: toggleQuickChat },
-      {
-        label: '开机启动',
-        type: 'checkbox',
-        checked: Boolean(getStore().get('autoLaunch')),
-        click: ({ checked }) => {
-          getStore().set('autoLaunch', checked)
-          app.setLoginItemSettings({ openAtLogin: checked })
-        },
-      },
-      {
-        label: '静音通知',
-        type: 'checkbox',
-        checked: Boolean(getStore().get('mute')),
-        click: ({ checked }) => {
-          getStore().set('mute', checked)
-        },
-      },
-      { type: 'separator' },
-      {
-        label: '退出',
-        click: () => {
-          quitting = true
-          app.quit()
-        },
-      },
-    ])
-
-  tray.setContextMenu(buildMenu())
+  tray.setToolTip(getLanguageMessages().trayTooltip)
+  tray.setContextMenu(buildTrayMenu())
   tray.on('double-click', openMainPanel)
 }
 
-function registerIpc() {
-  ipcMain.handle('desktop:open-main-panel', async () => {
-    openMainPanel()
-    return true
-  })
+function refreshTray() {
+  if (!tray) {
+    return
+  }
 
-  ipcMain.handle('desktop:toggle-quick-chat', async () => {
-    toggleQuickChat()
-    return true
-  })
+  tray.setToolTip(getLanguageMessages().trayTooltip)
+  tray.setContextMenu(buildTrayMenu())
+}
+
+function registerIpc() {
+  ipcMain.handle('desktop:open-main-panel', async () => openMainPanel())
+  ipcMain.handle('desktop:toggle-quick-chat', async () => toggleQuickChat())
 
   ipcMain.handle('desktop:toggle-auto-launch', async (_event, enabled) => {
     getStore().set('autoLaunch', enabled)
@@ -284,6 +363,25 @@ function registerIpc() {
   ipcMain.handle('desktop:set-api-base-url', async (_event, value) => {
     getStore().set('apiBaseUrl', value)
     return value
+  })
+  ipcMain.handle('desktop:get-language', async () => normalizeLanguage(getStore().get('language')))
+  ipcMain.handle('desktop:set-language', async (_event, value) => {
+    const nextLanguage = normalizeLanguage(value)
+    getStore().set('language', nextLanguage)
+    refreshTray()
+    return nextLanguage
+  })
+  ipcMain.handle('desktop:get-pet-bounds', async () => {
+    if (!petWindow || petWindow.isDestroyed()) {
+      return getPetBounds()
+    }
+    return petWindow.getBounds()
+  })
+  ipcMain.handle('desktop:set-pet-position', async (_event, position) => {
+    if (!position || typeof position !== 'object') {
+      return null
+    }
+    return setPetPosition(position.x, position.y)
   })
 
   ipcMain.handle('desktop:show-notification', async (_event, payload) => {

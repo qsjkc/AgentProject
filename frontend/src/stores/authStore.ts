@@ -25,10 +25,13 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     } else {
       localStorage.removeItem('token')
     }
-    set({ token })
+    set((state) => ({
+      token,
+      loading: token ? !state.user : false,
+    }))
   },
 
-  setUser: (user) => set({ user }),
+  setUser: (user) => set({ user, loading: false }),
 
   async fetchUser() {
     const { token } = get()

@@ -64,6 +64,14 @@ export async function setApiBaseUrl(value) {
   return normalizedValue
 }
 
+export async function getLanguage() {
+  return getDesktopBridge()?.getLanguage?.()
+}
+
+export async function setLanguage(value) {
+  return getDesktopBridge()?.setLanguage?.(value)
+}
+
 export async function checkApiConnection(value) {
   const apiBaseUrl = normalizeApiBaseUrl(value)
   if (!apiBaseUrl) {

@@ -2,7 +2,8 @@ import { useEffect, useState } from 'react'
 import ReactDOM from 'react-dom/client'
 
 import './desktop.css'
-import { clearSessionToken, desktopApi, getApiBaseUrl, getSessionToken } from './shared/api'
+import { clearSessionToken, desktopApi, getApiBaseUrl, getLanguage, getSessionToken } from './shared/api'
+import { normalizeLanguage, t } from './shared/i18n'
 
 function formatError(error, fallbackMessage) {
   return error instanceof Error ? error.message : fallbackMessage
@@ -17,22 +18,29 @@ function QuickChatApp() {
   const [loading, setLoading] = useState(false)
   const [hasToken, setHasToken] = useState(false)
   const [hasApiBaseUrl, setHasApiBaseUrl] = useState(false)
+  const [language, setLanguage] = useState('zh-CN')
 
   useEffect(() => {
     let active = true
 
     const bootstrap = async () => {
       try {
-        const [token, apiBaseUrl] = await Promise.all([getSessionToken(), getApiBaseUrl()])
+        const [token, apiBaseUrl, savedLanguage] = await Promise.all([
+          getSessionToken(),
+          getApiBaseUrl(),
+          getLanguage(),
+        ])
         if (!active) {
           return
         }
         setHasToken(Boolean(token))
         setHasApiBaseUrl(Boolean(apiBaseUrl))
+        setLanguage(normalizeLanguage(savedLanguage))
       } catch {
         if (active) {
           setHasToken(false)
           setHasApiBaseUrl(false)
+          setLanguage('zh-CN')
         }
       } finally {
         if (active) {
@@ -41,10 +49,22 @@ function QuickChatApp() {
       }
     }
 
-    bootstrap()
+    const syncLanguage = () => {
+      getLanguage()
+        .then((savedLanguage) => {
+          if (active) {
+            setLanguage(normalizeLanguage(savedLanguage))
+          }
+        })
+        .catch(() => undefined)
+    }
+
+    void bootstrap()
+    window.addEventListener('focus', syncLanguage)
 
     return () => {
       active = false
+      window.removeEventListener('focus', syncLanguage)
     }
   }, [])
 
@@ -67,7 +87,7 @@ function QuickChatApp() {
       setSessionId(response.session_id)
       setMessages((current) => [...current, { role: 'assistant', content: response.content }])
     } catch (error) {
-      const detail = formatError(error, 'Request failed.')
+      const detail = formatError(error, t(language, 'messageDeliveryFailed'))
       setMessages((current) => [...current, { role: 'assistant', content: detail }])
       if (detail.toLowerCase().includes('validate credentials')) {
         await clearSessionToken()
@@ -87,33 +107,30 @@ function QuickChatApp() {
           <div className="toolbar">
             <div>
               <div style={{ fontSize: 12, letterSpacing: '0.22em', textTransform: 'uppercase', color: '#64748b' }}>
-                Quick Chat
+                {t(language, 'quickChat')}
               </div>
-              <div style={{ fontSize: 24, fontWeight: 700 }}>Desktop Quick Chat</div>
+              <div style={{ fontSize: 24, fontWeight: 700 }}>{t(language, 'desktopQuickChat')}</div>
             </div>
             <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 }}>
               <input type="checkbox" checked={useRag} onChange={(event) => setUseRag(event.target.checked)} />
-              Enable knowledge base
+              {t(language, 'enableKnowledgeBase')}
             </label>
           </div>
 
           {!ready ? (
             <div className="panel" style={{ padding: 18, background: '#e2e8f0' }}>
-              Starting quick chat...
+              {t(language, 'startingQuickChat')}
             </div>
           ) : needsSetup ? (
             <div className="panel" style={{ padding: 18, background: '#e2e8f0' }}>
-              <div style={{ fontSize: 14, color: '#334155', lineHeight: 1.8 }}>
-                Open the main panel first, configure the server URL, and sign in to your cloud account before using quick
-                chat.
-              </div>
+              <div style={{ fontSize: 14, color: '#334155', lineHeight: 1.8 }}>{t(language, 'quickChatSetupText')}</div>
               <button
                 type="button"
                 className="button-primary"
                 style={{ marginTop: 14 }}
                 onClick={() => window.desktopBridge?.openMainPanel?.()}
               >
-                Open Main Panel
+                {t(language, 'openMainPanel')}
               </button>
             </div>
           ) : (
@@ -124,12 +141,7 @@ function QuickChatApp() {
                     {item.content}
                   </div>
                 ))}
-                {messages.length === 0 && (
-                  <div className="message assistant">
-                    Ask a question here after clicking the pet. The desktop client will use your current cloud account and
-                    knowledge base settings.
-                  </div>
-                )}
+                {messages.length === 0 && <div className="message assistant">{t(language, 'quickChatEmpty')}</div>}
               </div>
 
               <textarea
@@ -137,14 +149,14 @@ function QuickChatApp() {
                 rows={4}
                 value={message}
                 onChange={(event) => setMessage(event.target.value)}
-                placeholder="Type a question for Detachym..."
+                placeholder={t(language, 'quickChatPlaceholder')}
               />
               <div className="toolbar">
                 <button type="button" className="button-secondary" onClick={() => window.desktopBridge?.openMainPanel?.()}>
-                  Open Main Panel
+                  {t(language, 'openMainPanel')}
                 </button>
                 <button type="button" className="button-primary" onClick={sendMessage} disabled={loading}>
-                  {loading ? 'Sending...' : 'Send'}
+                  {loading ? t(language, 'sending') : t(language, 'send')}
                 </button>
               </div>
             </>

@@ -28,6 +28,20 @@ async def client():
             yield ac
 
 
+def test_api_origins_accepts_json_array_string():
+    from app.core.config import Settings  # noqa: E402
+
+    settings = Settings(API_ORIGINS='["http://detachym.top", "http://127.0.0.1"]')
+    assert settings.API_ORIGINS == ["http://detachym.top", "http://127.0.0.1"]
+
+
+def test_api_origins_accepts_comma_separated_string():
+    from app.core.config import Settings  # noqa: E402
+
+    settings = Settings(API_ORIGINS="http://detachym.top, http://127.0.0.1, null")
+    assert settings.API_ORIGINS == ["http://detachym.top", "http://127.0.0.1", "null"]
+
+
 async def register_user(client: AsyncClient, *, username: str, email: str, password: str = "Password123!") -> None:
     response = await client.post("/api/v1/auth/send-verification-code", json={"email": email})
     assert response.status_code == 200
