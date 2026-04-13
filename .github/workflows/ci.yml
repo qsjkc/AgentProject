@@ -31,6 +31,26 @@ jobs:
       - name: Run tests
         run: pytest -v
 
+  docker-publish-ready:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    outputs:
+      enabled: ${{ steps.check.outputs.enabled }}
+
+    steps:
+      - name: Check Docker Hub credentials
+        id: check
+        shell: bash
+        env:
+          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+          DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
+        run: |
+          if [[ -n "$DOCKER_USERNAME" && -n "$DOCKER_PASSWORD" ]]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          fi
+
   build-frontend:
     runs-on: ubuntu-latest
     defaults:
@@ -80,8 +100,8 @@ jobs:
           path: desktop/dist/releases/**
 
   build-docker:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [test-backend, build-frontend]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.docker-publish-ready.outputs.enabled == 'true'
+    needs: [test-backend, build-frontend, docker-publish-ready]
     runs-on: ubuntu-latest
 
     steps:
