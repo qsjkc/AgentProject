@@ -169,6 +169,33 @@ async def test_auth_preferences_and_password_reset(client: AsyncClient):
 
 
 @pytest.mark.asyncio
+async def test_register_rejects_existing_email_and_chat_accepts_pet_type(client: AsyncClient):
+    await register_user(client, username="petuser", email="petuser@example.com")
+
+    duplicate_code_response = await client.post(
+        "/api/v1/auth/send-verification-code",
+        json={"email": "petuser@example.com"},
+    )
+    assert duplicate_code_response.status_code == 400
+    assert duplicate_code_response.json()["detail"] == "Email already registered"
+
+    token = await login(client, username="petuser")
+    headers = {"Authorization": f"Bearer {token}"}
+
+    chat_response = await client.post(
+        "/api/v1/chat/message",
+        headers=headers,
+        json={
+            "message": "Hello desktop pet",
+            "use_rag": False,
+            "pet_type": "dog",
+        },
+    )
+    assert chat_response.status_code == 200
+    assert chat_response.json()["session_id"] > 0
+
+
+@pytest.mark.asyncio
 async def test_legacy_short_username_can_still_login_and_fetch_profile(client: AsyncClient):
     from app.core.security import get_password_hash  # noqa: E402
     from app.models.database import User, UserPreference, async_session_maker  # noqa: E402

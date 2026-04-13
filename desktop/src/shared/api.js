@@ -33,8 +33,8 @@ function getDesktopBridge() {
 
 function getUnconfiguredServerMessage() {
   return import.meta.env.DEV
-    ? 'Desktop API is not configured. Start the local backend or set a server URL.'
-    : 'Please configure the server URL before using the desktop client.'
+    ? '未检测到桌面端服务，请先启动本地后端或配置服务器地址。'
+    : '请先配置服务器地址，再使用桌面客户端。'
 }
 
 async function requireApiBaseUrl() {
@@ -80,7 +80,7 @@ export async function checkApiConnection(value) {
 
   const response = await fetch(`${apiBaseUrl}/public/version/win-x64`)
   if (!response.ok) {
-    throw new Error('Unable to reach the Detachym service.')
+    throw new Error('无法连接到 Detachym 服务。')
   }
 
   return apiBaseUrl
@@ -117,8 +117,8 @@ async function request(path, options = {}) {
   })
 
   if (!response.ok) {
-    const payload = await response.json().catch(() => ({ detail: 'Request failed' }))
-    throw new Error(payload.detail || 'Request failed')
+    const payload = await response.json().catch(() => ({ detail: '请求失败' }))
+    throw new Error(payload.detail || '请求失败')
   }
 
   return response.json()
@@ -136,8 +136,8 @@ export async function login(username, password) {
   })
 
   if (!response.ok) {
-    const payload = await response.json().catch(() => ({ detail: 'Login failed' }))
-    throw new Error(payload.detail || 'Login failed')
+    const payload = await response.json().catch(() => ({ detail: '登录失败' }))
+    throw new Error(payload.detail || '登录失败')
   }
 
   const data = await response.json()
@@ -147,6 +147,12 @@ export async function login(username, password) {
 
 export const desktopApi = {
   me: () => request('/auth/me'),
+  getPreferences: () => request('/users/me/preferences'),
+  updatePreferences: (payload) =>
+    request('/users/me/preferences', {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    }),
   getSessions: () => request('/chat/sessions'),
   getSession: (sessionId) => request(`/chat/sessions/${sessionId}`),
   sendMessage: (payload) =>

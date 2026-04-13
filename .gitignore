@@ -33,6 +33,7 @@ env/
 *.swp
 *.swo
 *~
+~$*
 
 # Environment variables
 .env

@@ -3,7 +3,7 @@ import ReactDOM from 'react-dom/client'
 
 import './desktop.css'
 import { desktopApi, getLanguage, getSessionToken } from './shared/api'
-import { getMessagePool, normalizeLanguage, t } from './shared/i18n'
+import { getMessagePool, getPetMessagePool, normalizeLanguage, t } from './shared/i18n'
 import { getPetVisual } from './shared/pets'
 
 const DEFAULT_PREFERENCES = {
@@ -34,6 +34,7 @@ function PetApp() {
   const moodTimerRef = useRef(null)
   const idleBubbleTimerRef = useRef(null)
   const rafRef = useRef(null)
+  const sendingPositionRef = useRef(false)
   const suppressClickRef = useRef(false)
   const previousSessionRef = useRef(null)
   const petPositionRef = useRef({ x: 90, y: 90 })
@@ -105,11 +106,13 @@ function PetApp() {
 
         setLanguage(normalizeLanguage(savedLanguage))
         setHasSession(Boolean(token))
+
         if (bounds?.x !== undefined && bounds?.y !== undefined) {
           petPositionRef.current = bounds
         }
 
         if (!token) {
+          setPetType('cat')
           setPreferences(DEFAULT_PREFERENCES)
           setPetMood('sad')
           return
@@ -132,6 +135,7 @@ function PetApp() {
       } catch {
         if (mounted) {
           setHasSession(false)
+          setPetType('cat')
           setPreferences(DEFAULT_PREFERENCES)
           setPetMood('sad')
         }
@@ -183,9 +187,10 @@ function PetApp() {
         return
       }
 
-      const poolKey = hasSession ? (Math.random() > 0.65 ? 'petHappyMessages' : 'petIdleMessages') : 'petSadMessages'
-      const mood = poolKey === 'petHappyMessages' ? 'happy' : hasSession ? 'idle' : 'sad'
-      showBubble(pickRandom(getMessagePool(language, poolKey)), { mood })
+      const pool = hasSession
+        ? getPetMessagePool(language, petType, 'IdleMessages')
+        : getMessagePool(language, 'petSadMessages')
+      showBubble(pickRandom(pool), { mood: hasSession ? 'idle' : 'sad' })
     }, frequencySeconds * 1000)
 
     return () => {
@@ -194,7 +199,7 @@ function PetApp() {
         idleBubbleTimerRef.current = null
       }
     }
-  }, [bubbleText, hasSession, language, preferences.bubble_frequency])
+  }, [bubbleText, hasSession, language, petType, preferences.bubble_frequency])
 
   useEffect(
     () => () => {
@@ -216,6 +221,35 @@ function PetApp() {
   const petVisual = getPetVisual(petType, petMood)
   const petLabel = t(language, petVisual.labelKey)
 
+  const flushPetPosition = () => {
+    if (sendingPositionRef.current || !pendingPositionRef.current) {
+      return
+    }
+
+    const latestPosition = pendingPositionRef.current
+    pendingPositionRef.current = null
+    sendingPositionRef.current = true
+    petPositionRef.current = { ...petPositionRef.current, ...latestPosition }
+
+    window.desktopBridge
+      ?.setPetPosition?.(latestPosition)
+      .then((bounds) => {
+        if (bounds?.x !== undefined && bounds?.y !== undefined) {
+          petPositionRef.current = bounds
+        }
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        sendingPositionRef.current = false
+        if (pendingPositionRef.current) {
+          rafRef.current = window.requestAnimationFrame(() => {
+            rafRef.current = null
+            flushPetPosition()
+          })
+        }
+      })
+  }
+
   const queuePetPosition = (nextPosition) => {
     pendingPositionRef.current = nextPosition
 
@@ -224,22 +258,8 @@ function PetApp() {
     }
 
     rafRef.current = window.requestAnimationFrame(() => {
-      const latestPosition = pendingPositionRef.current
       rafRef.current = null
-      if (!latestPosition) {
-        return
-      }
-
-      window.desktopBridge
-        ?.setPetPosition?.(latestPosition)
-        .then((bounds) => {
-          if (bounds?.x !== undefined && bounds?.y !== undefined) {
-            petPositionRef.current = bounds
-          } else {
-            petPositionRef.current = { ...petPositionRef.current, ...latestPosition }
-          }
-        })
-        .catch(() => undefined)
+      flushPetPosition()
     })
   }
 
@@ -248,6 +268,7 @@ function PetApp() {
       return
     }
 
+    event.preventDefault()
     event.currentTarget.setPointerCapture?.(event.pointerId)
     dragRef.current = {
       pointerId: event.pointerId,
@@ -266,9 +287,11 @@ function PetApp() {
       return
     }
 
+    event.preventDefault()
     const deltaX = event.screenX - dragRef.current.startScreenX
     const deltaY = event.screenY - dragRef.current.startScreenY
-    if (!dragRef.current.moved && (Math.abs(deltaX) >= 2 || Math.abs(deltaY) >= 2)) {
+
+    if (!dragRef.current.moved && (Math.abs(deltaX) >= DRAG_THRESHOLD || Math.abs(deltaY) >= DRAG_THRESHOLD)) {
       dragRef.current.moved = true
     }
 
@@ -312,17 +335,22 @@ function PetApp() {
 
   const handleSingleClick = async () => {
     if (!hasSession) {
-      showBubble(t(language, 'signInHint'), { mood: 'sad', duration: 2800 })
+      showBubble(pickRandom(getMessagePool(language, 'petSadMessages')) || t(language, 'signInHint'), {
+        mood: 'sad',
+        duration: 2800,
+      })
       return
     }
 
+    const tapMessage = pickRandom(getPetMessagePool(language, petType, 'TapMessages'))
+
     if (!preferences.quick_chat_enabled) {
-      showBubble(t(language, 'quickChatDisabledHint'), { mood: 'happy', duration: 2200 })
+      showBubble(tapMessage || t(language, 'quickChatDisabledHint'), { mood: 'happy', duration: 2200 })
       return
     }
 
     const visible = await window.desktopBridge?.toggleQuickChat?.()
-    showBubble(t(language, visible ? 'quickChatOpened' : 'quickChatClosed'), {
+    showBubble(tapMessage || t(language, visible ? 'quickChatOpened' : 'quickChatClosed'), {
       mood: visible ? 'excited' : 'happy',
       duration: 1800,
     })
@@ -337,7 +365,10 @@ function PetApp() {
       window.clearTimeout(clickTimerRef.current)
       clickTimerRef.current = null
       window.desktopBridge?.openMainPanel?.()
-      showBubble(t(language, 'mainPanelOpened'), { mood: 'excited', duration: 2000 })
+      showBubble(pickRandom(getPetMessagePool(language, petType, 'PanelMessages')) || t(language, 'mainPanelOpened'), {
+        mood: 'excited',
+        duration: 2000,
+      })
       return
     }
 
@@ -364,7 +395,7 @@ function PetApp() {
   return (
     <div className="pet-shell">
       <div className={`pet-scene mood-${petMood}`}>
-        {bubbleText && <div className="pet-bubble">{bubbleText}</div>}
+        {bubbleText && <div className={`pet-bubble pet-bubble-${petType}`}>{bubbleText}</div>}
         <button
           type="button"
           className="pet-button"

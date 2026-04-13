@@ -1,7 +1,7 @@
 import random
 import smtplib
 import string
-from datetime import datetime, timedelta
+from datetime import timedelta
 from email.header import Header
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -20,6 +20,7 @@ from app.core.security import (
     get_password_hash,
     verify_password,
 )
+from app.core.time import utc_now
 from app.models.database import UserPreference, get_db
 from app.models.user import User, VerificationCode
 from app.schemas.user import (
@@ -87,7 +88,7 @@ async def issue_code(
             code=code,
             purpose=purpose,
             user_id=user_id,
-            expires_at=datetime.utcnow() + timedelta(minutes=5),
+            expires_at=utc_now() + timedelta(minutes=5),
         )
     )
     await db.commit()
@@ -114,7 +115,7 @@ async def get_valid_code(
     verification = result.scalars().first()
     if not verification:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid verification code")
-    if verification.expires_at < datetime.utcnow():
+    if verification.expires_at < utc_now():
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Verification code expired")
     return verification
 
@@ -143,6 +144,10 @@ async def send_verification_code(
     payload: VerificationCodeRequest,
     db: AsyncSession = Depends(get_db),
 ) -> MessageResponse:
+    existing_user = await db.execute(select(User).where(User.email == payload.email))
+    if existing_user.scalar_one_or_none():
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email already registered")
+
     code = await issue_code(db, email=payload.email, purpose="register")
     await send_email(
         payload.email,
@@ -169,7 +174,7 @@ async def forgot_password(
             payload.email,
             "Detachym 重置密码验证码",
             (
-                "<p>你的 Detachym 密码重置验证码为：</p>"
+                "<p>你的 Detachym 重置密码验证码为：</p>"
                 f"<p style='font-size:24px;font-weight:bold'>{code}</p>"
                 "<p>验证码 5 分钟内有效。</p>"
             ),
@@ -182,11 +187,13 @@ async def register(
     user_create: UserCreate,
     db: AsyncSession = Depends(get_db),
 ) -> UserResponse:
-    existing_user = await db.execute(
-        select(User).where((User.username == user_create.username) | (User.email == user_create.email))
-    )
-    if existing_user.scalar_one_or_none():
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Username or email already registered")
+    existing_username = await db.execute(select(User).where(User.username == user_create.username))
+    if existing_username.scalar_one_or_none():
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Username already registered")
+
+    existing_email = await db.execute(select(User).where(User.email == user_create.email))
+    if existing_email.scalar_one_or_none():
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email already registered")
 
     verification = await get_valid_code(
         db,
@@ -205,7 +212,7 @@ async def register(
     db.add(user)
     await db.flush()
     await create_default_preferences(user.id, db)
-    verification.consumed_at = datetime.utcnow()
+    verification.consumed_at = utc_now()
     await db.commit()
 
     return await load_user_with_preferences(user.id, db)
@@ -229,7 +236,7 @@ async def login(
     if user.status != "active" or not user.is_active:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User is disabled")
 
-    user.last_login_at = datetime.utcnow()
+    user.last_login_at = utc_now()
     await db.commit()
 
     access_token = create_access_token(data={"sub": str(user.id), "username": user.username})
@@ -253,7 +260,7 @@ async def reset_password(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
 
     user.hashed_password = get_password_hash(payload.new_password)
-    verification.consumed_at = datetime.utcnow()
+    verification.consumed_at = utc_now()
     await db.commit()
     return MessageResponse(message="Password reset successful")
 

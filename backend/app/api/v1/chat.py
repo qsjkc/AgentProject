@@ -1,5 +1,4 @@
 import json
-from datetime import datetime
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -9,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.security import get_current_user
+from app.core.time import utc_now
 from app.models.chat import ChatMessage, ChatSession
 from app.models.database import get_db
 from app.models.user import User
@@ -18,6 +18,24 @@ from app.services.llm.service import llm_service
 from app.services.rag import rag_service
 
 router = APIRouter(prefix="/chat", tags=["chat"])
+
+PET_PERSONA_PROMPTS = {
+    "cat": (
+        "You are speaking as a desktop cat companion. "
+        "Be concise, sharp, agile, slightly proud, and emotionally perceptive. "
+        "Keep the tone clean and direct, without sounding cold."
+    ),
+    "dog": (
+        "You are speaking as a desktop dog companion. "
+        "Be warm, upbeat, loyal, and proactive. "
+        "Sound encouraging and companionable, while staying efficient."
+    ),
+    "pig": (
+        "You are speaking as a desktop pig companion. "
+        "Be gentle, relaxed, healing, and lightly playful. "
+        "Keep the rhythm soft and reassuring without becoming vague."
+    ),
+}
 
 
 async def get_or_create_session(
@@ -54,18 +72,22 @@ async def build_history(
     user_id: int,
     user_message: str,
     use_rag: bool,
+    pet_type: str | None,
 ) -> List[Message]:
     result = await db.execute(
         select(ChatMessage).where(ChatMessage.session_id == session.id).order_by(ChatMessage.created_at.asc())
     )
     history = result.scalars().all()
-    messages: list[Message] = [Message(role=item.role, content=item.content) for item in history]
+    messages: list[Message] = []
+
+    persona_prompt = PET_PERSONA_PROMPTS.get(pet_type or "")
+    if persona_prompt:
+        messages.append(Message(role="system", content=persona_prompt))
 
     if use_rag:
         rag_context = rag_service.build_context(user_id=user_id, question=user_message)
         if rag_context.context:
-            messages.insert(
-                0,
+            messages.append(
                 Message(
                     role="system",
                     content=(
@@ -75,6 +97,8 @@ async def build_history(
                     ),
                 ),
             )
+
+    messages.extend(Message(role=item.role, content=item.content) for item in history)
     return messages
 
 
@@ -94,7 +118,7 @@ async def chat_stream(
                 content=request.message,
             )
         )
-        session.updated_at = datetime.utcnow()
+        session.updated_at = utc_now()
         await db.commit()
 
         messages = await build_history(
@@ -103,6 +127,7 @@ async def chat_stream(
             user_id=current_user.id,
             user_message=request.message,
             use_rag=request.use_rag,
+            pet_type=request.pet_type,
         )
 
         full_response = ""
@@ -125,7 +150,7 @@ async def chat_stream(
                 content=full_response,
             )
         )
-        session.updated_at = datetime.utcnow()
+        session.updated_at = utc_now()
         await db.commit()
         yield f"data: {json.dumps({'content': '', 'done': True, 'session_id': session.id})}\n\n"
 
@@ -147,7 +172,7 @@ async def chat_message(
             content=request.message,
         )
     )
-    session.updated_at = datetime.utcnow()
+    session.updated_at = utc_now()
     await db.commit()
 
     messages = await build_history(
@@ -156,6 +181,7 @@ async def chat_message(
         user_id=current_user.id,
         user_message=request.message,
         use_rag=request.use_rag,
+        pet_type=request.pet_type,
     )
 
     full_response = ""
@@ -175,7 +201,7 @@ async def chat_message(
             content=full_response,
         )
     )
-    session.updated_at = datetime.utcnow()
+    session.updated_at = utc_now()
     await db.commit()
 
     return ChatResponse(content=full_response, session_id=session.id)

@@ -156,18 +156,22 @@ function persistBounds(key, window, options = { saveSize: true }) {
   window.on('resize', save)
 }
 
-function clampPetPosition(x, y, width, height) {
+function clampWindowPosition(x, y, width, height, displayOverride = null) {
   const point = {
     x: Math.round(Number(x) || 0),
     y: Math.round(Number(y) || 0),
   }
-  const display = screen.getDisplayNearestPoint(point)
+  const display = displayOverride || screen.getDisplayNearestPoint(point)
   const workArea = display.workArea
 
   return {
     x: Math.min(Math.max(point.x, workArea.x), workArea.x + workArea.width - width),
     y: Math.min(Math.max(point.y, workArea.y), workArea.y + workArea.height - height),
   }
+}
+
+function clampPetPosition(x, y, width, height) {
+  return clampWindowPosition(x, y, width, height)
 }
 
 function setPetPosition(x, y) {
@@ -180,6 +184,35 @@ function setPetPosition(x, y) {
   petWindow.setPosition(nextPosition.x, nextPosition.y)
   getStore().set('petBounds', { ...getStore().get('petBounds'), x: nextPosition.x, y: nextPosition.y })
   return nextPosition
+}
+
+function getQuickChatAnchorPosition(width, height) {
+  if (!petWindow || petWindow.isDestroyed()) {
+    return clampWindowPosition(120, 120, width, height)
+  }
+
+  const petBounds = petWindow.getBounds()
+  const petCenter = {
+    x: petBounds.x + Math.round(petBounds.width / 2),
+    y: petBounds.y + Math.round(petBounds.height / 2),
+  }
+  const display = screen.getDisplayNearestPoint(petCenter)
+  const workArea = display.workArea
+  const rightX = petBounds.x + PET_VISIBLE_WIDTH + 18
+  const leftX = petBounds.x - width - 18
+  const nextX = rightX + width <= workArea.x + workArea.width || leftX < workArea.x ? rightX : leftX
+  const nextY = petBounds.y + Math.round((petBounds.height - height) / 2)
+
+  return clampWindowPosition(nextX, nextY, width, height, display)
+}
+
+function getQuickChatPosition(width, height) {
+  const quickBounds = getStore().get('quickBounds') || {}
+  if (Number.isFinite(quickBounds.x) && Number.isFinite(quickBounds.y)) {
+    return clampWindowPosition(quickBounds.x, quickBounds.y, width, height)
+  }
+
+  return getQuickChatAnchorPosition(width, height)
 }
 
 function createPetWindow() {
@@ -217,6 +250,7 @@ function createQuickChatWindow() {
   const quickBounds = getStore().get('quickBounds')
   quickChatWindow = new BrowserWindow({
     ...quickBounds,
+    title: 'Detachym 快捷聊天',
     icon: getWindowIconPath(),
     show: false,
     frame: false,
@@ -230,6 +264,8 @@ function createQuickChatWindow() {
     },
   })
 
+  quickChatWindow.removeMenu()
+  quickChatWindow.setMenuBarVisibility(false)
   persistBounds('quickBounds', quickChatWindow)
   quickChatWindow.on('close', (event) => {
     if (!quitting) {
@@ -245,6 +281,7 @@ function createMainPanelWindow() {
   const mainBounds = getStore().get('mainBounds')
   mainPanelWindow = new BrowserWindow({
     ...mainBounds,
+    title: 'Detachym 桌宠客户端',
     icon: getWindowIconPath(),
     show: false,
     backgroundColor: '#ffffff',
@@ -255,6 +292,8 @@ function createMainPanelWindow() {
     },
   })
 
+  mainPanelWindow.removeMenu()
+  mainPanelWindow.setMenuBarVisibility(false)
   persistBounds('mainBounds', mainPanelWindow)
   mainPanelWindow.on('close', (event) => {
     if (!quitting) {
@@ -276,13 +315,12 @@ function toggleQuickChat() {
     return false
   }
 
-  const petBounds = petWindow.getBounds()
   const quickBounds = quickChatWindow.getBounds()
-  const quickChatX = petBounds.x + Math.round((petBounds.width + PET_VISIBLE_WIDTH) / 2) + 12
-  const quickChatY = petBounds.y + petBounds.height - PET_VISIBLE_HEIGHT
+  const nextPosition = getQuickChatPosition(quickBounds.width, quickBounds.height)
 
-  quickChatWindow.setPosition(quickChatX, quickChatY)
   quickChatWindow.setSize(quickBounds.width, quickBounds.height)
+  quickChatWindow.setPosition(nextPosition.x, nextPosition.y)
+  getStore().set('quickBounds', { ...getStore().get('quickBounds'), x: nextPosition.x, y: nextPosition.y })
   quickChatWindow.show()
   quickChatWindow.focus()
   return true
@@ -409,6 +447,7 @@ function registerIpc() {
 }
 
 function bootstrap() {
+  Menu.setApplicationMenu(null)
   createPetWindow()
   createQuickChatWindow()
   createMainPanelWindow()

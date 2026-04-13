@@ -6,11 +6,23 @@ import { getErrorMessage } from '../lib/errors'
 import { authApi } from '../services'
 import { useAuthStore } from '../stores'
 
-const onboardingSteps = [
-  '输入邮箱获取验证码，完成基础身份验证。',
-  '注册完成后会自动登录并跳转到账户中心。',
-  '进入账户中心后即可同步桌宠偏好并下载客户端。',
-]
+function translateRegisterError(message: string) {
+  const normalized = message.toLowerCase()
+
+  if (normalized.includes('email already registered')) {
+    return '该邮箱已注册，请直接登录或使用找回密码。'
+  }
+
+  if (normalized.includes('username already registered')) {
+    return '该用户名已被占用，请更换后重试。'
+  }
+
+  if (normalized.includes('verification code')) {
+    return '验证码无效或已过期，请重新获取。'
+  }
+
+  return message
+}
 
 export default function Register() {
   const navigate = useNavigate()
@@ -41,11 +53,11 @@ export default function Register() {
     setError('')
     setMessage('')
     try {
-      const response = await authApi.sendVerificationCode(form.email)
-      setMessage(response.message)
+      await authApi.sendVerificationCode(form.email)
+      setMessage('验证码已发送，请检查邮箱。')
       start()
     } catch (err) {
-      setError(getErrorMessage(err, '发送验证码失败，请稍后重试。'))
+      setError(translateRegisterError(getErrorMessage(err, '验证码发送失败，请稍后重试。')))
     } finally {
       setSendingCode(false)
     }
@@ -53,10 +65,16 @@ export default function Register() {
 
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault()
+
+    if (form.password.trim().length < 8 || form.password.length > 72) {
+      setError('密码需为 8 到 72 位字符。')
+      setMessage('')
+      return
+    }
+
     setLoading(true)
     setError('')
     setMessage('')
-
     try {
       await authApi.register(form)
       const token = await authApi.login({
@@ -70,119 +88,109 @@ export default function Register() {
     } catch (err) {
       setToken(null)
       setUser(null)
-      setError(getErrorMessage(err, '注册失败，请检查输入信息和验证码。'))
+      setError(translateRegisterError(getErrorMessage(err, '注册失败，请检查输入信息和验证码。')))
     } finally {
       setLoading(false)
     }
   }
 
   return (
-    <div className="mx-auto max-w-6xl">
-      <div className="grid gap-8 xl:grid-cols-[0.88fr_1.12fr]">
-        <section className="surface-panel reveal-rise rounded-[2.75rem] p-8 md:p-10 xl:p-12">
-          <div className="eyebrow">Create Account</div>
-          <h1 className="section-title mt-4 text-stone-950">创建你的 Detachym 账户</h1>
-          <p className="body-copy mt-4 max-w-xl text-sm">
-            注册页会保持流程极短，但观感必须像完整品牌体验。注册成功后，你会自动进入账户中心，不再停留在中间空白状态。
-          </p>
+    <div className="mx-auto max-w-3xl rounded-[2rem] border border-slate-200 bg-white/90 p-8 shadow-[0_24px_80px_rgba(15,23,42,0.08)]">
+      <div className="mb-8">
+        <div className="text-xs uppercase tracking-[0.3em] text-slate-500">Account Register</div>
+        <h1 className="mt-4 text-4xl font-semibold text-slate-950">创建 Detachym 账号</h1>
+        <p className="mt-3 max-w-2xl text-sm leading-7 text-slate-600">
+          注册完成后会自动进入用户中心，你可以继续配置桌宠偏好并下载 Windows 安装包。
+        </p>
+      </div>
 
-          <div className="mt-8 space-y-4">
-            {onboardingSteps.map((step, index) => (
-              <article key={step} className="subtle-panel rounded-[1.7rem] p-5">
-                <div className="flex items-start gap-4">
-                  <div className="flex h-10 w-10 items-center justify-center rounded-full border border-amber-300/50 bg-amber-100/60 text-sm font-semibold text-amber-900">
-                    {index + 1}
-                  </div>
-                  <p className="text-sm leading-7 text-stone-700">{step}</p>
-                </div>
-              </article>
-            ))}
+      <form onSubmit={handleSubmit} className="grid gap-4 md:grid-cols-2">
+        <label className="block md:col-span-1">
+          <span className="mb-2 block text-sm text-slate-600">用户名</span>
+          <input
+            value={form.username}
+            onChange={(event) => updateField('username', event.target.value)}
+            required
+            minLength={3}
+            autoComplete="username"
+            className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 outline-none transition focus:border-slate-950"
+          />
+        </label>
+
+        <label className="block md:col-span-1">
+          <span className="mb-2 block text-sm text-slate-600">邮箱</span>
+          <input
+            type="email"
+            value={form.email}
+            onChange={(event) => updateField('email', event.target.value)}
+            required
+            autoComplete="email"
+            className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 outline-none transition focus:border-slate-950"
+          />
+        </label>
+
+        <div className="md:col-span-2 grid gap-4 md:grid-cols-[1fr_auto]">
+          <label className="block">
+            <span className="mb-2 block text-sm text-slate-600">验证码</span>
+            <input
+              value={form.verification_code}
+              onChange={(event) => updateField('verification_code', event.target.value)}
+              required
+              minLength={6}
+              maxLength={6}
+              autoComplete="one-time-code"
+              className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 outline-none transition focus:border-slate-950"
+            />
+          </label>
+          <div className="flex items-end">
+            <button
+              type="button"
+              onClick={handleSendCode}
+              disabled={sendingCode || isCountingDown}
+              className="w-full rounded-2xl border border-slate-300 px-4 py-3 text-sm text-slate-700 transition hover:border-slate-950 hover:text-slate-950 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {sendingCode ? '发送中...' : isCountingDown ? `${formattedTime} 后重试` : '发送验证码'}
+            </button>
           </div>
+        </div>
 
-          <div className="mt-8 text-sm text-stone-600">
-            已有账户？
-            <Link to="/login" className="action-link ml-2">
+        <label className="block md:col-span-2">
+          <div className="mb-2 flex items-center justify-between gap-4">
+            <span className="block text-sm text-slate-600">密码</span>
+            <span className="text-xs text-slate-400">8-72 位字符</span>
+          </div>
+          <input
+            type="password"
+            value={form.password}
+            onChange={(event) => updateField('password', event.target.value)}
+            required
+            minLength={8}
+            maxLength={72}
+            autoComplete="new-password"
+            className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 outline-none transition focus:border-slate-950"
+          />
+          <p className="mt-2 text-xs leading-6 text-slate-500">建议使用字母、数字和符号组合，方便后续长期使用。</p>
+        </label>
+
+        {error && <div className="rounded-2xl bg-rose-50 px-4 py-3 text-sm text-rose-700 md:col-span-2">{error}</div>}
+        {message && <div className="rounded-2xl bg-emerald-50 px-4 py-3 text-sm text-emerald-700 md:col-span-2">{message}</div>}
+
+        <div className="md:col-span-2 flex flex-wrap items-center justify-between gap-4 pt-2">
+          <p className="text-sm text-slate-500">
+            已有账号？
+            <Link to="/login" className="ml-2 font-medium text-slate-950">
               返回登录
             </Link>
-          </div>
-        </section>
-
-        <section className="surface-panel reveal-rise rounded-[2.75rem] p-8 md:p-10" style={{ animationDelay: '140ms' }}>
-          <div className="eyebrow">Registration Form</div>
-          <h2 className="section-title mt-4 text-stone-950">完成注册后直接进入控制台</h2>
-
-          <form onSubmit={handleSubmit} className="mt-8 grid gap-5 md:grid-cols-2">
-            <label className="field-label">
-              <span className="field-title">用户名</span>
-              <input
-                value={form.username}
-                onChange={(event) => updateField('username', event.target.value)}
-                required
-                autoComplete="username"
-                className="field-input"
-              />
-            </label>
-
-            <label className="field-label">
-              <span className="field-title">邮箱</span>
-              <input
-                type="email"
-                value={form.email}
-                onChange={(event) => updateField('email', event.target.value)}
-                required
-                autoComplete="email"
-                className="field-input"
-              />
-            </label>
-
-            <div className="md:col-span-2 grid gap-4 md:grid-cols-[1fr_auto]">
-              <label className="field-label">
-                <span className="field-title">验证码</span>
-                <input
-                  value={form.verification_code}
-                  onChange={(event) => updateField('verification_code', event.target.value)}
-                  required
-                  autoComplete="one-time-code"
-                  className="field-input"
-                />
-              </label>
-              <div className="flex items-end">
-                <button
-                  type="button"
-                  onClick={handleSendCode}
-                  disabled={sendingCode || isCountingDown}
-                  className="secondary-button w-full text-sm font-medium md:min-w-[170px]"
-                >
-                  {sendingCode ? '发送中...' : isCountingDown ? `${formattedTime} 后重试` : '发送验证码'}
-                </button>
-              </div>
-            </div>
-
-            <label className="field-label md:col-span-2">
-              <span className="field-title">密码</span>
-              <input
-                type="password"
-                value={form.password}
-                onChange={(event) => updateField('password', event.target.value)}
-                required
-                autoComplete="new-password"
-                className="field-input"
-              />
-              <span className="field-note">建议使用 8 位以上密码，注册成功后可在账户中心随时修改。</span>
-            </label>
-
-            {error && <div className="message-banner message-error md:col-span-2">{error}</div>}
-            {message && <div className="message-banner message-success md:col-span-2">{message}</div>}
-
-            <div className="md:col-span-2 flex flex-wrap items-center justify-between gap-4 pt-2">
-              <p className="text-sm text-stone-600">提交后会自动登录，并进入账户中心。</p>
-              <button type="submit" disabled={loading} className="primary-button text-sm font-medium">
-                {loading ? '正在注册...' : '注册并进入控制台'}
-              </button>
-            </div>
-          </form>
-        </section>
-      </div>
+          </p>
+          <button
+            type="submit"
+            disabled={loading}
+            className="rounded-2xl bg-slate-950 px-6 py-3 font-medium text-white transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {loading ? '注册中...' : '注册并进入控制台'}
+          </button>
+        </div>
+      </form>
     </div>
   )
 }

@@ -1,9 +1,10 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import ReactDOM from 'react-dom/client'
 
 import './desktop.css'
 import { clearSessionToken, desktopApi, getApiBaseUrl, getLanguage, getSessionToken } from './shared/api'
 import { normalizeLanguage, t } from './shared/i18n'
+import { getPetVisual } from './shared/pets'
 
 function formatError(error, fallbackMessage) {
   return error instanceof Error ? error.message : fallbackMessage
@@ -19,28 +20,46 @@ function QuickChatApp() {
   const [hasToken, setHasToken] = useState(false)
   const [hasApiBaseUrl, setHasApiBaseUrl] = useState(false)
   const [language, setLanguage] = useState('zh-CN')
+  const [petType, setPetType] = useState('cat')
+
+  const petLabel = useMemo(() => t(language, getPetVisual(petType, 'idle').labelKey), [language, petType])
 
   useEffect(() => {
     let active = true
 
-    const bootstrap = async () => {
+    const syncState = async () => {
       try {
         const [token, apiBaseUrl, savedLanguage] = await Promise.all([
           getSessionToken(),
           getApiBaseUrl(),
           getLanguage(),
         ])
+
         if (!active) {
           return
         }
+
         setHasToken(Boolean(token))
         setHasApiBaseUrl(Boolean(apiBaseUrl))
         setLanguage(normalizeLanguage(savedLanguage))
+
+        if (!token || !apiBaseUrl) {
+          setPetType('cat')
+          return
+        }
+
+        const preferences = await desktopApi.getPreferences()
+        if (!active) {
+          return
+        }
+
+        setPetType(preferences?.pet_type || 'cat')
       } catch {
         if (active) {
           setHasToken(false)
           setHasApiBaseUrl(false)
           setLanguage('zh-CN')
+          setPetType('cat')
         }
       } finally {
         if (active) {
@@ -49,22 +68,12 @@ function QuickChatApp() {
       }
     }
 
-    const syncLanguage = () => {
-      getLanguage()
-        .then((savedLanguage) => {
-          if (active) {
-            setLanguage(normalizeLanguage(savedLanguage))
-          }
-        })
-        .catch(() => undefined)
-    }
-
-    void bootstrap()
-    window.addEventListener('focus', syncLanguage)
+    void syncState()
+    window.addEventListener('focus', syncState)
 
     return () => {
       active = false
-      window.removeEventListener('focus', syncLanguage)
+      window.removeEventListener('focus', syncState)
     }
   }, [])
 
@@ -83,6 +92,7 @@ function QuickChatApp() {
         message: outgoingMessage,
         session_id: sessionId ?? undefined,
         use_rag: useRag,
+        pet_type: petType,
       })
       setSessionId(response.session_id)
       setMessages((current) => [...current, { role: 'assistant', content: response.content }])
@@ -98,35 +108,41 @@ function QuickChatApp() {
     }
   }
 
+  const handleInputKeyDown = (event) => {
+    if (event.key === 'Enter' && !event.shiftKey) {
+      event.preventDefault()
+      void sendMessage()
+    }
+  }
+
   const needsSetup = !hasToken || !hasApiBaseUrl
 
   return (
-    <div className="window-shell">
-      <div className="window-card">
-        <div className="panel" style={{ display: 'flex', flexDirection: 'column', gap: 16, padding: 18, flex: 1 }}>
-          <div className="toolbar">
+    <div className="window-shell window-shell-quick-chat">
+      <div className="window-card window-card-quick-chat">
+        <div className="panel panel-quick-chat">
+          <div className="drag-bar">
             <div>
-              <div style={{ fontSize: 12, letterSpacing: '0.22em', textTransform: 'uppercase', color: '#64748b' }}>
-                {t(language, 'quickChat')}
+              <div className="eyebrow">{t(language, 'quickChat')}</div>
+              <div className="quick-chat-title">{t(language, 'desktopQuickChat', { pet: petLabel })}</div>
+              <div className="drag-bar-hint">
+                {t(language, 'dragWindowHint')} · {t(language, 'enterToSendHint')}
               </div>
-              <div style={{ fontSize: 24, fontWeight: 700 }}>{t(language, 'desktopQuickChat')}</div>
             </div>
-            <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 }}>
+            <label className="quick-chat-toggle no-drag">
               <input type="checkbox" checked={useRag} onChange={(event) => setUseRag(event.target.checked)} />
               {t(language, 'enableKnowledgeBase')}
             </label>
           </div>
 
           {!ready ? (
-            <div className="panel" style={{ padding: 18, background: '#e2e8f0' }}>
-              {t(language, 'startingQuickChat')}
-            </div>
+            <div className="panel panel-muted">{t(language, 'startingQuickChat')}</div>
           ) : needsSetup ? (
-            <div className="panel" style={{ padding: 18, background: '#e2e8f0' }}>
-              <div style={{ fontSize: 14, color: '#334155', lineHeight: 1.8 }}>{t(language, 'quickChatSetupText')}</div>
+            <div className="panel panel-muted">
+              <div className="panel-copy">{t(language, 'quickChatSetupText')}</div>
               <button
                 type="button"
-                className="button-primary"
+                className="button-primary no-drag"
                 style={{ marginTop: 14 }}
                 onClick={() => window.desktopBridge?.openMainPanel?.()}
               >
@@ -135,27 +151,34 @@ function QuickChatApp() {
             </div>
           ) : (
             <>
-              <div className="chat-stream" style={{ flex: 1, minHeight: 360 }}>
+              <div className="chat-stream chat-stream-quick">
                 {messages.map((item, index) => (
                   <div key={`${item.role}-${index}`} className={`message ${item.role}`}>
                     {item.content}
                   </div>
                 ))}
-                {messages.length === 0 && <div className="message assistant">{t(language, 'quickChatEmpty')}</div>}
+                {messages.length === 0 && (
+                  <div className="message assistant">{t(language, 'quickChatEmpty', { pet: petLabel })}</div>
+                )}
               </div>
 
               <textarea
-                className="textarea"
+                className="textarea no-drag"
                 rows={4}
                 value={message}
                 onChange={(event) => setMessage(event.target.value)}
-                placeholder={t(language, 'quickChatPlaceholder')}
+                onKeyDown={handleInputKeyDown}
+                placeholder={t(language, 'quickChatPlaceholder', { pet: petLabel })}
               />
               <div className="toolbar">
-                <button type="button" className="button-secondary" onClick={() => window.desktopBridge?.openMainPanel?.()}>
+                <button
+                  type="button"
+                  className="button-secondary no-drag"
+                  onClick={() => window.desktopBridge?.openMainPanel?.()}
+                >
                   {t(language, 'openMainPanel')}
                 </button>
-                <button type="button" className="button-primary" onClick={sendMessage} disabled={loading}>
+                <button type="button" className="button-primary no-drag" onClick={sendMessage} disabled={loading}>
                   {loading ? t(language, 'sending') : t(language, 'send')}
                 </button>
               </div>

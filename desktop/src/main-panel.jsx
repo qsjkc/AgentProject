@@ -14,6 +14,9 @@ import {
   setLanguage,
 } from './shared/api'
 import { normalizeLanguage, SUPPORTED_LANGUAGES, t } from './shared/i18n'
+import { getPetVisual } from './shared/pets'
+
+const PET_OPTIONS = ['cat', 'dog', 'pig']
 
 function formatError(error, fallbackMessage) {
   return error instanceof Error ? error.message : fallbackMessage
@@ -132,6 +135,35 @@ function LoginView({
   )
 }
 
+function PetPreferencePicker({ language, activePetType, onSelect, saving }) {
+  return (
+    <div className="pet-selector-block">
+      <div className="sidebar-title">{t(language, 'petSelection')}</div>
+      <div className="sidebar-copy">{t(language, 'petSelectionHint')}</div>
+      <div className="pet-option-grid">
+        {PET_OPTIONS.map((option) => {
+          const petVisual = getPetVisual(option, 'idle')
+          const petLabel = t(language, petVisual.labelKey)
+          const isActive = option === activePetType
+
+          return (
+            <button
+              key={option}
+              type="button"
+              className={`pet-option ${isActive ? 'active' : ''}`}
+              onClick={() => onSelect(option)}
+              disabled={saving}
+            >
+              <img className="pet-option-image" src={petVisual.image} alt={petLabel} />
+              <span className="pet-option-label">{petLabel}</span>
+            </button>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
 function MainPanelApp() {
   const [initialized, setInitialized] = useState(false)
   const [authenticated, setAuthenticated] = useState(false)
@@ -145,13 +177,16 @@ function MainPanelApp() {
   const [documents, setDocuments] = useState([])
   const [statusText, setStatusText] = useState('')
   const [loading, setLoading] = useState(false)
+  const [savingPet, setSavingPet] = useState(false)
   const [apiBaseUrl, setApiBaseUrlState] = useState('')
   const [language, setLanguageState] = useState('zh-CN')
 
   const activeSession = useMemo(
     () => sessions.find((session) => session.id === activeSessionId) ?? null,
-    [sessions, activeSessionId]
+    [sessions, activeSessionId],
   )
+  const currentPetType = user?.preferences?.pet_type ?? 'cat'
+  const currentPetLabel = useMemo(() => t(language, getPetVisual(currentPetType, 'idle').labelKey), [currentPetType, language])
 
   const updateLanguage = async (nextLanguage) => {
     const savedLanguage = await setLanguage(nextLanguage)
@@ -242,6 +277,7 @@ function MainPanelApp() {
         message: outgoingMessage,
         session_id: activeSessionId ?? undefined,
         use_rag: useRag,
+        pet_type: currentPetType,
       })
       const nextSessionId = response.session_id
       setActiveSessionId(nextSessionId)
@@ -257,6 +293,13 @@ function MainPanelApp() {
       setStatusText(formatError(error, t(language, 'messageDeliveryFailed')))
     } finally {
       setLoading(false)
+    }
+  }
+
+  const handlePromptKeyDown = (event) => {
+    if (event.key === 'Enter' && !event.shiftKey) {
+      event.preventDefault()
+      void handleSend()
     }
   }
 
@@ -294,6 +337,27 @@ function MainPanelApp() {
       setStatusText(t(language, 'documentDeleted'))
     } catch (error) {
       setStatusText(formatError(error, t(language, 'deleteFailed')))
+    }
+  }
+
+  const handlePetSelect = async (nextPetType) => {
+    if (!user || savingPet || nextPetType === currentPetType) {
+      return
+    }
+
+    setSavingPet(true)
+    try {
+      const nextPreferences = await desktopApi.updatePreferences({
+        pet_type: nextPetType,
+        quick_chat_enabled: user?.preferences?.quick_chat_enabled ?? true,
+        bubble_frequency: user?.preferences?.bubble_frequency ?? 120,
+      })
+      setUser((current) => (current ? { ...current, preferences: nextPreferences } : current))
+      setStatusText(t(language, 'petPreferenceSaved'))
+    } catch (error) {
+      setStatusText(formatError(error, t(language, 'messageDeliveryFailed')))
+    } finally {
+      setSavingPet(false)
     }
   }
 
@@ -390,24 +454,35 @@ function MainPanelApp() {
         {tab === 'chat' ? (
           <div style={{ display: 'grid', gridTemplateColumns: '280px 1fr', gap: 18, flex: 1, minHeight: 0 }}>
             <aside className="panel" style={{ padding: 18, overflow: 'auto' }}>
-              <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 12 }}>{t(language, 'sessions')}</div>
-              <div style={{ display: 'grid', gap: 10 }}>
-                {sessions.map((session) => (
-                  <button
-                    key={session.id}
-                    type="button"
-                    className="button-secondary"
-                    style={{
-                      textAlign: 'left',
-                      background: session.id === activeSessionId ? '#0f172a' : '#e2e8f0',
-                      color: session.id === activeSessionId ? '#fff' : '#0f172a',
-                    }}
-                    onClick={() => handleSelectSession(session.id)}
-                  >
-                    {session.title}
-                  </button>
-                ))}
-                {sessions.length === 0 && <div style={{ color: '#64748b', fontSize: 14 }}>{t(language, 'noSessionYet')}</div>}
+              <PetPreferencePicker
+                language={language}
+                activePetType={currentPetType}
+                onSelect={(nextPetType) => {
+                  void handlePetSelect(nextPetType)
+                }}
+                saving={savingPet}
+              />
+
+              <div className="sidebar-section">
+                <div className="sidebar-title">{t(language, 'sessions')}</div>
+                <div style={{ display: 'grid', gap: 10 }}>
+                  {sessions.map((session) => (
+                    <button
+                      key={session.id}
+                      type="button"
+                      className="button-secondary"
+                      style={{
+                        textAlign: 'left',
+                        background: session.id === activeSessionId ? '#0f172a' : '#e2e8f0',
+                        color: session.id === activeSessionId ? '#fff' : '#0f172a',
+                      }}
+                      onClick={() => handleSelectSession(session.id)}
+                    >
+                      {session.title}
+                    </button>
+                  ))}
+                  {sessions.length === 0 && <div style={{ color: '#64748b', fontSize: 14 }}>{t(language, 'noSessionYet')}</div>}
+                </div>
               </div>
             </aside>
 
@@ -418,6 +493,9 @@ function MainPanelApp() {
                     {t(language, 'currentSession')}
                   </div>
                   <div style={{ fontSize: 20, fontWeight: 700 }}>{activeSession?.title || t(language, 'newSession')}</div>
+                  <div style={{ marginTop: 8, fontSize: 13, color: '#64748b' }}>
+                    {t(language, 'enterToSendHint')}
+                  </div>
                 </div>
                 <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                   <input type="checkbox" checked={useRag} onChange={(event) => setUseRag(event.target.checked)} />
@@ -426,7 +504,9 @@ function MainPanelApp() {
               </div>
 
               <div className="chat-stream" style={{ flex: 1, minHeight: 0 }}>
-                {messages.length === 0 && <div className="message assistant">{t(language, 'desktopPanelIntro')}</div>}
+                {messages.length === 0 && (
+                  <div className="message assistant">{t(language, 'desktopPanelIntro', { pet: currentPetLabel })}</div>
+                )}
                 {messages.map((item, index) => (
                   <div key={`${item.role}-${index}`} className={`message ${item.role}`}>
                     {item.content}
@@ -440,7 +520,8 @@ function MainPanelApp() {
                   rows={5}
                   value={prompt}
                   onChange={(event) => setPrompt(event.target.value)}
-                  placeholder={t(language, 'typeMessagePlaceholder')}
+                  onKeyDown={handlePromptKeyDown}
+                  placeholder={t(language, 'typeMessagePlaceholder', { pet: currentPetLabel })}
                 />
                 <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
                   <button type="button" className="button-primary" onClick={handleSend} disabled={loading}>

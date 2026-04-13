@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Optional, List
+from typing import Literal, Optional, List
 from pydantic import BaseModel
 from enum import Enum
 
@@ -50,6 +50,7 @@ class ChatRequest(BaseModel):
     session_id: Optional[int] = None
     use_rag: bool = False
     stream: bool = True
+    pet_type: Optional[Literal["cat", "dog", "pig"]] = None
 
 
 class ChatResponse(BaseModel):
