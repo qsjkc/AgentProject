@@ -56,6 +56,28 @@ jobs:
             echo "enabled=false" >> "$GITHUB_OUTPUT"
           fi
 
+  deploy-server-ready:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    outputs:
+      enabled: ${{ steps.check.outputs.enabled }}
+
+    steps:
+      - name: Check server deployment credentials
+        id: check
+        shell: bash
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USERNAME: ${{ secrets.SERVER_USERNAME }}
+          SERVER_PASSWORD: ${{ secrets.SERVER_PASSWORD }}
+          SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+        run: |
+          if [[ -n "$SERVER_HOST" && -n "$SERVER_USERNAME" && ( -n "$SERVER_PASSWORD" || -n "$SERVER_SSH_KEY" ) ]]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          fi
+
   build-frontend:
     runs-on: ubuntu-latest
     defaults:
@@ -102,7 +124,67 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: agentproject-desktop-win
-          path: desktop/dist/releases/**
+          path: desktop/dist/releases/DetachymAgentPet1.0.exe
+
+  deploy-server:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.deploy-server-ready.outputs.enabled == 'true'
+    needs: [test-backend, build-frontend, build-desktop, deploy-server-ready]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download desktop artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: agentproject-desktop-win
+          path: release-artifacts
+
+      - name: Prepare remote directories
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USERNAME }}
+          password: ${{ secrets.SERVER_PASSWORD }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          script: |
+            set -e
+            APP_DIR="/root/PersonalSpace/AgentProject"
+            mkdir -p "$APP_DIR/data/downloads"
+            mkdir -p "$APP_DIR/data/postgres"
+            mkdir -p "$APP_DIR/data/uploads"
+            mkdir -p "$APP_DIR/data/chroma"
+            mkdir -p "$APP_DIR/logs"
+
+      - name: Upload desktop installer
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USERNAME }}
+          password: ${{ secrets.SERVER_PASSWORD }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          source: release-artifacts/DetachymAgentPet1.0.exe
+          target: /root/PersonalSpace/AgentProject/data/downloads
+          strip_components: 1
+
+      - name: Deploy on ECS
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USERNAME }}
+          password: ${{ secrets.SERVER_PASSWORD }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          script: |
+            set -e
+            APP_DIR="/root/PersonalSpace/AgentProject"
+            cd "$APP_DIR"
+            if [ ! -d ".git" ]; then
+              echo "Repository not initialized at $APP_DIR" >&2
+              exit 1
+            fi
+            git fetch origin
+            git reset --hard origin/main
+            mkdir -p data/downloads data/postgres data/uploads data/chroma logs
+            docker compose up -d --build
+            docker compose ps
 
   build-docker:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.docker-publish-ready.outputs.enabled == 'true'
