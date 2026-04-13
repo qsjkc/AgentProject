@@ -65,6 +65,7 @@ export default defineConfig(({ mode }) => {
 
   return {
     plugins: [react()],
+    base: './',
     define: {
       __DETACHYM_DEFAULT_API_BASE_URL__: JSON.stringify(defaultApiBaseUrl),
     },
