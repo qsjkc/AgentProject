@@ -3,7 +3,7 @@ FROM docker.m.daocloud.io/library/node:20.11-alpine AS frontend-builder
 WORKDIR /app
 
 RUN sed -i 's|https://dl-cdn.alpinelinux.org/alpine|https://mirrors.tuna.tsinghua.edu.cn/alpine|g' /etc/apk/repositories \
-    && npm config set registry https://mirrors.ustc.edu.cn/npm/
+    && npm config set registry https://registry.npmmirror.com
 
 COPY frontend/package*.json ./frontend/
 RUN cd frontend && npm install
