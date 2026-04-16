@@ -45,6 +45,8 @@ jobs:
           SERVER_PASSWORD: ${{ secrets.SERVER_PASSWORD }}
           SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
         run: |
+          set -euo pipefail
+
           if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
             DEPLOY_REF="${INPUT_REF:-main}"
           else
@@ -52,7 +54,15 @@ jobs:
           fi
 
           APP_DIR="${SERVER_APP_DIR_SECRET:-/root/PersonalSpace/AgentProject}"
-          SERVER_PORT="${SERVER_PORT_SECRET:-22}"
+          SERVER_PORT_RAW="${SERVER_PORT_SECRET:-22}"
+          SERVER_PORT="$(printf '%s' "$SERVER_PORT_RAW" | tr -d '\r\n[:space:]')"
+          SERVER_PORT="${SERVER_PORT#:}"
+          SERVER_PORT="${SERVER_PORT:-22}"
+
+          if [[ ! "$SERVER_PORT" =~ ^[0-9]+$ ]]; then
+            echo "Invalid SERVER_PORT value: '$SERVER_PORT_RAW'" >&2
+            exit 1
+          fi
 
           if [[ -n "$DOCKER_USERNAME" && -n "$DOCKER_PASSWORD" ]]; then
             DOCKER_ENABLED=true
