@@ -143,7 +143,7 @@ jobs:
           push: true
           tags: ${{ secrets.DOCKER_USERNAME }}/agentproject-nginx:latest
 
-    deploy-server:
+  deploy-server:
     name: Deploy Server
     needs: [preflight, desktop-installer]
     if: needs.preflight.outputs.server_enabled == 'true'
@@ -166,19 +166,20 @@ jobs:
         env:
           SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
         run: |
-          set -e
+          set -euo pipefail
           install -m 700 -d ~/.ssh
           printf '%s' "$SERVER_SSH_KEY" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
           ssh-keygen -lf ~/.ssh/id_ed25519
-          ssh-keyscan -p "${{ needs.preflight.outputs.server_port }}" -H "${{ secrets.SERVER_HOST }}" >> ~/.ssh/known_hosts
+          ssh-keyscan -p "${{ needs.preflight.outputs.server_port }}" -H "${{ secrets.SERVER_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null
+          chmod 644 ~/.ssh/known_hosts
 
       - name: Prepare remote directories
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
           APP_DIR="${{ needs.preflight.outputs.app_dir }}"
-          ssh -i ~/.ssh/id_ed25519 -p "${{ needs.preflight.outputs.server_port }}" \
+          ssh -i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -p "${{ needs.preflight.outputs.server_port }}" \
             "${{ secrets.SERVER_USERNAME }}@${{ secrets.SERVER_HOST }}" \
             "mkdir -p '$APP_DIR' \
              && mkdir -p '$APP_DIR/data/downloads' \
@@ -190,31 +191,32 @@ jobs:
       - name: Upload application source
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
           APP_DIR="${{ needs.preflight.outputs.app_dir }}"
           tar czf app-source.tgz backend deploy frontend docker-compose.yml
-          scp -i ~/.ssh/id_ed25519 -P "${{ needs.preflight.outputs.server_port }}" \
+          scp -i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -P "${{ needs.preflight.outputs.server_port }}" \
             app-source.tgz \
             "${{ secrets.SERVER_USERNAME }}@${{ secrets.SERVER_HOST }}:$APP_DIR/"
-          ssh -i ~/.ssh/id_ed25519 -p "${{ needs.preflight.outputs.server_port }}" \
+          ssh -i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -p "${{ needs.preflight.outputs.server_port }}" \
             "${{ secrets.SERVER_USERNAME }}@${{ secrets.SERVER_HOST }}" \
             "cd '$APP_DIR' && tar xzf app-source.tgz && rm -f app-source.tgz"
+          rm -f app-source.tgz
 
       - name: Upload desktop installer
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
           APP_DIR="${{ needs.preflight.outputs.app_dir }}"
-          scp -i ~/.ssh/id_ed25519 -P "${{ needs.preflight.outputs.server_port }}" \
+          scp -i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -P "${{ needs.preflight.outputs.server_port }}" \
             release-artifacts/DetachymAgentPet1.0.exe \
             "${{ secrets.SERVER_USERNAME }}@${{ secrets.SERVER_HOST }}:$APP_DIR/data/downloads/"
 
       - name: Deploy on server
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
           APP_DIR="${{ needs.preflight.outputs.app_dir }}"
-          ssh -i ~/.ssh/id_ed25519 -p "${{ needs.preflight.outputs.server_port }}" \
+          ssh -i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -p "${{ needs.preflight.outputs.server_port }}" \
             "${{ secrets.SERVER_USERNAME }}@${{ secrets.SERVER_HOST }}" \
             "cd '$APP_DIR' \
              && if [ ! -f .env ]; then echo 'Missing .env' >&2; exit 1; fi \
