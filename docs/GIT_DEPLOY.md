@@ -1,258 +1,218 @@
-# 云端同步与部署手册
+# AgentProject Git 部署说明
 
-这份手册对应当前这版项目，已经包含以下变更：
+## 目标
 
-- Web 前端整体视觉升级，中文优先
-- 注册后自动登录并跳转到账户中心
-- Root Error Boundary，避免注册后空白页
-- 桌宠默认简体中文，支持中英切换
-- 安装器支持中英双语并显示语言选择
-- 桌宠透明背景、可拖动、支持气泡和状态切换
+本文档描述基于 GitHub 仓库和 GitHub Actions 的当前部署方式。
 
-## 1. 本地代码已完成的验证
-
-本地已经验证过：
-
-- `frontend`: `npm.cmd run build`
-- `desktop`: `npm.cmd run build`
-- `backend`: `.\venv\Scripts\python.exe -m pytest`
-
-说明：
-
-- `backend/pytest` 现在已通过 `pytest.ini` 忽略异常 ACL 的 `pytest-cache-files-*` 目录。
-- `desktop` 打包成功后，最新安装包位于 `desktop/dist/releases/DetachymAgentPet1.0.exe`
-
-## 2. 本地推送到 GitHub
-
-在项目根目录执行：
-
-```bash
-git status
-git add .
-git commit -m "Refine desktop pet interactions and redesign web frontend"
-git push origin main
-```
-
-如果你只想确认远端地址：
-
-```bash
-git remote -v
-```
-
-当前仓库远端应为：
+当前仓库地址：
 
 ```text
 https://github.com/qsjkc/AgentProject.git
 ```
 
-## 3. 云服务器首次准备
-
-确保服务器已安装：
-
-- `git`
-- `docker`
-- `docker compose`
-
-如果是 CentOS / Rocky / AlmaLinux 一类环境，可参考：
-
-```bash
-dnf install -y dnf-plugins-core
-dnf config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
-dnf install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin git
-systemctl enable docker
-systemctl start docker
-```
-
-## 4. 云端首次拉取项目
-
-```bash
-cd /root
-mkdir -p PersonalSpace
-cd PersonalSpace
-git clone https://github.com/qsjkc/AgentProject.git AgentProject
-cd AgentProject
-```
-
-如果服务器上已经有项目，只需要：
-
-```bash
-cd /root/PersonalSpace/AgentProject
-git pull origin main
-```
-
-## 5. 配置生产环境变量
-
-复制模板：
-
-```bash
-cp .env.example .env
-```
-
-编辑配置：
-
-```bash
-vim .env
-```
-
-至少检查这些配置：
-
-- `SECRET_KEY`
-- `ZHIPU_API_KEY`
-- `SMTP_HOST`
-- `SMTP_PORT`
-- `SMTP_USER`
-- `SMTP_PASSWORD`
-- `INITIAL_ADMIN_USERNAME`
-- `INITIAL_ADMIN_EMAIL`
-- `INITIAL_ADMIN_PASSWORD`
-- `WEB_APP_URL`
-- `VITE_API_BASE_URL`
-- `API_ORIGINS`
-- `DESKTOP_RELEASE_VERSION`
-- `DESKTOP_RELEASE_FILE`
-
-推荐示例：
-
-```env
-WEB_APP_URL=http://detachym.top
-VITE_API_BASE_URL=http://detachym.top/api/v1
-API_ORIGINS=http://detachym.top,http://47.118.23.188,http://localhost,http://127.0.0.1,http://localhost:5173,http://127.0.0.1:5173,null
-DESKTOP_RELEASE_VERSION=DetachymAgentPet1.0
-DESKTOP_RELEASE_FILE=DetachymAgentPet1.0.exe
-```
-
-注意：
-
-- 不要把真实 `.env` 提交到 GitHub
-- `INITIAL_ADMIN_PASSWORD` 不能继续使用示例密码
-- `API_ORIGINS` 现在是逗号分隔格式，直接照模板填即可
-
-## 6. 准备运行目录
-
-```bash
-mkdir -p data/postgres
-mkdir -p data/uploads
-mkdir -p data/chroma
-mkdir -p data/downloads
-mkdir -p logs
-```
-
-## 7. 上传桌面安装包
-
-把本地这个文件上传到服务器：
+当前推荐发布分支：
 
 ```text
-desktop/dist/releases/DetachymAgentPet1.0.exe
+main
 ```
 
-目标路径：
+## 当前发布流程
 
-```text
-/root/PersonalSpace/AgentProject/data/downloads/DetachymAgentPet1.0.exe
-```
-
-上传后，对外下载地址就是：
-
-```text
-http://detachym.top/download/DetachymAgentPet1.0.exe
-```
-
-公开版本接口：
-
-```text
-http://detachym.top/api/v1/public/version/win-x64
-```
-
-## 8. 启动或更新服务
-
-在项目根目录执行：
+### 1. 本地提交代码
 
 ```bash
-cd /root/PersonalSpace/AgentProject
-docker compose up -d --build
+git status
+git add .
+git commit -m "your message"
+git push origin main
 ```
 
-查看状态：
+### 2. GitHub 自动执行 CI
+
+触发：
+
+- `push` 到 `main`
+- `push` 到 `develop`
+- 对 `main` 发起 PR
+
+检查内容：
+
+- 后端测试
+- 前端 lint + build
+- 桌面端 renderer build
+
+### 3. GitHub 自动执行 CD
+
+当 `CI` 在 `main` 分支成功后：
+
+- 构建 Windows 安装包
+- 可选推送 Docker 镜像
+- 可选部署到服务器
+
+## 手动触发 CD
+
+如果你想手动重跑：
+
+1. 打开 GitHub 仓库 `Actions`
+2. 选择 `CD`
+3. 点击 `Run workflow`
+4. `ref` 选 `main` 或指定提交
+
+## 需要的 Secrets
+
+### 服务器部署
+
+| Secret | 说明 |
+|---|---|
+| `SERVER_HOST` | 服务器地址，建议纯 IP 或域名 |
+| `SERVER_PORT` | SSH 端口，默认 `22` |
+| `SERVER_USERNAME` | SSH 登录用户 |
+| `SERVER_SSH_KEY` | SSH 私钥全文 |
+| `SERVER_PASSWORD` | 可选，不用私钥时才需要 |
+| `SERVER_APP_DIR` | 部署目录，默认 `/root/PersonalSpace/AgentProject` |
+
+### Docker 镜像发布
+
+| Secret | 说明 |
+|---|---|
+| `DOCKER_USERNAME` | Docker Hub 用户名 |
+| `DOCKER_PASSWORD` | Docker Hub Token 或密码 |
+
+## 为什么当前不用 appleboy
+
+此前部署链路曾遇到以下问题：
+
+- SSH 认证异常不够透明
+- `SERVER_PORT` / `SERVER_HOST` 的异常输入很难定位
+- GitHub Actions 侧的错误信息不够接近底层 `ssh/scp`
+
+当前已经改为：
+
+- 在 runner 内写入私钥
+- 生成统一的 SSH config
+- 使用原生 `ssh` / `scp`
+
+好处：
+
+- 日志更直接
+- 问题更容易定位
+- 跟本机调试路径一致
+
+## 当前 deploy-server 的真实步骤
+
+1. 下载桌面安装包 artifact
+2. 写入 `~/.ssh/id_ed25519`
+3. 解析并清洗：
+   - `SERVER_HOST`
+   - `SERVER_PORT`
+   - `SERVER_USERNAME`
+   - `SERVER_APP_DIR`
+4. 生成 SSH 别名 `deploy-target`
+5. 创建远端目录
+6. 上传源码压缩包
+7. 上传桌面安装包
+8. 在服务器运行：
 
 ```bash
+docker compose up -d --build --remove-orphans
 docker compose ps
-docker compose logs -f backend
-docker compose logs -f nginx
 ```
 
-如果只是更新代码，仍然用同一条命令：
+## 服务器变量容错规则
 
-```bash
-docker compose up -d --build
-```
+当前 workflow 会自动清洗：
 
-## 9. 上线后验收
-
-先检查本机服务：
-
-```bash
-curl http://127.0.0.1/health
-curl http://127.0.0.1/api/v1/public/version/win-x64
-```
-
-再检查公网页面：
-
+- `ssh://47.118.23.188:22`
 - `http://detachym.top`
-- `http://detachym.top/register`
-- `http://detachym.top/login`
-- `http://detachym.top/account`
-- `http://detachym.top/admin`
-- `http://detachym.top/health`
-- `http://detachym.top/api/v1/public/version/win-x64`
-- `http://detachym.top/download/DetachymAgentPet1.0.exe`
+- `root@47.118.23.188`
+- `47.118.23.188:22`
 
-人工重点验收：
+但仍建议直接使用：
 
-- 首页、登录页、注册页和后台页面样式是否为新版高级感界面
-- 注册能收到验证码
-- 注册完成后能自动进入 `/account`
-- 普通用户能正常登录和修改偏好
-- 管理员能正常进入 `/admin`
-- 下载页能拿到最新安装包
-- 安装器默认中文，并支持中英切换
-- 桌宠安装后可拖动
-- 单击桌宠能出现气泡或快捷聊天反馈
-- 双击桌宠能打开主面板
-- 桌宠背景透明，不再是白色方块
-
-## 10. 常用维护命令
-
-重新构建并启动：
-
-```bash
-cd /root/PersonalSpace/AgentProject
-docker compose up -d --build
+```text
+SERVER_HOST=47.118.23.188
+SERVER_PORT=22
+SERVER_USERNAME=root
+SERVER_APP_DIR=/root/PersonalSpace/AgentProject
 ```
 
-停止服务：
+## 源码上传策略
 
-```bash
-cd /root/PersonalSpace/AgentProject
-docker compose down
-```
+为了避免远端 Docker 构建被本机依赖污染，当前上传源码时会排除：
 
-查看后端日志：
+- `frontend/node_modules`
+- `frontend/dist`
+- `frontend/.vite`
+- `backend/venv`
+- `backend/__pycache__`
+- `backend/**/*.pyc`
 
-```bash
-cd /root/PersonalSpace/AgentProject
-docker compose logs -f backend
-```
+并在服务器解包前清理：
 
-查看 Nginx 日志：
+- `frontend/node_modules`
+- `frontend/dist`
+- `frontend/.vite`
+- `backend/venv`
 
-```bash
-cd /root/PersonalSpace/AgentProject
-docker compose logs -f nginx
-```
+## 已解决的典型问题
 
-查看最近提交：
+### 1. `unable to authenticate`
 
-```bash
-cd /root/PersonalSpace/AgentProject
-git log --oneline -5
-```
+原因：
+
+- Secret 中私钥不对
+- 服务器未接受对应公钥
+
+处理：
+
+- 先在本机使用同一把私钥验证 `ssh -o IdentitiesOnly=yes`
+
+### 2. `Bad port ''`
+
+原因：
+
+- 端口变量在 workflow 中被解析为空
+
+处理：
+
+- `preflight` 已加入端口清洗
+- `deploy-server` 内部再次做端口兜底
+
+### 3. `hostname contains invalid characters`
+
+原因：
+
+- `SERVER_HOST` 中夹带协议头、路径、用户名或端口格式
+
+处理：
+
+- workflow 已做标准化清洗
+
+### 4. `sh: tsc: Permission denied`
+
+原因：
+
+- Windows 下 `frontend/node_modules` 污染了服务器 Docker build
+
+处理：
+
+- `.dockerignore`
+- 上传时排除本机依赖目录
+- 远端解包前先清理
+- `deploy/Dockerfile.nginx` 内强制 `rm -rf node_modules && npm ci && npm run build`
+
+## 推荐操作习惯
+
+1. 改完代码先看本地验证是否通过
+2. 推到 `main` 后观察 `CI`
+3. `CI` 成功后再看 `CD`
+4. 若 `CD` 失败，优先看失败步骤的完整日志，而不是只看摘要
+5. 先解决当前步骤的根因，再继续下一步
+
+## 当前结论
+
+截至当前版本，基于 GitHub 的自动化部署链路已经跑通。后续若继续演进，优先建议：
+
+1. 给 `CD` 增加部署后健康检查
+2. 为镜像发布增加版本号 tag
+3. 增加服务器部署成功后的接口探测与告警
