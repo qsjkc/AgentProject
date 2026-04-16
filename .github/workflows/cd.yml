@@ -151,72 +151,72 @@ jobs:
     timeout-minutes: 30
 
     steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.preflight.outputs.deploy_ref }}
+  - uses: actions/checkout@v4
+    with:
+      ref: ${{ needs.preflight.outputs.deploy_ref }}
 
-      - name: Download desktop artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: agentproject-desktop-win
-          path: release-artifacts
+  - name: Download desktop artifact
+    uses: actions/download-artifact@v4
+    with:
+      name: agentproject-desktop-win
+      path: release-artifacts
 
-      - name: Prepare remote directories
-        uses: appleboy/ssh-action@v1.2.1
-        with:
-          host: ${{ secrets.SERVER_HOST }}
-          port: ${{ needs.preflight.outputs.server_port }}
-          username: ${{ secrets.SERVER_USERNAME }}
-          password: ${{ secrets.SERVER_PASSWORD }}
-          key: ${{ secrets.SERVER_SSH_KEY }}
-          script: |
-            set -e
-            APP_DIR="${{ needs.preflight.outputs.app_dir }}"
-            mkdir -p "$APP_DIR"
-            mkdir -p "$APP_DIR/data/downloads"
-            mkdir -p "$APP_DIR/data/postgres"
-            mkdir -p "$APP_DIR/data/uploads"
-            mkdir -p "$APP_DIR/data/chroma"
-            mkdir -p "$APP_DIR/logs"
+  - name: Set up SSH
+    shell: bash
+    env:
+      SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+    run: |
+      set -e
+      install -m 700 -d ~/.ssh
+      printf '%s' "$SERVER_SSH_KEY" > ~/.ssh/id_ed25519
+      chmod 600 ~/.ssh/id_ed25519
+      ssh-keygen -lf ~/.ssh/id_ed25519
+      ssh-keyscan -p "${{ needs.preflight.outputs.server_port }}" -H "${{ secrets.SERVER_HOST }}" >> ~/.ssh/known_hosts
 
-      - name: Upload application source
-        uses: appleboy/scp-action@v0.1.7
-        with:
-          host: ${{ secrets.SERVER_HOST }}
-          port: ${{ needs.preflight.outputs.server_port }}
-          username: ${{ secrets.SERVER_USERNAME }}
-          password: ${{ secrets.SERVER_PASSWORD }}
-          key: ${{ secrets.SERVER_SSH_KEY }}
-          source: "backend,deploy,frontend,docker-compose.yml"
-          target: ${{ needs.preflight.outputs.app_dir }}
+  - name: Prepare remote directories
+    shell: bash
+    run: |
+      set -e
+      APP_DIR="${{ needs.preflight.outputs.app_dir }}"
+      ssh -i ~/.ssh/id_ed25519 -p "${{ needs.preflight.outputs.server_port }}" \
+        "${{ secrets.SERVER_USERNAME }}@${{ secrets.SERVER_HOST }}" \
+        "mkdir -p '$APP_DIR' \
+         && mkdir -p '$APP_DIR/data/downloads' \
+         && mkdir -p '$APP_DIR/data/postgres' \
+         && mkdir -p '$APP_DIR/data/uploads' \
+         && mkdir -p '$APP_DIR/data/chroma' \
+         && mkdir -p '$APP_DIR/logs'"
 
-      - name: Upload desktop installer
-        uses: appleboy/scp-action@v0.1.7
-        with:
-          host: ${{ secrets.SERVER_HOST }}
-          port: ${{ needs.preflight.outputs.server_port }}
-          username: ${{ secrets.SERVER_USERNAME }}
-          password: ${{ secrets.SERVER_PASSWORD }}
-          key: ${{ secrets.SERVER_SSH_KEY }}
-          source: release-artifacts/DetachymAgentPet1.0.exe
-          target: ${{ needs.preflight.outputs.app_dir }}/data/downloads
-          strip_components: 1
+  - name: Upload application source
+    shell: bash
+    run: |
+      set -e
+      APP_DIR="${{ needs.preflight.outputs.app_dir }}"
+      tar czf app-source.tgz backend deploy frontend docker-compose.yml
+      scp -i ~/.ssh/id_ed25519 -P "${{ needs.preflight.outputs.server_port }}" \
+        app-source.tgz \
+        "${{ secrets.SERVER_USERNAME }}@${{ secrets.SERVER_HOST }}:$APP_DIR/"
+      ssh -i ~/.ssh/id_ed25519 -p "${{ needs.preflight.outputs.server_port }}" \
+        "${{ secrets.SERVER_USERNAME }}@${{ secrets.SERVER_HOST }}" \
+        "cd '$APP_DIR' && tar xzf app-source.tgz && rm -f app-source.tgz"
 
-      - name: Deploy on server
-        uses: appleboy/ssh-action@v1.2.1
-        with:
-          host: ${{ secrets.SERVER_HOST }}
-          port: ${{ needs.preflight.outputs.server_port }}
-          username: ${{ secrets.SERVER_USERNAME }}
-          password: ${{ secrets.SERVER_PASSWORD }}
-          key: ${{ secrets.SERVER_SSH_KEY }}
-          script: |
-            set -e
-            APP_DIR="${{ needs.preflight.outputs.app_dir }}"
-            cd "$APP_DIR"
-            if [ ! -f ".env" ]; then
-              echo "Missing $APP_DIR/.env" >&2
-              exit 1
-            fi
-            docker compose up -d --build --remove-orphans
-            docker compose ps
+  - name: Upload desktop installer
+    shell: bash
+    run: |
+      set -e
+      APP_DIR="${{ needs.preflight.outputs.app_dir }}"
+      scp -i ~/.ssh/id_ed25519 -P "${{ needs.preflight.outputs.server_port }}" \
+        release-artifacts/DetachymAgentPet1.0.exe \
+        "${{ secrets.SERVER_USERNAME }}@${{ secrets.SERVER_HOST }}:$APP_DIR/data/downloads/"
+
+  - name: Deploy on server
+    shell: bash
+    run: |
+      set -e
+      APP_DIR="${{ needs.preflight.outputs.app_dir }}"
+      ssh -i ~/.ssh/id_ed25519 -p "${{ needs.preflight.outputs.server_port }}" \
+        "${{ secrets.SERVER_USERNAME }}@${{ secrets.SERVER_HOST }}" \
+        "cd '$APP_DIR' \
+         && if [ ! -f .env ]; then echo 'Missing .env' >&2; exit 1; fi \
+         && docker compose up -d --build --remove-orphans \
+         && docker compose ps"
