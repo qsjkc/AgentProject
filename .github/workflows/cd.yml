@@ -189,7 +189,11 @@ jobs:
         run: |
           set -euo pipefail
           APP_DIR="${{ needs.preflight.outputs.app_dir }}"
-          ssh -i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 -p "${{ needs.preflight.outputs.server_port }}" \
+          PORT_RAW="${{ needs.preflight.outputs.server_port }}"
+          PORT="$(printf '%s' "$PORT_RAW" | tr -d '\r\n[:space:]')"
+          PORT="${PORT#:}"
+          PORT="${PORT:-22}"
+          ssh -i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 -p "$PORT" \
             "${{ secrets.SERVER_USERNAME }}@${{ secrets.SERVER_HOST }}" \
             "mkdir -p '$APP_DIR' \
              && mkdir -p '$APP_DIR/data/downloads' \
@@ -203,11 +207,15 @@ jobs:
         run: |
           set -euo pipefail
           APP_DIR="${{ needs.preflight.outputs.app_dir }}"
+          PORT_RAW="${{ needs.preflight.outputs.server_port }}"
+          PORT="$(printf '%s' "$PORT_RAW" | tr -d '\r\n[:space:]')"
+          PORT="${PORT#:}"
+          PORT="${PORT:-22}"
           tar czf app-source.tgz backend deploy frontend docker-compose.yml
-          scp -i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 -P "${{ needs.preflight.outputs.server_port }}" \
+          scp -i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 -P "$PORT" \
             app-source.tgz \
             "${{ secrets.SERVER_USERNAME }}@${{ secrets.SERVER_HOST }}:$APP_DIR/"
-          ssh -i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 -p "${{ needs.preflight.outputs.server_port }}" \
+          ssh -i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 -p "$PORT" \
             "${{ secrets.SERVER_USERNAME }}@${{ secrets.SERVER_HOST }}" \
             "cd '$APP_DIR' && tar xzf app-source.tgz && rm -f app-source.tgz"
           rm -f app-source.tgz
@@ -217,7 +225,11 @@ jobs:
         run: |
           set -euo pipefail
           APP_DIR="${{ needs.preflight.outputs.app_dir }}"
-          scp -i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 -P "${{ needs.preflight.outputs.server_port }}" \
+          PORT_RAW="${{ needs.preflight.outputs.server_port }}"
+          PORT="$(printf '%s' "$PORT_RAW" | tr -d '\r\n[:space:]')"
+          PORT="${PORT#:}"
+          PORT="${PORT:-22}"
+          scp -i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 -P "$PORT" \
             release-artifacts/DetachymAgentPet1.0.exe \
             "${{ secrets.SERVER_USERNAME }}@${{ secrets.SERVER_HOST }}:$APP_DIR/data/downloads/"
 
@@ -226,7 +238,11 @@ jobs:
         run: |
           set -euo pipefail
           APP_DIR="${{ needs.preflight.outputs.app_dir }}"
-          ssh -i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 -p "${{ needs.preflight.outputs.server_port }}" \
+          PORT_RAW="${{ needs.preflight.outputs.server_port }}"
+          PORT="$(printf '%s' "$PORT_RAW" | tr -d '\r\n[:space:]')"
+          PORT="${PORT#:}"
+          PORT="${PORT:-22}"
+          ssh -i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 -p "$PORT" \
             "${{ secrets.SERVER_USERNAME }}@${{ secrets.SERVER_HOST }}" \
             "cd '$APP_DIR' \
              && if [ ! -f .env ]; then echo 'Missing .env' >&2; exit 1; fi \
