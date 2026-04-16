@@ -6,7 +6,7 @@ RUN sed -i 's|https://dl-cdn.alpinelinux.org/alpine|https://mirrors.tuna.tsinghu
     && npm config set registry https://registry.npmmirror.com
 
 COPY frontend/package*.json ./frontend/
-RUN cd frontend && npm install
+RUN cd frontend && npm ci
 
 COPY frontend ./frontend
 RUN cd frontend && npm run build
