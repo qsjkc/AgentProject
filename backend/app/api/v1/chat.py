@@ -73,12 +73,14 @@ async def build_history(
     user_message: str,
     use_rag: bool,
     pet_type: str | None,
-) -> List[Message]:
+    compact_response: bool,
+) -> tuple[List[Message], list]:
     result = await db.execute(
         select(ChatMessage).where(ChatMessage.session_id == session.id).order_by(ChatMessage.created_at.asc())
     )
     history = result.scalars().all()
     messages: list[Message] = []
+    rag_sources = []
 
     persona_prompt = PET_PERSONA_PROMPTS.get(pet_type or "")
     if persona_prompt:
@@ -86,6 +88,7 @@ async def build_history(
 
     if use_rag:
         rag_context = rag_service.build_context(user_id=user_id, question=user_message)
+        rag_sources = rag_context.sources
         if rag_context.context:
             messages.append(
                 Message(
@@ -98,8 +101,21 @@ async def build_history(
                 ),
             )
 
+    if compact_response:
+        messages.append(
+            Message(
+                role="system",
+                content=(
+                    "You are replying inside a small desktop pet bubble. "
+                    "Keep the answer concise, natural, and immediately useful. "
+                    "Use at most 2 to 3 short Chinese lines or roughly 80 Chinese characters "
+                    "unless the user explicitly asks for a detailed explanation."
+                ),
+            )
+        )
+
     messages.extend(Message(role=item.role, content=item.content) for item in history)
-    return messages
+    return messages, rag_sources
 
 
 @router.post("/stream")
@@ -121,17 +137,30 @@ async def chat_stream(
         session.updated_at = utc_now()
         await db.commit()
 
-        messages = await build_history(
+        messages, rag_sources = await build_history(
             db,
             session,
             user_id=current_user.id,
             user_message=request.message,
             use_rag=request.use_rag,
             pet_type=request.pet_type,
+            compact_response=request.compact_response,
         )
 
         full_response = ""
-        yield f"data: {json.dumps({'content': '', 'done': False, 'session_id': session.id})}\n\n"
+        yield (
+            "data: "
+            + json.dumps(
+                {
+                    "content": "",
+                    "done": False,
+                    "session_id": session.id,
+                    "knowledge_used": bool(rag_sources),
+                    "sources": [source.model_dump() for source in rag_sources],
+                }
+            )
+            + "\n\n"
+        )
         try:
             async for chunk in llm_service.chat(messages, stream=True):
                 full_response += chunk
@@ -152,7 +181,19 @@ async def chat_stream(
         )
         session.updated_at = utc_now()
         await db.commit()
-        yield f"data: {json.dumps({'content': '', 'done': True, 'session_id': session.id})}\n\n"
+        yield (
+            "data: "
+            + json.dumps(
+                {
+                    "content": "",
+                    "done": True,
+                    "session_id": session.id,
+                    "knowledge_used": bool(rag_sources),
+                    "sources": [source.model_dump() for source in rag_sources],
+                }
+            )
+            + "\n\n"
+        )
 
     return StreamingResponse(generate(), media_type="text/event-stream")
 
@@ -175,13 +216,14 @@ async def chat_message(
     session.updated_at = utc_now()
     await db.commit()
 
-    messages = await build_history(
+    messages, rag_sources = await build_history(
         db,
         session,
         user_id=current_user.id,
         user_message=request.message,
         use_rag=request.use_rag,
         pet_type=request.pet_type,
+        compact_response=request.compact_response,
     )
 
     full_response = ""
@@ -204,7 +246,12 @@ async def chat_message(
     session.updated_at = utc_now()
     await db.commit()
 
-    return ChatResponse(content=full_response, session_id=session.id)
+    return ChatResponse(
+        content=full_response,
+        session_id=session.id,
+        knowledge_used=bool(rag_sources),
+        sources=rag_sources,
+    )
 
 
 @router.get("/sessions", response_model=List[ChatSessionResponse])

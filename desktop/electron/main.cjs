@@ -1,3 +1,4 @@
+const fs = require('node:fs')
 const path = require('node:path')
 
 const { app, BrowserWindow, ipcMain, Menu, Notification, Tray, nativeImage, screen } = require('electron')
@@ -8,7 +9,9 @@ let quickChatWindow
 let mainPanelWindow
 let tray
 let quitting = false
+let debugLogPath = null
 
+const rendererHeartbeatState = {}
 const isDev = !app.isPackaged
 const rendererUrl = process.env.ELECTRON_RENDERER_URL
 const defaultApiBaseUrl =
@@ -17,14 +20,21 @@ const defaultApiBaseUrl =
   (isDev ? 'http://127.0.0.1:5000/api/v1' : '')
 
 const DEFAULT_LANGUAGE = 'zh-CN'
+const PET_TYPES = ['cat', 'dog', 'pig']
 const PET_WINDOW_WIDTH = 220
 const PET_WINDOW_HEIGHT = 240
 const PET_VISIBLE_WIDTH = 126
 const PET_VISIBLE_HEIGHT = 148
+const QUICK_CHAT_WIDTH = 430
+const QUICK_CHAT_HEIGHT = 420
+const MAIN_PANEL_WIDTH = 1100
+const MAIN_PANEL_HEIGHT = 780
 
 const trayMessages = {
   'zh-CN': {
     trayTooltip: 'Detachym 桌宠',
+    showPet: '显示桌宠',
+    resetPetPosition: '重置桌宠位置',
     openMainPanel: '打开主面板',
     toggleQuickChat: '切换快捷聊天',
     autoLaunch: '开机启动',
@@ -33,6 +43,8 @@ const trayMessages = {
   },
   en: {
     trayTooltip: 'Detachym Desktop Pet',
+    showPet: 'Show Desktop Pet',
+    resetPetPosition: 'Reset Pet Position',
     openMainPanel: 'Open Main Panel',
     toggleQuickChat: 'Toggle Quick Chat',
     autoLaunch: 'Launch at Startup',
@@ -60,49 +72,39 @@ function normalizeLanguage(value) {
   return DEFAULT_LANGUAGE
 }
 
+function normalizePetType(value) {
+  const normalizedValue = String(value || '').trim().toLowerCase()
+  return PET_TYPES.includes(normalizedValue) ? normalizedValue : 'cat'
+}
+
 function getLanguageMessages() {
   return trayMessages[normalizeLanguage(getStore().get('language'))] || trayMessages[DEFAULT_LANGUAGE]
 }
 
-function getTrayIcon() {
-  const trayIcon = nativeImage.createFromPath(getAssetPath(path.join('build', 'icon.png')))
-  if (!trayIcon.isEmpty()) {
-    return trayIcon.resize({ width: 20, height: 20 })
+function ensureDebugLogPath() {
+  if (debugLogPath) {
+    return debugLogPath
   }
 
-  return createTrayIconFallback()
+  const baseDir = process.env.APPDATA || process.env.LOCALAPPDATA || process.env.TEMP || process.cwd()
+  const logDir = path.join(baseDir, 'Detachym', 'logs')
+  fs.mkdirSync(logDir, { recursive: true })
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+  debugLogPath = path.join(logDir, `desktop-main-${stamp}-${process.pid}.log`)
+  return debugLogPath
 }
 
-async function createStore() {
-  const { default: Store } = await import('electron-store')
-  return new Store({
-    defaults: {
-      petBounds: { width: PET_WINDOW_WIDTH, height: PET_WINDOW_HEIGHT, x: 90, y: 90 },
-      quickBounds: { width: 400, height: 560 },
-      mainBounds: { width: 1100, height: 780 },
-      autoLaunch: false,
-      mute: false,
-      apiBaseUrl: defaultApiBaseUrl,
-      sessionToken: null,
-      language: DEFAULT_LANGUAGE,
-    },
+function logDesktop(event, details = {}) {
+  const line = JSON.stringify({
+    ts: new Date().toISOString(),
+    event,
+    ...details,
   })
-}
 
-function getStore() {
-  if (!store) {
-    throw new Error('Store has not been initialized')
-  }
-  return store
-}
-
-function getPetBounds() {
-  const petBounds = getStore().get('petBounds')
-  return {
-    width: Math.max(PET_WINDOW_WIDTH, petBounds.width || 0),
-    height: Math.max(PET_WINDOW_HEIGHT, petBounds.height || 0),
-    x: petBounds.x,
-    y: petBounds.y,
+  try {
+    fs.appendFileSync(ensureDebugLogPath(), `${line}\n`)
+  } catch {
+    // best effort only
   }
 }
 
@@ -124,6 +126,48 @@ function createTrayIconFallback() {
   return nativeImage.createFromDataURL(`data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`)
 }
 
+function getTrayIcon() {
+  const trayIcon = nativeImage.createFromPath(getAssetPath(path.join('build', 'icon.png')))
+  if (!trayIcon.isEmpty()) {
+    return trayIcon.resize({ width: 20, height: 20 })
+  }
+
+  return createTrayIconFallback()
+}
+
+async function createStore() {
+  const { default: Store } = await import('electron-store')
+  return new Store({
+    defaults: {
+      petBounds: { width: PET_WINDOW_WIDTH, height: PET_WINDOW_HEIGHT, x: 90, y: 90 },
+      petState: {
+        petType: 'cat',
+        hasSession: false,
+        language: DEFAULT_LANGUAGE,
+        preferences: {
+          pet_type: 'cat',
+          quick_chat_enabled: true,
+          bubble_frequency: 120,
+        },
+      },
+      quickBounds: { width: QUICK_CHAT_WIDTH, height: QUICK_CHAT_HEIGHT },
+      mainBounds: { width: MAIN_PANEL_WIDTH, height: MAIN_PANEL_HEIGHT },
+      autoLaunch: false,
+      mute: false,
+      apiBaseUrl: defaultApiBaseUrl,
+      sessionToken: null,
+      language: DEFAULT_LANGUAGE,
+    },
+  })
+}
+
+function getStore() {
+  if (!store) {
+    throw new Error('Store has not been initialized')
+  }
+  return store
+}
+
 function getRendererEntry(fileName) {
   if (isDev && rendererUrl) {
     return `${rendererUrl}/${fileName}`
@@ -131,29 +175,29 @@ function getRendererEntry(fileName) {
   return path.join(__dirname, '..', 'dist', 'renderer', fileName)
 }
 
-async function loadWindow(window, fileName) {
+async function loadWindow(windowInstance, fileName) {
   if (isDev && rendererUrl) {
-    await window.loadURL(getRendererEntry(fileName))
+    await windowInstance.loadURL(getRendererEntry(fileName))
     return
   }
-  await window.loadFile(getRendererEntry(fileName))
+  await windowInstance.loadFile(getRendererEntry(fileName))
 }
 
-function persistBounds(key, window, options = { saveSize: true }) {
+function persistBounds(key, windowInstance, options = { saveSize: true }) {
   const save = () => {
-    if (!window || window.isDestroyed()) {
+    if (!windowInstance || windowInstance.isDestroyed()) {
       return
     }
 
-    const bounds = window.getBounds()
+    const bounds = windowInstance.getBounds()
     const nextValue = options.saveSize
       ? bounds
       : { ...getStore().get(key), x: bounds.x, y: bounds.y }
     getStore().set(key, nextValue)
   }
 
-  window.on('move', save)
-  window.on('resize', save)
+  windowInstance.on('move', save)
+  windowInstance.on('resize', save)
 }
 
 function clampWindowPosition(x, y, width, height, displayOverride = null) {
@@ -170,8 +214,81 @@ function clampWindowPosition(x, y, width, height, displayOverride = null) {
   }
 }
 
-function clampPetPosition(x, y, width, height) {
-  return clampWindowPosition(x, y, width, height)
+function getPetBounds() {
+  const petBounds = getStore().get('petBounds') || {}
+  return {
+    width: Math.max(PET_WINDOW_WIDTH, Number(petBounds.width) || 0),
+    height: Math.max(PET_WINDOW_HEIGHT, Number(petBounds.height) || 0),
+    x: Number.isFinite(petBounds.x) ? petBounds.x : 90,
+    y: Number.isFinite(petBounds.y) ? petBounds.y : 90,
+  }
+}
+
+function getPetState() {
+  const petState = getStore().get('petState') || {}
+  const preferences = petState.preferences || {}
+  const petType = normalizePetType(petState.petType || preferences.pet_type || 'cat')
+  return {
+    petType,
+    hasSession: Boolean(petState.hasSession),
+    language: normalizeLanguage(petState.language || getStore().get('language')),
+    preferences: {
+      pet_type: petType,
+      quick_chat_enabled: preferences.quick_chat_enabled ?? true,
+      bubble_frequency: preferences.bubble_frequency ?? 120,
+    },
+  }
+}
+
+function setStoredPetState(payload = {}) {
+  const currentState = getPetState()
+  const nextState = {
+    ...currentState,
+    ...payload,
+    language: normalizeLanguage(payload.language || currentState.language),
+    preferences: {
+      ...currentState.preferences,
+      ...(payload.preferences || {}),
+    },
+  }
+
+  if (Object.prototype.hasOwnProperty.call(payload, 'petType')) {
+    nextState.petType = normalizePetType(payload.petType)
+  } else {
+    nextState.petType = normalizePetType(nextState.preferences.pet_type || nextState.petType)
+  }
+
+  nextState.preferences.pet_type = nextState.petType
+  nextState.hasSession = Boolean(nextState.hasSession)
+  getStore().set('petState', nextState)
+  return nextState
+}
+
+function sendPetStateToWindow(windowInstance, state) {
+  if (!windowInstance || windowInstance.isDestroyed()) {
+    return
+  }
+
+  const emit = () => {
+    if (!windowInstance || windowInstance.isDestroyed()) {
+      return
+    }
+    windowInstance.webContents.send('desktop:pet-state-changed', state)
+  }
+
+  if (windowInstance.webContents.isLoading()) {
+    windowInstance.webContents.once('did-finish-load', emit)
+    return
+  }
+
+  emit()
+}
+
+function broadcastPetState(payload = {}) {
+  const nextState = setStoredPetState(payload)
+  sendPetStateToWindow(petWindow, nextState)
+  sendPetStateToWindow(quickChatWindow, nextState)
+  return nextState
 }
 
 function setPetPosition(x, y) {
@@ -180,9 +297,16 @@ function setPetPosition(x, y) {
   }
 
   const currentBounds = petWindow.getBounds()
-  const nextPosition = clampPetPosition(x, y, currentBounds.width, currentBounds.height)
+  const nextPosition = clampWindowPosition(x, y, currentBounds.width, currentBounds.height)
   petWindow.setPosition(nextPosition.x, nextPosition.y)
-  getStore().set('petBounds', { ...getStore().get('petBounds'), x: nextPosition.x, y: nextPosition.y })
+  getStore().set('petBounds', {
+    ...getStore().get('petBounds'),
+    width: currentBounds.width,
+    height: currentBounds.height,
+    x: nextPosition.x,
+    y: nextPosition.y,
+  })
+  syncQuickChatPosition()
   return nextPosition
 }
 
@@ -215,7 +339,69 @@ function getQuickChatPosition(width, height) {
   return getQuickChatAnchorPosition(width, height)
 }
 
+function syncQuickChatPosition() {
+  if (!quickChatWindow || quickChatWindow.isDestroyed() || !quickChatWindow.isVisible()) {
+    return null
+  }
+
+  const quickBounds = quickChatWindow.getBounds()
+  const nextPosition = getQuickChatAnchorPosition(quickBounds.width, quickBounds.height)
+  quickChatWindow.setPosition(nextPosition.x, nextPosition.y)
+  getStore().set('quickBounds', { ...getStore().get('quickBounds'), x: nextPosition.x, y: nextPosition.y })
+  return nextPosition
+}
+
+function showPetWindow({ focus = false } = {}) {
+  if (!petWindow || petWindow.isDestroyed()) {
+    createPetWindow()
+  }
+  if (!petWindow || petWindow.isDestroyed()) {
+    return null
+  }
+
+  const bounds = getPetBounds()
+  const nextPosition = clampWindowPosition(bounds.x, bounds.y, bounds.width, bounds.height)
+  petWindow.setBounds({ ...bounds, ...nextPosition })
+  getStore().set('petBounds', { ...bounds, ...nextPosition })
+
+  if (!petWindow.isVisible()) {
+    petWindow.show()
+  }
+  petWindow.setAlwaysOnTop(true, 'screen-saver')
+  petWindow.moveTop()
+  petWindow.setIgnoreMouseEvents(false)
+
+  if (focus) {
+    petWindow.focus()
+  }
+
+  sendPetStateToWindow(petWindow, getPetState())
+  syncQuickChatPosition()
+  return petWindow.getBounds()
+}
+
+function resetPetPosition() {
+  const nextPosition = { width: PET_WINDOW_WIDTH, height: PET_WINDOW_HEIGHT, x: 90, y: 90 }
+  getStore().set('petBounds', nextPosition)
+
+  if (!petWindow || petWindow.isDestroyed()) {
+    return nextPosition
+  }
+
+  petWindow.setBounds(nextPosition)
+  petWindow.setAlwaysOnTop(true, 'screen-saver')
+  petWindow.moveTop()
+  petWindow.show()
+  petWindow.setIgnoreMouseEvents(false)
+  syncQuickChatPosition()
+  return nextPosition
+}
+
 function createPetWindow() {
+  if (petWindow && !petWindow.isDestroyed()) {
+    return
+  }
+
   const petBounds = getPetBounds()
   petWindow = new BrowserWindow({
     ...petBounds,
@@ -234,6 +420,7 @@ function createPetWindow() {
     },
   })
 
+  petWindow.__role = 'pet'
   petWindow.setAlwaysOnTop(true, 'screen-saver')
   persistBounds('petBounds', petWindow, { saveSize: false })
   petWindow.on('close', (event) => {
@@ -242,21 +429,38 @@ function createPetWindow() {
       petWindow.hide()
     }
   })
+  petWindow.on('move', () => {
+    syncQuickChatPosition()
+  })
+  petWindow.webContents.on('did-finish-load', () => {
+    sendPetStateToWindow(petWindow, getPetState())
+  })
 
   loadWindow(petWindow, 'pet.html')
 }
 
 function createQuickChatWindow() {
-  const quickBounds = getStore().get('quickBounds')
+  if (quickChatWindow && !quickChatWindow.isDestroyed()) {
+    return
+  }
+
+  const quickBounds = getStore().get('quickBounds') || {}
   quickChatWindow = new BrowserWindow({
-    ...quickBounds,
+    width: QUICK_CHAT_WIDTH,
+    height: QUICK_CHAT_HEIGHT,
+    ...getQuickChatPosition(
+      QUICK_CHAT_WIDTH,
+      QUICK_CHAT_HEIGHT,
+    ),
     title: 'Detachym 快捷聊天',
     icon: getWindowIconPath(),
     show: false,
     frame: false,
-    resizable: true,
+    transparent: true,
+    hasShadow: false,
+    resizable: false,
     fullscreenable: false,
-    backgroundColor: '#f8fafc',
+    backgroundColor: '#00000000',
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
@@ -264,6 +468,7 @@ function createQuickChatWindow() {
     },
   })
 
+  quickChatWindow.__role = 'quick-chat'
   quickChatWindow.removeMenu()
   quickChatWindow.setMenuBarVisibility(false)
   persistBounds('quickBounds', quickChatWindow)
@@ -273,17 +478,28 @@ function createQuickChatWindow() {
       quickChatWindow.hide()
     }
   })
+  quickChatWindow.webContents.on('did-finish-load', () => {
+    sendPetStateToWindow(quickChatWindow, getPetState())
+  })
 
   loadWindow(quickChatWindow, 'quick-chat.html')
 }
 
 function createMainPanelWindow() {
-  const mainBounds = getStore().get('mainBounds')
+  if (mainPanelWindow && !mainPanelWindow.isDestroyed()) {
+    return
+  }
+
+  const mainBounds = getStore().get('mainBounds') || {}
   mainPanelWindow = new BrowserWindow({
-    ...mainBounds,
+    width: Math.max(MAIN_PANEL_WIDTH, Number(mainBounds.width) || MAIN_PANEL_WIDTH),
+    height: Math.max(MAIN_PANEL_HEIGHT, Number(mainBounds.height) || MAIN_PANEL_HEIGHT),
+    x: Number.isFinite(mainBounds.x) ? mainBounds.x : undefined,
+    y: Number.isFinite(mainBounds.y) ? mainBounds.y : undefined,
     title: 'Detachym 桌宠客户端',
     icon: getWindowIconPath(),
     show: false,
+    frame: false,
     backgroundColor: '#ffffff',
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
@@ -292,6 +508,7 @@ function createMainPanelWindow() {
     },
   })
 
+  mainPanelWindow.__role = 'main-panel'
   mainPanelWindow.removeMenu()
   mainPanelWindow.setMenuBarVisibility(false)
   persistBounds('mainBounds', mainPanelWindow)
@@ -306,6 +523,7 @@ function createMainPanelWindow() {
 }
 
 function toggleQuickChat() {
+  createQuickChatWindow()
   if (!quickChatWindow || !petWindow) {
     return false
   }
@@ -321,12 +539,14 @@ function toggleQuickChat() {
   quickChatWindow.setSize(quickBounds.width, quickBounds.height)
   quickChatWindow.setPosition(nextPosition.x, nextPosition.y)
   getStore().set('quickBounds', { ...getStore().get('quickBounds'), x: nextPosition.x, y: nextPosition.y })
+  sendPetStateToWindow(quickChatWindow, getPetState())
   quickChatWindow.show()
   quickChatWindow.focus()
   return true
 }
 
 function openMainPanel() {
+  createMainPanelWindow()
   if (!mainPanelWindow) {
     return false
   }
@@ -336,10 +556,28 @@ function openMainPanel() {
   return true
 }
 
+function hideMainPanel() {
+  if (!mainPanelWindow || mainPanelWindow.isDestroyed()) {
+    return false
+  }
+  mainPanelWindow.hide()
+  return true
+}
+
+function minimizeMainPanel() {
+  if (!mainPanelWindow || mainPanelWindow.isDestroyed()) {
+    return false
+  }
+  mainPanelWindow.minimize()
+  return true
+}
+
 function buildTrayMenu() {
   const messages = getLanguageMessages()
 
   return Menu.buildFromTemplate([
+    { label: messages.showPet, click: () => showPetWindow() },
+    { label: messages.resetPetPosition, click: () => resetPetPosition() },
     { label: messages.openMainPanel, click: openMainPanel },
     { label: messages.toggleQuickChat, click: toggleQuickChat },
     {
@@ -371,6 +609,9 @@ function buildTrayMenu() {
 }
 
 function createTray() {
+  if (tray) {
+    return
+  }
   tray = new Tray(getTrayIcon())
   tray.setToolTip(getLanguageMessages().trayTooltip)
   tray.setContextMenu(buildTrayMenu())
@@ -386,9 +627,54 @@ function refreshTray() {
   tray.setContextMenu(buildTrayMenu())
 }
 
+function switchPetFromMainPanel(payload = {}) {
+  const nextPetType = normalizePetType(payload.petType)
+  const nextState = broadcastPetState({
+    source: 'main-panel',
+    hasSession: true,
+    language: payload.language || getStore().get('language'),
+    preferences: payload.preferences || {},
+    petType: nextPetType,
+  })
+  logDesktop('switch-pet-live', {
+    petType: nextPetType,
+  })
+  return { ok: true, state: nextState }
+}
+
+function syncPetState(payload = {}) {
+  return broadcastPetState(payload)
+}
+
+function getRuntimeState() {
+  return {
+    petState: getPetState(),
+    windows: {
+      petVisible: Boolean(petWindow && !petWindow.isDestroyed() && petWindow.isVisible()),
+      quickChatVisible: Boolean(quickChatWindow && !quickChatWindow.isDestroyed() && quickChatWindow.isVisible()),
+      mainPanelVisible: Boolean(mainPanelWindow && !mainPanelWindow.isDestroyed() && mainPanelWindow.isVisible()),
+    },
+    rendererHeartbeats: rendererHeartbeatState,
+  }
+}
+
 function registerIpc() {
   ipcMain.handle('desktop:open-main-panel', async () => openMainPanel())
+  ipcMain.handle('desktop:minimize-main-panel', async () => minimizeMainPanel())
+  ipcMain.handle('desktop:hide-main-panel', async () => hideMainPanel())
   ipcMain.handle('desktop:toggle-quick-chat', async () => toggleQuickChat())
+  ipcMain.handle('desktop:show-pet', async () => showPetWindow())
+  ipcMain.handle('desktop:reset-pet-position', async () => resetPetPosition())
+  ipcMain.handle('desktop:set-pet-interactive', async (_event, interactive) => {
+    if (!petWindow || petWindow.isDestroyed()) {
+      return false
+    }
+    petWindow.setIgnoreMouseEvents(!interactive)
+    return Boolean(interactive)
+  })
+  ipcMain.handle('desktop:switch-pet-from-main-panel', async (_event, payload) => switchPetFromMainPanel(payload))
+  ipcMain.handle('desktop:sync-pet-state', async (_event, payload) => syncPetState(payload))
+  ipcMain.handle('desktop:get-pet-state', async () => getPetState())
 
   ipcMain.handle('desktop:toggle-auto-launch', async (_event, enabled) => {
     getStore().set('autoLaunch', enabled)
@@ -406,8 +692,9 @@ function registerIpc() {
   ipcMain.handle('desktop:set-language', async (_event, value) => {
     const nextLanguage = normalizeLanguage(value)
     getStore().set('language', nextLanguage)
+    const nextState = syncPetState({ language: nextLanguage })
     refreshTray()
-    return nextLanguage
+    return nextState.language
   })
   ipcMain.handle('desktop:get-pet-bounds', async () => {
     if (!petWindow || petWindow.isDestroyed()) {
@@ -438,12 +725,39 @@ function registerIpc() {
   ipcMain.handle('desktop:get-session-token', async () => getStore().get('sessionToken'))
   ipcMain.handle('desktop:set-session-token', async (_event, token) => {
     getStore().set('sessionToken', token)
+    syncPetState({ hasSession: Boolean(token) })
     return true
   })
   ipcMain.handle('desktop:clear-session-token', async () => {
     getStore().set('sessionToken', null)
+    syncPetState({
+      hasSession: false,
+      petType: 'cat',
+      preferences: {
+        pet_type: 'cat',
+        quick_chat_enabled: true,
+        bubble_frequency: 120,
+      },
+    })
     return true
   })
+
+  ipcMain.handle('desktop:log-debug', async (_event, payload) => {
+    logDesktop('renderer-debug', payload || {})
+    return true
+  })
+  ipcMain.handle('desktop:renderer-heartbeat', async (_event, payload) => {
+    const key = payload?.view || 'unknown'
+    rendererHeartbeatState[key] = {
+      ts: new Date().toISOString(),
+      payload,
+    }
+    return true
+  })
+  ipcMain.handle('desktop:get-runtime-state', async () => getRuntimeState())
+  ipcMain.handle('desktop:get-log-paths', async () => ({
+    logPath: ensureDebugLogPath(),
+  }))
 }
 
 function bootstrap() {
@@ -459,10 +773,7 @@ if (!app.requestSingleInstanceLock()) {
   app.quit()
 } else {
   app.on('second-instance', () => {
-    if (petWindow) {
-      petWindow.show()
-      petWindow.focus()
-    }
+    showPetWindow({ focus: true })
     openMainPanel()
   })
 

@@ -1,0 +1,222 @@
+name: CD
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Git ref to deploy
+        required: false
+        default: main
+
+concurrency:
+  group: cd-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  preflight:
+    name: Preflight
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    outputs:
+      deploy_ref: ${{ steps.vars.outputs.deploy_ref }}
+      app_dir: ${{ steps.vars.outputs.app_dir }}
+      server_port: ${{ steps.vars.outputs.server_port }}
+      docker_enabled: ${{ steps.vars.outputs.docker_enabled }}
+      server_enabled: ${{ steps.vars.outputs.server_enabled }}
+
+    steps:
+      - name: Resolve deployment variables
+        id: vars
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_REF: ${{ inputs.ref }}
+          WORKFLOW_SHA: ${{ github.event.workflow_run.head_sha }}
+          SERVER_APP_DIR_SECRET: ${{ secrets.SERVER_APP_DIR }}
+          SERVER_PORT_SECRET: ${{ secrets.SERVER_PORT }}
+          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+          DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USERNAME: ${{ secrets.SERVER_USERNAME }}
+          SERVER_PASSWORD: ${{ secrets.SERVER_PASSWORD }}
+          SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+        run: |
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            DEPLOY_REF="${INPUT_REF:-main}"
+          else
+            DEPLOY_REF="$WORKFLOW_SHA"
+          fi
+
+          APP_DIR="${SERVER_APP_DIR_SECRET:-/root/PersonalSpace/AgentProject}"
+          SERVER_PORT="${SERVER_PORT_SECRET:-22}"
+
+          if [[ -n "$DOCKER_USERNAME" && -n "$DOCKER_PASSWORD" ]]; then
+            DOCKER_ENABLED=true
+          else
+            DOCKER_ENABLED=false
+          fi
+
+          if [[ -n "$SERVER_HOST" && -n "$SERVER_USERNAME" && ( -n "$SERVER_PASSWORD" || -n "$SERVER_SSH_KEY" ) ]]; then
+            SERVER_ENABLED=true
+          else
+            SERVER_ENABLED=false
+          fi
+
+          echo "deploy_ref=$DEPLOY_REF" >> "$GITHUB_OUTPUT"
+          echo "app_dir=$APP_DIR" >> "$GITHUB_OUTPUT"
+          echo "server_port=$SERVER_PORT" >> "$GITHUB_OUTPUT"
+          echo "docker_enabled=$DOCKER_ENABLED" >> "$GITHUB_OUTPUT"
+          echo "server_enabled=$SERVER_ENABLED" >> "$GITHUB_OUTPUT"
+
+  desktop-installer:
+    name: Desktop Installer
+    needs: preflight
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: desktop
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.preflight.outputs.deploy_ref }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build Windows installer
+        run: npm run build
+
+      - name: Upload desktop artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: agentproject-desktop-win
+          path: desktop/dist/releases/DetachymAgentPet1.0.exe
+          retention-days: 7
+
+  docker-publish:
+    name: Publish Docker Images
+    needs: preflight
+    if: needs.preflight.outputs.docker_enabled == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.preflight.outputs.deploy_ref }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Build and push backend image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          push: true
+          tags: ${{ secrets.DOCKER_USERNAME }}/agentproject-backend:latest
+
+      - name: Build and push nginx image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./deploy/Dockerfile.nginx
+          push: true
+          tags: ${{ secrets.DOCKER_USERNAME }}/agentproject-nginx:latest
+
+  deploy-server:
+    name: Deploy Server
+    needs: [preflight, desktop-installer]
+    if: needs.preflight.outputs.server_enabled == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.preflight.outputs.deploy_ref }}
+
+      - name: Download desktop artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: agentproject-desktop-win
+          path: release-artifacts
+
+      - name: Prepare remote directories
+        uses: appleboy/ssh-action@v1.2.1
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          port: ${{ needs.preflight.outputs.server_port }}
+          username: ${{ secrets.SERVER_USERNAME }}
+          password: ${{ secrets.SERVER_PASSWORD }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          script: |
+            set -e
+            APP_DIR="${{ needs.preflight.outputs.app_dir }}"
+            mkdir -p "$APP_DIR"
+            mkdir -p "$APP_DIR/data/downloads"
+            mkdir -p "$APP_DIR/data/postgres"
+            mkdir -p "$APP_DIR/data/uploads"
+            mkdir -p "$APP_DIR/data/chroma"
+            mkdir -p "$APP_DIR/logs"
+
+      - name: Upload application source
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          port: ${{ needs.preflight.outputs.server_port }}
+          username: ${{ secrets.SERVER_USERNAME }}
+          password: ${{ secrets.SERVER_PASSWORD }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          source: "backend,deploy,frontend,docker-compose.yml"
+          target: ${{ needs.preflight.outputs.app_dir }}
+
+      - name: Upload desktop installer
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          port: ${{ needs.preflight.outputs.server_port }}
+          username: ${{ secrets.SERVER_USERNAME }}
+          password: ${{ secrets.SERVER_PASSWORD }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          source: release-artifacts/DetachymAgentPet1.0.exe
+          target: ${{ needs.preflight.outputs.app_dir }}/data/downloads
+          strip_components: 1
+
+      - name: Deploy on server
+        uses: appleboy/ssh-action@v1.2.1
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          port: ${{ needs.preflight.outputs.server_port }}
+          username: ${{ secrets.SERVER_USERNAME }}
+          password: ${{ secrets.SERVER_PASSWORD }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          script: |
+            set -e
+            APP_DIR="${{ needs.preflight.outputs.app_dir }}"
+            cd "$APP_DIR"
+            if [ ! -f ".env" ]; then
+              echo "Missing $APP_DIR/.env" >&2
+              exit 1
+            fi
+            docker compose up -d --build --remove-orphans
+            docker compose ps

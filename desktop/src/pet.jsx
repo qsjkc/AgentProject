@@ -23,7 +23,7 @@ function pickRandom(items) {
 
 function PetApp() {
   const [petType, setPetType] = useState('cat')
-  const [language, setLanguage] = useState('zh-CN')
+  const [language, setLanguageState] = useState('zh-CN')
   const [petMood, setPetMood] = useState('idle')
   const [bubbleText, setBubbleText] = useState('')
   const [hasSession, setHasSession] = useState(false)
@@ -34,17 +34,22 @@ function PetApp() {
   const moodTimerRef = useRef(null)
   const idleBubbleTimerRef = useRef(null)
   const rafRef = useRef(null)
+  const flushPromiseRef = useRef(null)
+  const settlingPointerRef = useRef(false)
   const sendingPositionRef = useRef(false)
   const suppressClickRef = useRef(false)
   const previousSessionRef = useRef(null)
   const petPositionRef = useRef({ x: 90, y: 90 })
-  const pendingPositionRef = useRef(null)
   const dragRef = useRef({
     pointerId: null,
-    startScreenX: 0,
-    startScreenY: 0,
-    startWindowX: 0,
-    startWindowY: 0,
+    thresholdScreenX: 0,
+    thresholdScreenY: 0,
+    baseScreenX: 0,
+    baseScreenY: 0,
+    latestScreenX: 0,
+    latestScreenY: 0,
+    baseWindowX: 0,
+    baseWindowY: 0,
     moved: false,
   })
 
@@ -92,29 +97,44 @@ function PetApp() {
   useEffect(() => {
     let mounted = true
 
-    const syncState = async () => {
+    const syncState = async ({ refreshRemote = false } = {}) => {
       try {
-        const [savedLanguage, token, bounds] = await Promise.all([
+        const [savedLanguage, token, bounds, storedPetState] = await Promise.all([
           getLanguage(),
           getSessionToken(),
           window.desktopBridge?.getPetBounds?.(),
+          window.desktopBridge?.getPetState?.(),
         ])
 
         if (!mounted) {
           return
         }
 
-        setLanguage(normalizeLanguage(savedLanguage))
+        setLanguageState(normalizeLanguage(savedLanguage || storedPetState?.language))
         setHasSession(Boolean(token))
 
         if (bounds?.x !== undefined && bounds?.y !== undefined) {
           petPositionRef.current = bounds
         }
 
+        if (storedPetState?.petType) {
+          setPetType(storedPetState.petType)
+        }
+
+        if (storedPetState?.preferences) {
+          setPreferences({
+            ...DEFAULT_PREFERENCES,
+            ...storedPetState.preferences,
+          })
+        }
+
         if (!token) {
-          setPetType('cat')
-          setPreferences(DEFAULT_PREFERENCES)
           setPetMood('sad')
+          return
+        }
+
+        if (!refreshRemote) {
+          setPetMood('idle')
           return
         }
 
@@ -123,14 +143,12 @@ function PetApp() {
           return
         }
 
-        if (user?.preferences?.pet_type) {
-          setPetType(user.preferences.pet_type)
-        }
-
-        setPreferences({
+        const nextPreferences = {
           quick_chat_enabled: user?.preferences?.quick_chat_enabled ?? DEFAULT_PREFERENCES.quick_chat_enabled,
           bubble_frequency: user?.preferences?.bubble_frequency ?? DEFAULT_PREFERENCES.bubble_frequency,
-        })
+        }
+        setPetType(user?.preferences?.pet_type || storedPetState?.petType || 'cat')
+        setPreferences(nextPreferences)
         setPetMood('idle')
       } catch {
         if (mounted) {
@@ -142,12 +160,48 @@ function PetApp() {
       }
     }
 
-    void syncState()
-    window.addEventListener('focus', syncState)
+    const handleWindowFocus = () => {
+      void syncState({ refreshRemote: false })
+    }
+
+    void syncState({ refreshRemote: true })
+    window.addEventListener('focus', handleWindowFocus)
 
     return () => {
       mounted = false
-      window.removeEventListener('focus', syncState)
+      window.removeEventListener('focus', handleWindowFocus)
+    }
+  }, [])
+
+  useEffect(() => {
+    const unsubscribe = window.desktopBridge?.onPetStateChanged?.((payload) => {
+      if (!payload || typeof payload !== 'object') {
+        return
+      }
+
+      if (payload.language) {
+        setLanguageState(normalizeLanguage(payload.language))
+      }
+
+      if (payload.petType) {
+        setPetType(payload.petType)
+      }
+
+      if (payload.preferences) {
+        setPreferences((current) => ({
+          ...current,
+          ...payload.preferences,
+        }))
+      }
+
+      if (typeof payload.hasSession === 'boolean') {
+        setHasSession(payload.hasSession)
+        setPetMood(payload.hasSession ? 'idle' : 'sad')
+      }
+    })
+
+    return () => {
+      unsubscribe?.()
     }
   }, [])
 
@@ -218,41 +272,7 @@ function PetApp() {
     [],
   )
 
-  const petVisual = getPetVisual(petType, petMood)
-  const petLabel = t(language, petVisual.labelKey)
-
-  const flushPetPosition = () => {
-    if (sendingPositionRef.current || !pendingPositionRef.current) {
-      return
-    }
-
-    const latestPosition = pendingPositionRef.current
-    pendingPositionRef.current = null
-    sendingPositionRef.current = true
-    petPositionRef.current = { ...petPositionRef.current, ...latestPosition }
-
-    window.desktopBridge
-      ?.setPetPosition?.(latestPosition)
-      .then((bounds) => {
-        if (bounds?.x !== undefined && bounds?.y !== undefined) {
-          petPositionRef.current = bounds
-        }
-      })
-      .catch(() => undefined)
-      .finally(() => {
-        sendingPositionRef.current = false
-        if (pendingPositionRef.current) {
-          rafRef.current = window.requestAnimationFrame(() => {
-            rafRef.current = null
-            flushPetPosition()
-          })
-        }
-      })
-  }
-
-  const queuePetPosition = (nextPosition) => {
-    pendingPositionRef.current = nextPosition
-
+  const schedulePositionFlush = () => {
     if (rafRef.current) {
       return
     }
@@ -263,19 +283,114 @@ function PetApp() {
     })
   }
 
+  const flushPetPosition = ({ force = false } = {}) => {
+    if (sendingPositionRef.current) {
+      return flushPromiseRef.current ?? Promise.resolve(false)
+    }
+
+    if (dragRef.current.pointerId === null || (!force && !dragRef.current.moved)) {
+      return Promise.resolve(false)
+    }
+
+    const sentScreenX = dragRef.current.latestScreenX
+    const sentScreenY = dragRef.current.latestScreenY
+    const baseScreenX = dragRef.current.baseScreenX
+    const baseScreenY = dragRef.current.baseScreenY
+    const baseWindowX = dragRef.current.baseWindowX
+    const baseWindowY = dragRef.current.baseWindowY
+
+    const deltaX = sentScreenX - baseScreenX
+    const deltaY = sentScreenY - baseScreenY
+    if (deltaX === 0 && deltaY === 0) {
+      return Promise.resolve(false)
+    }
+
+    sendingPositionRef.current = true
+    const requestedPosition = {
+      x: baseWindowX + deltaX,
+      y: baseWindowY + deltaY,
+    }
+
+    const flushPromise = window.desktopBridge
+      ?.setPetPosition?.(requestedPosition)
+      .then((bounds) => {
+        const nextBounds = bounds?.x !== undefined && bounds?.y !== undefined ? bounds : requestedPosition
+        petPositionRef.current = nextBounds
+        dragRef.current.baseWindowX = nextBounds.x
+        dragRef.current.baseWindowY = nextBounds.y
+        dragRef.current.baseScreenX = sentScreenX
+        dragRef.current.baseScreenY = sentScreenY
+        return true
+      })
+      .catch(() => {
+        dragRef.current.baseWindowX = petPositionRef.current.x ?? dragRef.current.baseWindowX
+        dragRef.current.baseWindowY = petPositionRef.current.y ?? dragRef.current.baseWindowY
+        dragRef.current.baseScreenX = sentScreenX
+        dragRef.current.baseScreenY = sentScreenY
+        return false
+      })
+      .finally(() => {
+        sendingPositionRef.current = false
+        flushPromiseRef.current = null
+        if (
+          !settlingPointerRef.current &&
+          dragRef.current.pointerId !== null &&
+          (dragRef.current.latestScreenX !== dragRef.current.baseScreenX ||
+            dragRef.current.latestScreenY !== dragRef.current.baseScreenY)
+        ) {
+          schedulePositionFlush()
+        }
+      })
+
+    flushPromiseRef.current = flushPromise
+    return flushPromise
+  }
+
+  const settlePendingDrag = async () => {
+    if (rafRef.current) {
+      window.cancelAnimationFrame(rafRef.current)
+      rafRef.current = null
+    }
+
+    while (true) {
+      if (sendingPositionRef.current) {
+        await (flushPromiseRef.current ?? Promise.resolve(false))
+        continue
+      }
+
+      if (
+        dragRef.current.latestScreenX === dragRef.current.baseScreenX &&
+        dragRef.current.latestScreenY === dragRef.current.baseScreenY
+      ) {
+        break
+      }
+
+      await flushPetPosition({ force: true })
+    }
+  }
+
   const handlePointerDown = (event) => {
     if (event.button !== 0) {
       return
     }
 
     event.preventDefault()
-    event.currentTarget.setPointerCapture?.(event.pointerId)
+    try {
+      event.currentTarget.setPointerCapture?.(event.pointerId)
+    } catch {
+      // ignore pointer capture mismatch
+    }
+
     dragRef.current = {
       pointerId: event.pointerId,
-      startScreenX: event.screenX,
-      startScreenY: event.screenY,
-      startWindowX: petPositionRef.current.x ?? 90,
-      startWindowY: petPositionRef.current.y ?? 90,
+      thresholdScreenX: event.screenX,
+      thresholdScreenY: event.screenY,
+      baseScreenX: event.screenX,
+      baseScreenY: event.screenY,
+      latestScreenX: event.screenX,
+      latestScreenY: event.screenY,
+      baseWindowX: petPositionRef.current.x ?? 90,
+      baseWindowY: petPositionRef.current.y ?? 90,
       moved: false,
     }
     clearMoodTimer()
@@ -288,38 +403,54 @@ function PetApp() {
     }
 
     event.preventDefault()
-    const deltaX = event.screenX - dragRef.current.startScreenX
-    const deltaY = event.screenY - dragRef.current.startScreenY
+    dragRef.current.latestScreenX = event.screenX
+    dragRef.current.latestScreenY = event.screenY
 
+    const deltaX = event.screenX - dragRef.current.thresholdScreenX
+    const deltaY = event.screenY - dragRef.current.thresholdScreenY
     if (!dragRef.current.moved && (Math.abs(deltaX) >= DRAG_THRESHOLD || Math.abs(deltaY) >= DRAG_THRESHOLD)) {
       dragRef.current.moved = true
     }
 
-    if (!dragRef.current.moved) {
-      return
+    if (dragRef.current.moved) {
+      schedulePositionFlush()
     }
-
-    queuePetPosition({
-      x: dragRef.current.startWindowX + deltaX,
-      y: dragRef.current.startWindowY + deltaY,
-    })
   }
 
-  const finishPointerInteraction = (event) => {
+  const finishPointerInteraction = async (event) => {
     if (dragRef.current.pointerId !== event.pointerId) {
       return
     }
 
-    event.currentTarget.releasePointerCapture?.(event.pointerId)
+    try {
+      event.currentTarget.releasePointerCapture?.(event.pointerId)
+    } catch {
+      // ignore pointer capture mismatch
+    }
+
+    dragRef.current.latestScreenX = event.screenX
+    dragRef.current.latestScreenY = event.screenY
+
     const didMove = dragRef.current.moved
+    settlingPointerRef.current = true
+
+    if (didMove) {
+      await settlePendingDrag()
+    }
+
     dragRef.current = {
       pointerId: null,
-      startScreenX: 0,
-      startScreenY: 0,
-      startWindowX: 0,
-      startWindowY: 0,
+      thresholdScreenX: 0,
+      thresholdScreenY: 0,
+      baseScreenX: 0,
+      baseScreenY: 0,
+      latestScreenX: 0,
+      latestScreenY: 0,
+      baseWindowX: 0,
+      baseWindowY: 0,
       moved: false,
     }
+    settlingPointerRef.current = false
 
     if (didMove) {
       suppressClickRef.current = true
@@ -391,6 +522,9 @@ function PetApp() {
     }
     resetMood()
   }
+
+  const petVisual = getPetVisual(petType, petMood)
+  const petLabel = t(language, petVisual.labelKey)
 
   return (
     <div className="pet-shell">

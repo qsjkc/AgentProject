@@ -1,7 +1,7 @@
 const LOCAL_API_BASE_URL = 'http://127.0.0.1:5000/api/v1'
 
 const buildTimeApiBaseUrl = normalizeApiBaseUrl(
-  import.meta.env.VITE_API_BASE_URL || __DETACHYM_DEFAULT_API_BASE_URL__ || ''
+  import.meta.env.VITE_API_BASE_URL || __DETACHYM_DEFAULT_API_BASE_URL__ || '',
 )
 let cachedApiBaseUrl = import.meta.env.DEV ? LOCAL_API_BASE_URL : buildTimeApiBaseUrl
 
@@ -33,8 +33,8 @@ function getDesktopBridge() {
 
 function getUnconfiguredServerMessage() {
   return import.meta.env.DEV
-    ? '未检测到桌面端服务，请先启动本地后端或配置服务器地址。'
-    : '请先配置服务器地址，再使用桌面客户端。'
+    ? '未检测到桌面端服务，请先启动本地后端或配置服务地址。'
+    : '请先配置服务地址，再使用桌面客户端。'
 }
 
 async function requireApiBaseUrl() {
@@ -114,6 +114,7 @@ async function request(path, options = {}) {
   const response = await fetch(`${apiBaseUrl}${path}`, {
     ...options,
     headers,
+    cache: 'no-store',
   })
 
   if (!response.ok) {
@@ -133,6 +134,7 @@ export async function login(username, password) {
   const response = await fetch(`${apiBaseUrl}/auth/login`, {
     method: 'POST',
     body: formData,
+    cache: 'no-store',
   })
 
   if (!response.ok) {

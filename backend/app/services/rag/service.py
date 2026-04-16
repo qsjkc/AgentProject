@@ -40,7 +40,14 @@ class RAGService:
         return self._collection
 
     def _tokenize(self, text: str) -> list[str]:
-        return re.findall(r"\w+", text.lower())
+        normalized = text.lower()
+        tokens = re.findall(r"[a-z0-9_]+", normalized)
+
+        for segment in re.findall(r"[\u4e00-\u9fff]+", normalized):
+            tokens.extend(segment)
+            tokens.extend(segment[index : index + 2] for index in range(len(segment) - 1))
+
+        return [token for token in tokens if token]
 
     def embed_text(self, text: str) -> list[float]:
         vector = [0.0] * settings.EMBEDDING_DIMENSION
@@ -91,7 +98,7 @@ class RAGService:
         collection.add(
             ids=[f"{document_id}:{index}" for index in range(len(chunks))],
             documents=chunks,
-            embeddings=[self.embed_text(chunk) for chunk in chunks],
+            embeddings=[self.embed_text(f"{filename} {chunk}") for chunk in chunks],
             metadatas=[
                 {
                     "document_id": str(document_id),

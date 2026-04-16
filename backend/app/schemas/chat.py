@@ -3,6 +3,8 @@ from typing import Literal, Optional, List
 from pydantic import BaseModel
 from enum import Enum
 
+from app.schemas.rag import RAGSource
+
 
 class MessageRole(str, Enum):
     USER = "user"
@@ -51,6 +53,7 @@ class ChatRequest(BaseModel):
     use_rag: bool = False
     stream: bool = True
     pet_type: Optional[Literal["cat", "dog", "pig"]] = None
+    compact_response: bool = False
 
 
 class ChatResponse(BaseModel):
@@ -58,9 +61,13 @@ class ChatResponse(BaseModel):
     session_id: int
     role: MessageRole = MessageRole.ASSISTANT
     done: bool = True
+    knowledge_used: bool = False
+    sources: List[RAGSource] = []
 
 
 class StreamChunk(BaseModel):
     content: str
     done: bool = False
     session_id: Optional[int] = None
+    knowledge_used: bool = False
+    sources: List[RAGSource] = []

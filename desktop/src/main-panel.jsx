@@ -22,6 +22,23 @@ function formatError(error, fallbackMessage) {
   return error instanceof Error ? error.message : fallbackMessage
 }
 
+function withTimeout(promise, timeoutMs, timeoutMessage) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      window.setTimeout(() => reject(new Error(timeoutMessage)), timeoutMs)
+    }),
+  ])
+}
+
+async function logDesktopDebug(payload) {
+  try {
+    await window.desktopBridge?.logDebug?.(payload)
+  } catch {
+    // keep silent in renderer; main process handles debug persistence
+  }
+}
+
 function LanguageSelector({ language, onChange }) {
   return (
     <label style={{ display: 'grid', gap: 6, minWidth: 164 }}>
@@ -176,6 +193,8 @@ function MainPanelApp() {
   const [useRag, setUseRag] = useState(true)
   const [documents, setDocuments] = useState([])
   const [statusText, setStatusText] = useState('')
+  const [knowledgeStatusText, setKnowledgeStatusText] = useState('')
+  const [knowledgeSources, setKnowledgeSources] = useState([])
   const [loading, setLoading] = useState(false)
   const [savingPet, setSavingPet] = useState(false)
   const [apiBaseUrl, setApiBaseUrlState] = useState('')
@@ -211,6 +230,18 @@ function MainPanelApp() {
       setMessages([])
     }
     setAuthenticated(true)
+    await window.desktopBridge?.syncPetState?.({
+      source: 'main-panel',
+      hasSession: true,
+      petType: me?.preferences?.pet_type || 'cat',
+      preferences: me?.preferences || {},
+      language,
+    })
+    await logDesktopDebug({
+      event: 'main-panel-load-dashboard',
+      petType: me?.preferences?.pet_type || 'cat',
+      sessionCount: sessionList.length,
+    })
   }
 
   const handleSaveApiBaseUrl = async () => {
@@ -219,6 +250,18 @@ function MainPanelApp() {
     setApiBaseUrlState(verifiedApiBaseUrl)
     setStatusText(t(language, 'serverConnectionVerified'))
     return verifiedApiBaseUrl
+  }
+
+  const handleShowPet = async () => {
+    await window.desktopBridge?.showPet?.()
+    await logDesktopDebug({ event: 'main-panel-show-pet' })
+    setStatusText(t(language, 'petShown'))
+  }
+
+  const handleResetPetPosition = async () => {
+    await window.desktopBridge?.resetPetPosition?.()
+    await logDesktopDebug({ event: 'main-panel-reset-pet-position' })
+    setStatusText(t(language, 'petPositionReset'))
   }
 
   useEffect(() => {
@@ -242,6 +285,10 @@ function MainPanelApp() {
         }
 
         await loadDashboard()
+        await logDesktopDebug({
+          event: 'main-panel-runtime-state-initial',
+          runtimeState: await window.desktopBridge?.getRuntimeState?.(),
+        })
       } catch (error) {
         if (active) {
           setAuthenticated(false)
@@ -261,6 +308,50 @@ function MainPanelApp() {
     }
   }, [])
 
+  useEffect(() => {
+    let mounted = true
+    const emitHeartbeat = async (kind) => {
+      if (!mounted) {
+        return
+      }
+      await window.desktopBridge?.sendRendererHeartbeat?.({
+        kind,
+        view: 'main-panel',
+        initialized,
+        authenticated,
+        tab,
+        currentPetType,
+        activeSessionId,
+        sessionCount: sessions.length,
+        messageCount: messages.length,
+        savingPet,
+        loading,
+        useRag,
+      })
+    }
+
+    void emitHeartbeat('mounted')
+    const timer = window.setInterval(() => {
+      void emitHeartbeat('interval')
+    }, 8000)
+
+    return () => {
+      mounted = false
+      window.clearInterval(timer)
+    }
+  }, [
+    initialized,
+    authenticated,
+    tab,
+    currentPetType,
+    activeSessionId,
+    sessions.length,
+    messages.length,
+    savingPet,
+    loading,
+    useRag,
+  ])
+
   const handleSend = async () => {
     if (!prompt.trim() || loading) {
       return
@@ -270,6 +361,8 @@ function MainPanelApp() {
     setPrompt('')
     setLoading(true)
     setStatusText(t(language, 'waitingResponse'))
+    setKnowledgeStatusText('')
+    setKnowledgeSources([])
     setMessages((current) => [...current, { role: 'user', content: outgoingMessage }])
 
     try {
@@ -278,6 +371,7 @@ function MainPanelApp() {
         session_id: activeSessionId ?? undefined,
         use_rag: useRag,
         pet_type: currentPetType,
+        compact_response: false,
       })
       const nextSessionId = response.session_id
       setActiveSessionId(nextSessionId)
@@ -288,7 +382,21 @@ function MainPanelApp() {
       if (currentSession) {
         setMessages(currentSession.messages || [])
       }
-      setStatusText(t(language, 'latestResponseReceived'))
+      if (useRag) {
+        const nextSources = response.sources || []
+        setKnowledgeSources(nextSources)
+        if (nextSources.length > 0) {
+          setKnowledgeStatusText(t(language, 'knowledgeHitHint', { count: nextSources.length }))
+          setStatusText(t(language, 'latestResponseReceived'))
+        } else {
+          setKnowledgeStatusText(t(language, 'knowledgeMissHint'))
+          setStatusText(t(language, 'knowledgeMissHint'))
+        }
+      } else {
+        setKnowledgeStatusText('')
+        setKnowledgeSources([])
+        setStatusText(t(language, 'latestResponseReceived'))
+      }
     } catch (error) {
       setStatusText(formatError(error, t(language, 'messageDeliveryFailed')))
     } finally {
@@ -308,6 +416,8 @@ function MainPanelApp() {
       const session = await desktopApi.getSession(sessionId)
       setActiveSessionId(session.id)
       setMessages(session.messages || [])
+      setKnowledgeStatusText('')
+      setKnowledgeSources([])
     } catch (error) {
       setStatusText(formatError(error, t(language, 'unableToLoadSession')))
     }
@@ -347,14 +457,59 @@ function MainPanelApp() {
 
     setSavingPet(true)
     try {
-      const nextPreferences = await desktopApi.updatePreferences({
-        pet_type: nextPetType,
-        quick_chat_enabled: user?.preferences?.quick_chat_enabled ?? true,
-        bubble_frequency: user?.preferences?.bubble_frequency ?? 120,
+      const startedAt = Date.now()
+      await logDesktopDebug({
+        event: 'main-panel-switch-start',
+        fromPetType: currentPetType,
+        toPetType: nextPetType,
       })
+      const nextPreferences = await withTimeout(
+        desktopApi.updatePreferences({
+          pet_type: nextPetType,
+          quick_chat_enabled: user?.preferences?.quick_chat_enabled ?? true,
+          bubble_frequency: user?.preferences?.bubble_frequency ?? 120,
+        }),
+        12000,
+        'update_preferences_timeout',
+      )
+      await logDesktopDebug({
+        event: 'main-panel-switch-phase',
+        phase: 'preferences-updated',
+        totalElapsedMs: Date.now() - startedAt,
+        targetPetType: nextPetType,
+      })
+      const switchedResult = await withTimeout(
+        window.desktopBridge?.switchPetFromMainPanel?.({
+          petType: nextPetType,
+          preferences: nextPreferences,
+          language,
+          hasSession: true,
+        }),
+        5000,
+        'desktop_switch_timeout',
+      )
+      await logDesktopDebug({
+        event: 'main-panel-switch-phase',
+        phase: 'desktop-ipc-returned',
+        totalElapsedMs: Date.now() - startedAt,
+        targetPetType: nextPetType,
+        ok: Boolean(switchedResult?.ok),
+      })
+      if (!switchedResult?.ok) {
+        throw new Error(switchedResult?.reason || t(language, 'messageDeliveryFailed'))
+      }
       setUser((current) => (current ? { ...current, preferences: nextPreferences } : current))
+      await logDesktopDebug({
+        event: 'main-panel-switch-success',
+        petType: switchedResult?.state?.petType || nextPetType,
+        totalElapsedMs: Date.now() - startedAt,
+      })
       setStatusText(t(language, 'petPreferenceSaved'))
     } catch (error) {
+      await logDesktopDebug({
+        event: 'main-panel-switch-failed',
+        reason: error instanceof Error ? error.message : String(error),
+      })
       setStatusText(formatError(error, t(language, 'messageDeliveryFailed')))
     } finally {
       setSavingPet(false)
@@ -369,6 +524,20 @@ function MainPanelApp() {
     setActiveSessionId(null)
     setMessages([])
     setDocuments([])
+    setKnowledgeStatusText('')
+    setKnowledgeSources([])
+    await window.desktopBridge?.syncPetState?.({
+      source: 'main-panel',
+      hasSession: false,
+      petType: 'cat',
+      preferences: {
+        pet_type: 'cat',
+        quick_chat_enabled: true,
+        bubble_frequency: 120,
+      },
+      language,
+    })
+    await logDesktopDebug({ event: 'main-panel-logout' })
     setStatusText(t(language, 'signedOut'))
   }
 
@@ -380,7 +549,20 @@ function MainPanelApp() {
     setActiveSessionId(null)
     setMessages([])
     setDocuments([])
+    setKnowledgeStatusText('')
+    setKnowledgeSources([])
+    await logDesktopDebug({ event: 'main-panel-change-server' })
     setStatusText(t(language, 'updateServerUrlHint'))
+  }
+
+  const handleMinimizeWindow = async () => {
+    await window.desktopBridge?.minimizeMainPanel?.()
+    await logDesktopDebug({ event: 'main-panel-minimize' })
+  }
+
+  const handleHideWindow = async () => {
+    await window.desktopBridge?.hideMainPanel?.()
+    await logDesktopDebug({ event: 'main-panel-hide' })
   }
 
   if (!initialized) {
@@ -440,8 +622,20 @@ function MainPanelApp() {
               >
                 {t(language, 'knowledgeBase')}
               </button>
+              <button type="button" className="button-secondary" onClick={handleShowPet}>
+                {t(language, 'showPet')}
+              </button>
+              <button type="button" className="button-secondary" onClick={handleResetPetPosition}>
+                {t(language, 'resetPetPosition')}
+              </button>
               <button type="button" className="button-secondary" onClick={handleServerSetup}>
                 {t(language, 'changeServer')}
+              </button>
+              <button type="button" className="button-secondary" onClick={handleMinimizeWindow}>
+                {t(language, 'minimizeWindow')}
+              </button>
+              <button type="button" className="button-secondary" onClick={handleHideWindow}>
+                {t(language, 'hideWindow')}
               </button>
               <button type="button" className="button-primary" onClick={handleLogout}>
                 {t(language, 'signOut')}
@@ -513,6 +707,23 @@ function MainPanelApp() {
                   </div>
                 ))}
               </div>
+
+              {(knowledgeStatusText || knowledgeSources.length > 0) && (
+                <div className="knowledge-feedback">
+                  <div className="knowledge-feedback-title">{t(language, 'knowledgeBase')}</div>
+                  {knowledgeStatusText && <div className="knowledge-feedback-copy">{knowledgeStatusText}</div>}
+                  {knowledgeSources.length > 0 && (
+                    <div className="knowledge-source-list">
+                      {knowledgeSources.map((source) => (
+                        <div key={`${source.document_id}-${source.filename}`} className="knowledge-source-item">
+                          <div className="knowledge-source-name">{source.filename}</div>
+                          <div className="knowledge-source-snippet">{source.snippet}</div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
 
               <div style={{ display: 'grid', gap: 12, marginTop: 14 }}>
                 <textarea

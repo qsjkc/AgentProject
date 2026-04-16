@@ -193,6 +193,8 @@ async def test_register_rejects_existing_email_and_chat_accepts_pet_type(client:
     )
     assert chat_response.status_code == 200
     assert chat_response.json()["session_id"] > 0
+    assert chat_response.json()["knowledge_used"] is False
+    assert chat_response.json()["sources"] == []
 
 
 @pytest.mark.asyncio
@@ -288,6 +290,19 @@ async def test_admin_disable_user_and_rag_isolation(client: AsyncClient):
     sources = carol_query.json()["sources"]
     assert len(sources) == 1
     assert sources[0]["filename"] == "carol.md"
+
+    carol_chat = await client.post(
+        "/api/v1/chat/message",
+        headers=carol_headers,
+        json={
+            "message": "What does my knowledge base say about beta?",
+            "use_rag": True,
+            "pet_type": "pig",
+        },
+    )
+    assert carol_chat.status_code == 200
+    assert carol_chat.json()["knowledge_used"] is True
+    assert carol_chat.json()["sources"][0]["filename"] == "carol.md"
 
 
 @pytest.mark.asyncio
