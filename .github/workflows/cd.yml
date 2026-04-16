@@ -193,13 +193,33 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          HOST="$(printf '%s' "${SERVER_HOST_RAW:-}" | tr -d '\r\n[:space:]')"
+          HOST_INPUT="$(printf '%s' "${SERVER_HOST_RAW:-}" | tr -d '\r\n[:space:]')"
           USERNAME="$(printf '%s' "${SERVER_USERNAME_RAW:-}" | tr -d '\r\n[:space:]')"
           APP_DIR="$(printf '%s' "${SERVER_APP_DIR_RAW:-}" | tr -d '\r')"
           APP_DIR="${APP_DIR:-/root/PersonalSpace/AgentProject}"
           PORT="$(printf '%s' "${SERVER_PORT_RAW:-22}" | tr -d '\r\n[:space:]')"
           PORT="${PORT#:}"
           PORT="${PORT:-22}"
+
+          HOST_INPUT="${HOST_INPUT#ssh://}"
+          HOST_INPUT="${HOST_INPUT#http://}"
+          HOST_INPUT="${HOST_INPUT#https://}"
+          HOST_INPUT="${HOST_INPUT%%/*}"
+          HOST_INPUT="${HOST_INPUT##*@}"
+
+          if [[ "$HOST_INPUT" =~ ^\[(.+)\]:(.+)$ ]]; then
+            if [[ -z "${SERVER_PORT_RAW:-}" ]]; then
+              PORT="${BASH_REMATCH[2]}"
+            fi
+            HOST="${BASH_REMATCH[1]}"
+          elif [[ "$HOST_INPUT" =~ ^([^:]+):([0-9]+)$ ]]; then
+            if [[ -z "${SERVER_PORT_RAW:-}" ]]; then
+              PORT="${BASH_REMATCH[2]}"
+            fi
+            HOST="${BASH_REMATCH[1]}"
+          else
+            HOST="$HOST_INPUT"
+          fi
 
           if [[ -z "$HOST" ]]; then
             echo "SERVER_HOST is empty" >&2
