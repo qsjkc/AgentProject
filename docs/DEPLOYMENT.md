@@ -65,6 +65,7 @@ mkdir -p /root/PersonalSpace/AgentProject/logs
 
 - `SECRET_KEY`
 - `DATABASE_URL` 或 PostgreSQL 相关配置
+- `AUTO_RUN_MIGRATIONS`
 - `ZHIPU_API_KEY`
 - `WEB_APP_URL`
 - `VITE_API_BASE_URL`
@@ -91,6 +92,12 @@ docker compose ps
 docker compose logs -f backend
 docker compose logs -f nginx
 ```
+
+说明：
+
+- 当前后端启动时，`SQLite` 仍走元数据 bootstrap
+- 非 `SQLite` 环境默认会优先执行 Alembic 迁移
+- 如果检测到历史业务表但没有 `alembic_version`，会自动补齐缺失表并 `stamp head`
 
 ## 安装包发布
 
@@ -205,6 +212,7 @@ rm -rf node_modules && npm ci && npm run build
 
 ```bash
 curl http://127.0.0.1/health
+curl http://127.0.0.1/health/ready
 curl http://127.0.0.1/api/v1/public/version/win-x64
 ```
 
@@ -220,6 +228,7 @@ docker compose logs --tail=100 nginx
 
 - 首页可访问
 - `/health` 返回正常
+- `/health/ready` 返回 `ready`
 - `/api/v1/public/version/win-x64` 返回版本信息
 - `/download/DetachymAgentPet1.0.exe` 可下载
 

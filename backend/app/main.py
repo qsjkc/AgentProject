@@ -1,10 +1,10 @@
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from app.api.router import api_router
 from app.core.config import settings
@@ -95,3 +95,48 @@ async def root():
 @app.get("/health")
 async def health():
     return {"status": "healthy"}
+
+
+@app.get("/health/ready")
+async def readiness():
+    storage_checks = {
+        "uploads": Path(settings.UPLOAD_DIR).exists(),
+        "chroma": Path(settings.CHROMA_PERSIST_DIR).exists(),
+        "downloads": Path(settings.DOWNLOAD_DIR).exists(),
+    }
+
+    try:
+        async with async_session_maker() as session:
+            await session.execute(text("SELECT 1"))
+    except Exception as exc:
+        logger.exception("Readiness database check failed")
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "status": "not_ready",
+                "checks": {
+                    "database": f"error: {exc}",
+                    "storage": storage_checks,
+                },
+            },
+        ) from exc
+
+    if not all(storage_checks.values()):
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "status": "not_ready",
+                "checks": {
+                    "database": "ok",
+                    "storage": storage_checks,
+                },
+            },
+        )
+
+    return {
+        "status": "ready",
+        "checks": {
+            "database": "ok",
+            "storage": storage_checks,
+        },
+    }

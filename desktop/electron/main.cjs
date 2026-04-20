@@ -78,7 +78,22 @@ function normalizePetType(value) {
 }
 
 function getLanguageMessages() {
-  return trayMessages[normalizeLanguage(getStore().get('language'))] || trayMessages[DEFAULT_LANGUAGE]
+  const language = normalizeLanguage(getStore().get('language'))
+  return trayMessages[language] || trayMessages[DEFAULT_LANGUAGE]
+}
+
+function getWindowTitle(kind) {
+  const language = normalizeLanguage(getStore().get('language'))
+  const englishTitles = {
+    quickChat: 'Detachym Quick Chat',
+    mainPanel: 'Detachym Desktop Client',
+  }
+  const chineseTitles = {
+    quickChat: 'Detachym 快捷聊天',
+    mainPanel: 'Detachym 桌宠客户端',
+  }
+
+  return (language === 'zh-CN' ? chineseTitles : englishTitles)[kind] || 'Detachym'
 }
 
 function ensureDebugLogPath() {
@@ -469,6 +484,7 @@ function createQuickChatWindow() {
   })
 
   quickChatWindow.__role = 'quick-chat'
+  quickChatWindow.setTitle(getWindowTitle('quickChat'))
   quickChatWindow.removeMenu()
   quickChatWindow.setMenuBarVisibility(false)
   persistBounds('quickBounds', quickChatWindow)
@@ -509,6 +525,7 @@ function createMainPanelWindow() {
   })
 
   mainPanelWindow.__role = 'main-panel'
+  mainPanelWindow.setTitle(getWindowTitle('mainPanel'))
   mainPanelWindow.removeMenu()
   mainPanelWindow.setMenuBarVisibility(false)
   persistBounds('mainBounds', mainPanelWindow)

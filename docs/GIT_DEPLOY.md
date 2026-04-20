@@ -118,6 +118,12 @@ docker compose up -d --build --remove-orphans
 docker compose ps
 ```
 
+9. 执行部署后检查：
+
+```bash
+python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/health/ready'); urllib.request.urlopen('http://127.0.0.1:5000/api/v1/public/version/win-x64')"
+```
+
 ## 服务器变量容错规则
 
 当前 workflow 会自动清洗：
@@ -213,6 +219,6 @@ SERVER_APP_DIR=/root/PersonalSpace/AgentProject
 
 截至当前版本，基于 GitHub 的自动化部署链路已经跑通。后续若继续演进，优先建议：
 
-1. 给 `CD` 增加部署后健康检查
-2. 为镜像发布增加版本号 tag
-3. 增加服务器部署成功后的接口探测与告警
+1. 为镜像发布增加版本号 tag
+2. 将源码上传式部署逐步切换为镜像优先部署
+3. 增加服务器部署成功后的接口探测告警和回滚策略

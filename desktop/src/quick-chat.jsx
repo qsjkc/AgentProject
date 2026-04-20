@@ -18,6 +18,19 @@ async function logDesktopDebug(payload) {
   }
 }
 
+function formatCompactReply(content, language) {
+  const normalized = String(content || '').replace(/\s+/g, ' ').trim()
+  if (!normalized) {
+    return t(language, 'messageDeliveryFailed')
+  }
+
+  if (normalized.length <= 72) {
+    return normalized
+  }
+
+  return `${normalized.slice(0, 72).trim()}... ${t(language, 'openMainPanelForMore')}`
+}
+
 function truncateReply(content, language) {
   const normalized = String(content || '').replace(/\s+/g, ' ').trim()
   if (!normalized) {
@@ -208,7 +221,7 @@ function QuickChatApp() {
         ...current,
         {
           role: 'assistant',
-          content: truncateReply(response.content, language),
+          content: formatCompactReply(response.content, language),
           knowledgeUsed: Boolean(response.knowledge_used),
           sourceCount: response.sources?.length || 0,
         },

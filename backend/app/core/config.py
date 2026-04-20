@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     APP_NAME: str = "Detachym Platform"
     APP_VERSION: str = "2.0.0"
     DEBUG: bool = False
+    AUTO_RUN_MIGRATIONS: bool = True
     SECRET_KEY: str = "change-me-in-production"
     API_PREFIX: str = "/api/v1"
 

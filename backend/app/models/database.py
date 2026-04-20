@@ -1,13 +1,28 @@
+import asyncio
+from pathlib import Path
 from typing import AsyncGenerator
 
+from alembic import command
+from alembic.config import Config
 from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import inspect
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import declarative_base, relationship
 
 from app.core.config import settings
+from app.core.logging import logger
 from app.core.time import utc_now
 
 Base = declarative_base()
+BACKEND_ROOT = Path(__file__).resolve().parents[2]
+LEGACY_APP_TABLES = {
+    "users",
+    "user_preferences",
+    "verification_codes",
+    "chat_sessions",
+    "chat_messages",
+    "documents",
+}
 
 engine = create_async_engine(
     settings.DATABASE_URL,
@@ -32,8 +47,57 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
 
 async def init_db() -> None:
     async with engine.begin() as conn:
+        dialect_name = conn.dialect.name
+        table_names = await conn.run_sync(lambda sync_conn: set(inspect(sync_conn).get_table_names()))
+
+    if dialect_name == "sqlite":
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+            await ensure_legacy_sqlite_schema(conn)
+        logger.info("SQLite schema initialized via metadata bootstrap")
+        return
+
+    if not settings.AUTO_RUN_MIGRATIONS:
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        logger.warning("AUTO_RUN_MIGRATIONS disabled; schema initialized via metadata bootstrap")
+        return
+
+    await ensure_relational_schema(table_names)
+
+
+def get_alembic_config() -> Config:
+    config = Config(str(BACKEND_ROOT / "alembic.ini"))
+    config.set_main_option("script_location", str(BACKEND_ROOT / "alembic"))
+    config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
+    return config
+
+
+async def run_alembic_command(action: str, revision: str) -> None:
+    config = get_alembic_config()
+    await asyncio.to_thread(getattr(command, action), config, revision)
+
+
+async def ensure_relational_schema(existing_tables: set[str]) -> None:
+    has_business_tables = bool(existing_tables & LEGACY_APP_TABLES)
+    has_alembic_version = "alembic_version" in existing_tables
+
+    if not has_business_tables:
+        logger.info("Database is empty; applying Alembic migrations")
+        await run_alembic_command("upgrade", "head")
+        return
+
+    if has_alembic_version:
+        logger.info("Alembic version table detected; upgrading schema to head")
+        await run_alembic_command("upgrade", "head")
+        return
+
+    logger.warning(
+        "Legacy relational schema detected without alembic_version; bootstrapping missing tables and stamping head"
+    )
+    async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-        await ensure_legacy_sqlite_schema(conn)
+    await run_alembic_command("stamp", "head")
 
 
 async def get_sqlite_table_columns(conn, table_name: str) -> set[str]:

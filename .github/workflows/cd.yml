@@ -308,4 +308,14 @@ jobs:
              && if [ ! -f .env ]; then echo 'Missing .env' >&2; exit 1; fi \
              && command -v docker >/dev/null \
              && docker compose up -d --build --remove-orphans \
+             && for attempt in 1 2 3 4 5 6; do \
+                  if docker compose exec -T backend python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/health/ready'); urllib.request.urlopen('http://127.0.0.1:5000/api/v1/public/version/win-x64')\"; then \
+                    break; \
+                  fi; \
+                  if [ \"\$attempt\" -eq 6 ]; then \
+                    echo 'Post-deploy readiness checks failed' >&2; \
+                    exit 1; \
+                  fi; \
+                  sleep 5; \
+                done \
              && docker compose ps"

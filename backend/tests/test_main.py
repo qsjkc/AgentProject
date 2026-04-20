@@ -1,6 +1,7 @@
 import os
 import shutil
 from pathlib import Path
+import json
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -13,6 +14,8 @@ os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{(TEST_ROOT / 'test.db').as_p
 os.environ["CHROMA_PERSIST_DIR"] = str(TEST_ROOT / "chroma")
 os.environ["UPLOAD_DIR"] = str(TEST_ROOT / "uploads")
 os.environ["DOWNLOAD_DIR"] = str(TEST_ROOT / "downloads")
+os.environ["SMTP_USER"] = ""
+os.environ["SMTP_PASSWORD"] = ""
 os.environ["INITIAL_ADMIN_USERNAME"] = "admin"
 os.environ["INITIAL_ADMIN_EMAIL"] = "admin@example.com"
 os.environ["INITIAL_ADMIN_PASSWORD"] = "ChangeThisPassword123!"
@@ -91,6 +94,11 @@ async def test_root_and_health(client: AsyncClient):
     health_response = await client.get("/health")
     assert health_response.status_code == 200
     assert health_response.json()["status"] == "healthy"
+
+    ready_response = await client.get("/health/ready")
+    assert ready_response.status_code == 200
+    assert ready_response.json()["status"] == "ready"
+    assert ready_response.json()["checks"]["database"] == "ok"
 
 
 @pytest.mark.asyncio
@@ -195,6 +203,78 @@ async def test_register_rejects_existing_email_and_chat_accepts_pet_type(client:
     assert chat_response.json()["session_id"] > 0
     assert chat_response.json()["knowledge_used"] is False
     assert chat_response.json()["sources"] == []
+
+
+@pytest.mark.asyncio
+async def test_public_release_endpoint_reflects_download_file(client: AsyncClient):
+    release_response = await client.get("/api/v1/public/version/win-x64")
+    assert release_response.status_code == 200
+    assert release_response.json()["available"] is False
+
+    release_file = TEST_ROOT / "downloads" / "DetachymAgentPet1.0.exe"
+    release_file.write_bytes(b"binary")
+
+    refreshed_response = await client.get("/api/v1/public/version/win-x64")
+    assert refreshed_response.status_code == 200
+    assert refreshed_response.json()["available"] is True
+    assert refreshed_response.json()["filename"] == "DetachymAgentPet1.0.exe"
+
+
+@pytest.mark.asyncio
+async def test_chat_stream_preserves_compact_prompt_and_rag_sources(client: AsyncClient, monkeypatch):
+    await register_user(client, username="streamuser", email="streamuser@example.com")
+    token = await login(client, username="streamuser")
+    headers = {"Authorization": f"Bearer {token}"}
+
+    upload_response = await client.post(
+        "/api/v1/rag/upload",
+        headers=headers,
+        files={"file": ("guide.md", b"stream compact knowledge about gamma", "text/markdown")},
+    )
+    assert upload_response.status_code == 200
+
+    captured_messages = []
+
+    async def fake_chat(messages, stream=True, temperature=0.7, max_tokens=None):
+        captured_messages[:] = messages
+        if stream:
+            yield "chunk-1"
+            yield "chunk-2"
+            return
+        yield "complete-response"
+
+    from app.services.chat import service as chat_service_module  # noqa: E402
+
+    monkeypatch.setattr(chat_service_module.llm_service, "chat", fake_chat)
+
+    async with client.stream(
+        "POST",
+        "/api/v1/chat/stream",
+        headers=headers,
+        json={
+            "message": "Tell me about gamma",
+            "use_rag": True,
+            "pet_type": "cat",
+            "compact_response": True,
+        },
+    ) as response:
+        assert response.status_code == 200
+        payloads = []
+        async for line in response.aiter_lines():
+            if line.startswith("data: "):
+                payloads.append(json.loads(line[6:]))
+
+    assert len(payloads) >= 4
+    assert payloads[0]["session_id"] > 0
+    assert payloads[0]["knowledge_used"] is True
+    assert payloads[0]["sources"][0]["filename"] == "guide.md"
+    assert payloads[-1]["done"] is True
+    assert payloads[-1]["knowledge_used"] is True
+
+    system_prompts = [item.content for item in captured_messages if item.role == "system"]
+    assert any("desktop cat companion" in prompt for prompt in system_prompts)
+    assert any("small desktop pet bubble" in prompt for prompt in system_prompts)
+    assert any("knowledge base context" in prompt for prompt in system_prompts)
 
 
 @pytest.mark.asyncio

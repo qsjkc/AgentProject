@@ -160,6 +160,12 @@ docker compose up -d --build --remove-orphans
 docker compose ps
 ```
 
+8. 在服务器执行部署后就绪检查：
+
+```bash
+python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/health/ready'); urllib.request.urlopen('http://127.0.0.1:5000/api/v1/public/version/win-x64')"
+```
+
 ## 服务器部署变量解析规则
 
 `deploy-server` 对部署目标做了容错处理，支持以下输入：
@@ -267,6 +273,7 @@ sh: tsc: Permission denied
 - `deploy-server` 改用原生 `ssh/scp`
 - 对 `SERVER_HOST`、`SERVER_PORT` 做容错解析
 - 对前端 `node_modules` 污染链路做了完整封堵
+- 部署完成后增加了后端就绪检查和公开版本接口探测
 
 ## 常见失败与定位
 
@@ -293,13 +300,14 @@ docker compose logs --tail=100 nginx
 对外检查：
 
 - `/health`
+- `/health/ready`
 - `/api/v1/public/version/win-x64`
 - `/download/DetachymAgentPet1.0.exe`
 
 ## 当前结论
 
-截至当前版本，仓库内的 `CI` 与 `CD` 已按现有配置跑通。后续若要继续增强，优先建议：
+截至当前版本，仓库内的 `CI` 与 `CD` 已按现有配置跑通，并且部署后已经包含后端 readiness 校验。后续若要继续增强，优先建议：
 
-1. 在 `deploy-server` 结束后增加健康检查断言
-2. 为 Docker 镜像发布增加版本号 tag，而不只使用 `latest`
+1. 为 Docker 镜像发布增加版本号 tag，而不只使用 `latest`
+2. 将当前“上传源码到服务器再构建”逐步演进为“镜像优先部署”
 3. 若服务器网络环境稳定，再考虑恢复更严格的 host key 校验策略
