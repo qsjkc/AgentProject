@@ -1,31 +1,11 @@
+import { normalizeApiBaseUrl } from './api-base-url'
+
 const LOCAL_API_BASE_URL = 'http://127.0.0.1:5000/api/v1'
 
 const buildTimeApiBaseUrl = normalizeApiBaseUrl(
   import.meta.env.VITE_API_BASE_URL || __DETACHYM_DEFAULT_API_BASE_URL__ || '',
 )
 let cachedApiBaseUrl = import.meta.env.DEV ? LOCAL_API_BASE_URL : buildTimeApiBaseUrl
-
-function normalizeApiBaseUrl(value) {
-  const rawValue = String(value || '').trim()
-  if (!rawValue) {
-    return ''
-  }
-
-  let normalizedValue = rawValue.replace(/\/+$/, '')
-  if (!/^https?:\/\//i.test(normalizedValue)) {
-    normalizedValue = `http://${normalizedValue}`
-  }
-
-  if (!/\/api\/v\d+$/i.test(normalizedValue)) {
-    if (/\/api$/i.test(normalizedValue)) {
-      normalizedValue = `${normalizedValue}/v1`
-    } else {
-      normalizedValue = `${normalizedValue}/api/v1`
-    }
-  }
-
-  return normalizedValue
-}
 
 function getDesktopBridge() {
   return window.desktopBridge || null

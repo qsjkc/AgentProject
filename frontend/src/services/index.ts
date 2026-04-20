@@ -1,4 +1,5 @@
 import api, { apiOrigin } from './api'
+import { resolveDownloadUrlWithOrigin } from './url'
 import type {
   AdminOverview,
   AdminUserCreateInput,
@@ -147,8 +148,5 @@ export const publicApi = {
 }
 
 export const resolveDownloadUrl = (release: DesktopRelease) => {
-  if (release.download_url.startsWith('http')) {
-    return release.download_url
-  }
-  return `${apiOrigin}${release.download_url}`
+  return resolveDownloadUrlWithOrigin(apiOrigin, release)
 }

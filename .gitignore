@@ -74,6 +74,7 @@ yarn-error.log*
 # Build outputs
 dist/
 build/
+.test-dist/
 *.local
 !desktop/build/
 !desktop/build/icon.ico
