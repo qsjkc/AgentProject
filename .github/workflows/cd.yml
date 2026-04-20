@@ -134,17 +134,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          APP_VERSION="$(python - <<'PY'
-from pathlib import Path
-import re
-
-content = Path('backend/app/core/config.py').read_text(encoding='utf-8')
-match = re.search(r'APP_VERSION:\s*str\s*=\s*"([^"]+)"', content)
-if not match:
-    raise SystemExit('APP_VERSION not found')
-print(match.group(1))
-PY
-          )"
+          APP_VERSION="$(python -c "from pathlib import Path; import re; content = Path('backend/app/core/config.py').read_text(encoding='utf-8'); match = re.search(r'APP_VERSION:\\s*str\\s*=\\s*\"([^\"]+)\"', content); assert match, 'APP_VERSION not found'; print(match.group(1))")"
           SHORT_SHA="$(git rev-parse --short HEAD)"
           echo "app_version=$APP_VERSION" >> "$GITHUB_OUTPUT"
           echo "short_sha=$SHORT_SHA" >> "$GITHUB_OUTPUT"
