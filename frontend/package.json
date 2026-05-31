@@ -11,6 +11,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@volcengine/rtc": "^4.66.20",
     "axios": "^1.6.7",
     "clsx": "^2.1.0",
     "framer-motion": "^12.38.0",

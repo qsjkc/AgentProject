@@ -68,3 +68,65 @@ export interface DesktopRelease {
   available: boolean
   published_at?: string | null
 }
+
+export type VoiceDemoState =
+  | 'creating'
+  | 'active'
+  | 'stopping'
+  | 'stopped'
+  | 'expired'
+  | 'stop_pending'
+  | 'cleanup_failed'
+  | 'failed'
+
+export type VoiceDemoUiPhase =
+  | 'idle'
+  | 'creating_session'
+  | 'joining_room'
+  | 'connected'
+  | 'interrupting'
+  | 'stopping'
+  | 'stopped'
+  | 'error'
+
+export interface VoiceDemoSessionCreateResponse {
+  sessionId: string
+  appId: string
+  roomId: string
+  userId: string
+  aiUserId: string
+  token: string
+  sessionActive: boolean
+  state: VoiceDemoState
+  expiresAt: string
+}
+
+export interface VoiceDemoSessionStatusResponse {
+  sessionId: string
+  roomId: string
+  sessionActive: boolean
+  state: VoiceDemoState
+  startedAt: string | null
+  expiresAt: string
+  lastAction: string | null
+  lastError: string | null
+}
+
+export interface VoiceDemoSessionActionResponse {
+  started?: boolean
+  accepted?: boolean
+  sessionActive: boolean
+  state: VoiceDemoState
+  lastAction: string | null
+  lastError: string | null
+}
+
+export interface VoiceDemoStopResponse {
+  success: boolean
+  alreadyStopped: boolean
+  cleanupPending: boolean
+  sessionActive: boolean
+  state: VoiceDemoState
+  lastAction: string | null
+  lastError: string | null
+}

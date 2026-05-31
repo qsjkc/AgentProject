@@ -4,7 +4,7 @@ import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
 
 import AppShell from './components/AppShell'
 import RootErrorBoundary from './components/RootErrorBoundary'
-import { Account, Admin, Download, Home, Login, Register } from './pages'
+import { Account, Admin, Download, Home, Login, Register, VoiceDemoPage } from './pages'
 import { useAuthStore } from './stores'
 
 function RequireAuth({ children }: { children: ReactNode }) {
@@ -66,6 +66,14 @@ function AuthBootstrap() {
           element={
             <RequireAuth>
               <Account />
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="/voice-demo"
+          element={
+            <RequireAuth>
+              <VoiceDemoPage />
             </RequireAuth>
           }
         />

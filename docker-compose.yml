@@ -45,11 +45,14 @@ services:
       - backend
     ports:
       - "80:80"
+      - "443:443"
     volumes:
       - ./data/downloads:/usr/share/nginx/html/download:ro,Z
+      - /etc/letsencrypt:/etc/letsencrypt:ro,Z
     networks:
       - agentproject-network
 
 networks:
   agentproject-network:
+    name: agentproject-network
     driver: bridge

@@ -55,6 +55,27 @@ class Settings(BaseSettings):
     DESKTOP_RELEASE_FILE: str = "DetachymAgentPet1.0.exe"
     DESKTOP_DOWNLOAD_BASE: str = "/download"
 
+    VOLC_AI_RTC_APP_ID: Optional[str] = None
+    VOLC_AI_RTC_APP_KEY: Optional[str] = None
+    VOLC_OPENAPI_AK: Optional[str] = None
+    VOLC_OPENAPI_SK: Optional[str] = None
+    VOLC_OPENAPI_REGION: str = "cn-north-1"
+    VOLC_AGENT_CHAT_COMPLETIONS_URL: Optional[str] = None
+    VOLC_AGENT_API_KEY: Optional[str] = None
+    VOLC_AGENT_MODEL_NAME: str = "voice-agent-demo-v1"
+    VOLC_RTC_TOKEN_TTL_SECONDS: int = 3600
+    VOLC_VOICE_CHAT_ASR_CONFIG_JSON: str = "{}"
+    VOLC_VOICE_CHAT_TTS_CONFIG_JSON: str = "{}"
+    VOLC_VOICE_CHAT_LLM_CONFIG_JSON: str = "{}"
+    VOLC_VOICE_CHAT_WELCOME_MESSAGE: str = ""
+    VOLC_VOICE_CHAT_SYSTEM_PROMPT: str = (
+        "你是一个简洁、自然、适合语音播报的中文智能助手。"
+        "优先直接回答，不输出 markdown，不提及工具细节。"
+    )
+    VOLC_SESSION_CLEANUP_INTERVAL_SECONDS: int = 30
+    VOLC_SESSION_TOMBSTONE_SECONDS: int = 300
+    BACKEND_INTERNAL_API_KEY: Optional[str] = None
+
     INITIAL_ADMIN_USERNAME: Optional[str] = None
     INITIAL_ADMIN_EMAIL: Optional[str] = None
     INITIAL_ADMIN_PASSWORD: Optional[str] = None

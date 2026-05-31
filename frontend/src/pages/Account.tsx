@@ -1,4 +1,5 @@
 import { FormEvent, useEffect, useMemo, useState } from 'react'
+import { Link } from 'react-router-dom'
 
 import { getErrorMessage } from '../lib/errors'
 import { authApi, publicApi, resolveDownloadUrl, userApi } from '../services'
@@ -164,6 +165,20 @@ export default function Account() {
       </section>
 
       <section className="space-y-8">
+        <article className="rounded-[2rem] border border-slate-200 bg-white/90 p-8">
+          <div className="text-xs uppercase tracking-[0.3em] text-slate-500">Voice Demo</div>
+          <h2 className="mt-4 text-2xl font-semibold text-slate-950">AI 语音 Demo</h2>
+          <p className="mt-3 text-sm leading-7 text-slate-600">
+            进入独立的 RTC 联调页，测试连接、静音、打断、挂断、重连和 AI 远端音频订阅。
+          </p>
+          <Link
+            to="/voice-demo"
+            className="mt-6 inline-flex rounded-2xl bg-slate-950 px-6 py-3 text-sm font-medium text-white transition hover:bg-slate-700"
+          >
+            打开语音 Demo
+          </Link>
+        </article>
+
         <article className="rounded-[2rem] border border-slate-200 bg-white/90 p-8">
           <div className="text-xs uppercase tracking-[0.3em] text-slate-500">Security</div>
           <h2 className="mt-4 text-2xl font-semibold text-slate-950">修改密码</h2>

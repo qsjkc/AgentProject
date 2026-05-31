@@ -169,6 +169,17 @@ jobs:
             ${{ secrets.DOCKER_USERNAME }}/agentproject-nginx:v${{ steps.image-meta.outputs.app_version }}
             ${{ secrets.DOCKER_USERNAME }}/agentproject-nginx:sha-${{ steps.image-meta.outputs.short_sha }}
 
+      - name: Build and push agent-server image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./agent-server
+          file: ./agent-server/Dockerfile
+          push: true
+          tags: |
+            ${{ secrets.DOCKER_USERNAME }}/agentproject-agent-server:latest
+            ${{ secrets.DOCKER_USERNAME }}/agentproject-agent-server:v${{ steps.image-meta.outputs.app_version }}
+            ${{ secrets.DOCKER_USERNAME }}/agentproject-agent-server:sha-${{ steps.image-meta.outputs.short_sha }}
+
   deploy-server:
     name: Deploy Server
     needs: [preflight, desktop-installer]
@@ -180,6 +191,7 @@ jobs:
       SERVER_USERNAME_RAW: ${{ secrets.SERVER_USERNAME }}
       SERVER_APP_DIR_RAW: ${{ secrets.SERVER_APP_DIR }}
       SERVER_PORT_RAW: ${{ secrets.SERVER_PORT }}
+      APP_ENV_FILE_SECRET: ${{ secrets.APP_ENV_FILE }}
 
     steps:
       - uses: actions/checkout@v4
@@ -278,11 +290,22 @@ jobs:
           set -euo pipefail
           ssh deploy-target \
             "mkdir -p '$DEPLOY_APP_DIR' \
+             && mkdir -p '$DEPLOY_APP_DIR/agent-server' \
              && mkdir -p '$DEPLOY_APP_DIR/data/downloads' \
              && mkdir -p '$DEPLOY_APP_DIR/data/postgres' \
              && mkdir -p '$DEPLOY_APP_DIR/data/uploads' \
              && mkdir -p '$DEPLOY_APP_DIR/data/chroma' \
              && mkdir -p '$DEPLOY_APP_DIR/logs'"
+
+      - name: Upload runtime env file when provided
+        if: env.APP_ENV_FILE_SECRET != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          tmp_env="$(mktemp)"
+          printf '%s' "$APP_ENV_FILE_SECRET" > "$tmp_env"
+          scp "$tmp_env" "deploy-target:$DEPLOY_APP_DIR/.env"
+          rm -f "$tmp_env"
 
       - name: Upload application source
         shell: bash
@@ -295,14 +318,16 @@ jobs:
             --exclude='backend/venv' \
             --exclude='backend/__pycache__' \
             --exclude='backend/**/*.pyc' \
+            --exclude='agent-server/.venv' \
+            --exclude='agent-server/.pytest_cache' \
             -czf app-source.tgz \
-            backend deploy frontend docker-compose.yml .dockerignore
+            agent-server backend deploy frontend docker-compose.yml .dockerignore
           scp \
             app-source.tgz \
             "deploy-target:$DEPLOY_APP_DIR/"
           ssh deploy-target \
             "cd '$DEPLOY_APP_DIR' \
-             && rm -rf frontend/node_modules frontend/dist frontend/.vite backend/venv \
+             && rm -rf frontend/node_modules frontend/dist frontend/.vite backend/venv agent-server/.venv \
              && tar xzf app-source.tgz \
              && rm -f app-source.tgz"
           rm -f app-source.tgz
@@ -322,14 +347,31 @@ jobs:
           ssh deploy-target \
             "cd '$DEPLOY_APP_DIR' \
              && if [ ! -f .env ]; then echo 'Missing .env' >&2; exit 1; fi \
+             && AGENT_API_KEY=\$(grep '^VOLC_AGENT_API_KEY=' .env | cut -d= -f2-) \
+             && BACKEND_INTERNAL_API_KEY=\$(grep '^BACKEND_INTERNAL_API_KEY=' .env | cut -d= -f2-) \
+             && if [ -z \"\$AGENT_API_KEY\" ] || [ -z \"\$BACKEND_INTERNAL_API_KEY\" ]; then echo 'Missing VOLC_AGENT_API_KEY or BACKEND_INTERNAL_API_KEY in .env' >&2; exit 1; fi \
+             && printf 'AGENT_API_KEY=%s\nAGENT_LOG_LEVEL=info\nAGENT_FIRST_CHUNK_TIMEOUT_MS=8000\nAGENT_TOTAL_TIMEOUT_MS=45000\nAGENT_TOOL_TIMEOUT_MS=5000\nBACKEND_BASE_URL=http://agentproject-backend:5000\nBACKEND_INTERNAL_API_KEY=%s\n' \"\$AGENT_API_KEY\" \"\$BACKEND_INTERNAL_API_KEY\" > agent-server/.env \
              && command -v docker >/dev/null \
              && docker compose up -d --build --remove-orphans \
+             && cd agent-server \
+             && docker compose up -d --build --remove-orphans \
+             && cd .. \
              && for attempt in 1 2 3 4 5 6; do \
                   if docker compose exec -T backend python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/health/ready'); urllib.request.urlopen('http://127.0.0.1:5000/api/v1/public/version/win-x64')\"; then \
                     break; \
                   fi; \
                   if [ \"\$attempt\" -eq 6 ]; then \
                     echo 'Post-deploy readiness checks failed' >&2; \
+                    exit 1; \
+                  fi; \
+                  sleep 5; \
+                done \
+             && for attempt in 1 2 3 4 5 6; do \
+                  if curl -fsS http://127.0.0.1:8001/health >/dev/null; then \
+                    break; \
+                  fi; \
+                  if [ \"\$attempt\" -eq 6 ]; then \
+                    echo 'Agent-server readiness checks failed' >&2; \
                     exit 1; \
                   fi; \
                   sleep 5; \

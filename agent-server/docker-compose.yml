@@ -1,0 +1,18 @@
+services:
+  agent-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: agentproject-agent-server
+    restart: unless-stopped
+    env_file:
+      - ./.env
+    ports:
+      - "127.0.0.1:8001:8000"
+    networks:
+      - agentproject-network
+
+networks:
+  agentproject-network:
+    external: true
+    name: agentproject-network

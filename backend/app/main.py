@@ -11,6 +11,7 @@ from app.core.config import settings
 from app.core.logging import logger
 from app.core.security import get_password_hash
 from app.models.database import User, async_session_maker, init_db
+from app.services.rtc.service import voice_demo_service
 
 
 async def seed_initial_admin() -> None:
@@ -54,10 +55,12 @@ async def lifespan(_: FastAPI):
 
     await init_db()
     await seed_initial_admin()
+    await voice_demo_service.startup()
     logger.info("Application storage initialized")
 
     yield
 
+    await voice_demo_service.shutdown()
     logger.info("Shutting down %s", settings.APP_NAME)
 
 

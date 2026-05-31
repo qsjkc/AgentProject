@@ -1,7 +1,7 @@
 from datetime import timedelta
 from typing import Optional
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, Header, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
 from passlib.context import CryptContext
@@ -69,3 +69,19 @@ async def get_current_superuser(current_user: User = Depends(get_current_user)) 
     if not current_user.is_superuser:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
     return current_user
+
+
+async def get_internal_service_identity(
+    x_internal_api_key: str | None = Header(default=None),
+) -> str:
+    if not settings.BACKEND_INTERNAL_API_KEY:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Internal service API key is not configured",
+        )
+    if x_internal_api_key != settings.BACKEND_INTERNAL_API_KEY:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid internal service API key",
+        )
+    return "internal-service"

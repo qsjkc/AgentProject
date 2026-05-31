@@ -93,3 +93,6 @@ htmlcov/
 
 # MyPy
 .mypy_cache/
+
+# Codex local tooling and caches
+.codex/

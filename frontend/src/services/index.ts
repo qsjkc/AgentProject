@@ -1,5 +1,13 @@
 import api, { apiOrigin } from './api'
 import { resolveDownloadUrlWithOrigin } from './url'
+export {
+  createVoiceDemoSession,
+  getVoiceDemoSession,
+  interruptVoiceDemoSession,
+  startVoiceDemoSession,
+  stopVoiceDemoSession,
+  voiceDemoApi,
+} from './voiceDemo'
 import type {
   AdminOverview,
   AdminUserCreateInput,

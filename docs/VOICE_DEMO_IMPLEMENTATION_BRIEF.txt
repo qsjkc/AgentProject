@@ -1,0 +1,23 @@
+这次是在原有 AgentProject 上追加“火山引擎 RTC 语音 Agent Demo”，不是单独起一个新项目。
+
+整体接法分三层：
+
+第一层是主站后端。主站后端继续复用原来的登录体系和 API 路由，新增了 /api/v1/rtc/voice-demo 这一组接口，用来创建 session、启动 StartVoiceChat、查询状态、打断和挂断。RTC token、session 生命周期、stop/interrupt 幂等、cleanup worker 也都放在这一层处理。这样浏览器不需要接触火山 OpenAPI 参数，也不会拿到内部服务密钥。
+
+第二层是独立的 agent-server。它不是并到主站后端里，而是单独做成一个 FastAPI + LangGraph 服务，对火山侧暴露 OpenAI-compatible 的 /v1/chat/completions。它支持 stream=true 的 SSE 输出，也支持 stream=false 方便调试。它内部只做轻量工具路由：时间、天气、平台状态。天气和平台状态不是在 agent-server 里直接写死，而是通过 X-Internal-Api-Key 回调主站后端的内部工具接口。
+
+第三层是前端语音页面。前端新增了 /voice-demo 和账户页入口，页面负责检查 HTTPS、申请麦克风权限、创建后端 session、调用 @volcengine/rtc 进房、发布本地麦克风音频、订阅 AI 用户远端音频，并提供静音、打断、挂断、重连和事件日志。
+
+这次实现里几个关键点是：
+
+一，后端是控制面，agent-server 是模型/工具桥接层，前端只是 RTC 房间和交互层，职责边界比较清楚。
+
+二，火山接口最终用的是新版 StartVoiceChat / UpdateVoiceChat / StopVoiceChat，且请求体必须发原始 JSON，不能再 flatten，否则会出现误导性报错。
+
+三，最开始联调失败的核心原因不是代码，而是用了普通 RTC AppId。后来切换成 AI 音视频互动方案可用的 AppId/AppKey 后，StartVoiceChat 才真正通过。
+
+四，agent-server 一开始有中文编码损坏，导致工具关键词匹配失效，看起来像“能语音但不会调工具”。后来重写了工具路由和文案，这条链路才恢复正常。
+
+五，天气工具最初只是固定 stub，后来改成了真实天气查询。现在主站后端通过 Open-Meteo geocoding + forecast 查询真实天气，agent-server 再把结果转成适合 TTS 播报的自然语言。现在像“今天天气怎么样”会查默认城市，“上海天气怎么样”会把上海透传过去并返回真实天气。
+
+这套功能基于原项目继续扩展时，建议沿用当前结构：如果后面要加新工具，就先在主站后端新增内部接口，再在 agent-server 里加对应工具函数和路由规则，不要让浏览器直接拿内部 key，也不要把更多业务逻辑塞进前端。
