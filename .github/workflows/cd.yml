@@ -182,7 +182,7 @@ jobs:
 
   deploy-server:
     name: Deploy Server
-    needs: [preflight, desktop-installer]
+    needs: preflight
     if: needs.preflight.outputs.server_enabled == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -197,12 +197,6 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ needs.preflight.outputs.deploy_ref }}
-
-      - name: Download desktop artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: agentproject-desktop-win
-          path: release-artifacts
 
       - name: Set up SSH
         shell: bash
@@ -276,9 +270,9 @@ jobs:
             IdentitiesOnly yes
             StrictHostKeyChecking accept-new
             BatchMode yes
-            ConnectTimeout 20
-            ServerAliveInterval 15
-            ServerAliveCountMax 3
+            ConnectTimeout 30
+            ServerAliveInterval 60
+            ServerAliveCountMax 10
           EOF
           chmod 600 ~/.ssh/config
 
@@ -332,14 +326,6 @@ jobs:
              && rm -f app-source.tgz"
           rm -f app-source.tgz
 
-      - name: Upload desktop installer
-        shell: bash
-        run: |
-          set -euo pipefail
-          scp \
-            release-artifacts/DetachymAgentPet1.0.exe \
-            "deploy-target:$DEPLOY_APP_DIR/data/downloads/"
-
       - name: Deploy on server
         shell: bash
         run: |
@@ -352,12 +338,13 @@ jobs:
              && if [ -z \"\$AGENT_API_KEY\" ] || [ -z \"\$BACKEND_INTERNAL_API_KEY\" ]; then echo 'Missing VOLC_AGENT_API_KEY or BACKEND_INTERNAL_API_KEY in .env' >&2; exit 1; fi \
              && printf 'AGENT_API_KEY=%s\nAGENT_LOG_LEVEL=info\nAGENT_FIRST_CHUNK_TIMEOUT_MS=8000\nAGENT_TOTAL_TIMEOUT_MS=45000\nAGENT_TOOL_TIMEOUT_MS=5000\nBACKEND_BASE_URL=http://agentproject-backend:5000\nBACKEND_INTERNAL_API_KEY=%s\n' \"\$AGENT_API_KEY\" \"\$BACKEND_INTERNAL_API_KEY\" > agent-server/.env \
              && command -v docker >/dev/null \
+             && export DOCKER_BUILDKIT=1 COMPOSE_PROGRESS=plain \
              && docker compose up -d --build --remove-orphans \
              && cd agent-server \
              && docker compose up -d --build --remove-orphans \
              && cd .. \
              && for attempt in 1 2 3 4 5 6; do \
-                  if docker compose exec -T backend python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/health/ready'); urllib.request.urlopen('http://127.0.0.1:5000/api/v1/public/version/win-x64')\"; then \
+                  if docker compose exec -T backend python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/health/ready')\"; then \
                     break; \
                   fi; \
                   if [ \"\$attempt\" -eq 6 ]; then \
