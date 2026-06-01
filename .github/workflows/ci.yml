@@ -87,6 +87,8 @@ jobs:
     name: Agent Server Tests
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      PYTHONPATH: .
     defaults:
       run:
         working-directory: agent-server
