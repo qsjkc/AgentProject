@@ -9,12 +9,16 @@ import {
   getApiBaseUrl,
   getLanguage,
   getSessionToken,
+  getVoiceSettings,
   login,
+  openQuickChat,
   setApiBaseUrl,
   setLanguage,
+  updateVoiceSettings,
 } from './shared/api'
 import { normalizeLanguage, SUPPORTED_LANGUAGES, t } from './shared/i18n'
 import { getPetVisual } from './shared/pets'
+import { DEFAULT_VOICE_SETTINGS, normalizeVoiceSettings, VOICE_OUTPUT_MODES } from './shared/voice-state'
 
 const PET_OPTIONS = ['cat', 'dog', 'pig']
 
@@ -181,6 +185,48 @@ function PetPreferencePicker({ language, activePetType, onSelect, saving }) {
   )
 }
 
+function getVoiceModeLabel(language, mode) {
+  if (mode === VOICE_OUTPUT_MODES.VOICE_AND_TEXT) {
+    return language === 'zh-CN' ? '语音 + 文本' : 'Voice + text'
+  }
+  return language === 'zh-CN' ? '仅文本' : 'Text only'
+}
+
+function VoiceSettingsPanel({ language, voiceSettings, onOutputModeChange, saving }) {
+  const title = language === 'zh-CN' ? '语音模式' : 'Voice Mode'
+  const label = language === 'zh-CN' ? '回复模式' : 'Reply Mode'
+  const hint =
+    language === 'zh-CN'
+      ? '默认只显示桌宠气泡文本。切换到语音模式后，AI 回复会自动播放语音。'
+      : 'Text-only keeps AI replies silent. Voice + text will auto-play the AI reply audio.'
+  const shortcutHint =
+    language === 'zh-CN'
+      ? '桌宠语音快捷键固定为 D，仅在桌宠窗口聚焦时生效。'
+      : 'The desktop voice shortcut is fixed to D and only works while the pet window is focused.'
+
+  return (
+    <div className="pet-selector-block" style={{ marginTop: 18 }}>
+      <div className="sidebar-title">{title}</div>
+      <div className="sidebar-copy">{hint}</div>
+      <label style={{ display: 'grid', gap: 8, marginTop: 12 }}>
+        <span style={{ fontSize: 13, color: '#475569' }}>{label}</span>
+        <select
+          className="select"
+          value={voiceSettings.desktop_voice_output_mode}
+          onChange={(event) => onOutputModeChange(event.target.value)}
+          disabled={saving}
+        >
+          <option value={VOICE_OUTPUT_MODES.TEXT_ONLY}>{getVoiceModeLabel(language, VOICE_OUTPUT_MODES.TEXT_ONLY)}</option>
+          <option value={VOICE_OUTPUT_MODES.VOICE_AND_TEXT}>
+            {getVoiceModeLabel(language, VOICE_OUTPUT_MODES.VOICE_AND_TEXT)}
+          </option>
+        </select>
+      </label>
+      <div style={{ marginTop: 10, fontSize: 12, color: '#64748b', lineHeight: 1.6 }}>{shortcutHint}</div>
+    </div>
+  )
+}
+
 function MainPanelApp() {
   const [initialized, setInitialized] = useState(false)
   const [authenticated, setAuthenticated] = useState(false)
@@ -197,8 +243,10 @@ function MainPanelApp() {
   const [knowledgeSources, setKnowledgeSources] = useState([])
   const [loading, setLoading] = useState(false)
   const [savingPet, setSavingPet] = useState(false)
+  const [savingVoiceSettings, setSavingVoiceSettings] = useState(false)
   const [apiBaseUrl, setApiBaseUrlState] = useState('')
   const [language, setLanguageState] = useState('zh-CN')
+  const [voiceSettings, setVoiceSettingsState] = useState(DEFAULT_VOICE_SETTINGS)
 
   const activeSession = useMemo(
     () => sessions.find((session) => session.id === activeSessionId) ?? null,
@@ -274,10 +322,12 @@ function MainPanelApp() {
           getSessionToken(),
           getLanguage(),
         ])
+        const savedVoiceSettings = normalizeVoiceSettings(await getVoiceSettings())
 
         if (active) {
           setApiBaseUrlState(savedApiBaseUrl || '')
           setLanguageState(normalizeLanguage(savedLanguage))
+          setVoiceSettingsState(savedVoiceSettings)
         }
 
         if (!token || !savedApiBaseUrl) {
@@ -305,6 +355,16 @@ function MainPanelApp() {
 
     return () => {
       active = false
+    }
+  }, [])
+
+  useEffect(() => {
+    const unsubscribe = window.desktopBridge?.onVoiceSettingsChanged?.((payload) => {
+      setVoiceSettingsState(normalizeVoiceSettings(payload))
+    })
+
+    return () => {
+      unsubscribe?.()
     }
   }, [])
 
@@ -516,6 +576,29 @@ function MainPanelApp() {
     }
   }
 
+  const handleVoiceOutputModeChange = async (nextMode) => {
+    if (savingVoiceSettings || nextMode === voiceSettings.desktop_voice_output_mode) {
+      return
+    }
+
+    setSavingVoiceSettings(true)
+    try {
+      const nextSettings = await updateVoiceSettings({
+        desktop_voice_output_mode: nextMode,
+      })
+      setVoiceSettingsState(normalizeVoiceSettings(nextSettings))
+      setStatusText(
+        language === 'zh-CN'
+          ? `桌宠回复模式已切换为${getVoiceModeLabel(language, nextMode)}。`
+          : `Desktop reply mode switched to ${getVoiceModeLabel(language, nextMode)}.`,
+      )
+    } catch (error) {
+      setStatusText(formatError(error, language === 'zh-CN' ? '更新语音模式失败。' : 'Failed to update voice mode.'))
+    } finally {
+      setSavingVoiceSettings(false)
+    }
+  }
+
   const handleLogout = async () => {
     await clearSessionToken()
     setAuthenticated(false)
@@ -563,6 +646,12 @@ function MainPanelApp() {
   const handleHideWindow = async () => {
     await window.desktopBridge?.hideMainPanel?.()
     await logDesktopDebug({ event: 'main-panel-hide' })
+  }
+
+  const handleOpenQuickChat = async () => {
+    await openQuickChat()
+    await logDesktopDebug({ event: 'main-panel-open-quick-chat' })
+    setStatusText(language === 'zh-CN' ? '快捷聊天已打开。' : 'Quick chat opened.')
   }
 
   if (!initialized) {
@@ -628,6 +717,9 @@ function MainPanelApp() {
               <button type="button" className="button-secondary" onClick={handleResetPetPosition}>
                 {t(language, 'resetPetPosition')}
               </button>
+              <button type="button" className="button-secondary" onClick={handleOpenQuickChat}>
+                {language === 'zh-CN' ? '打开快捷聊天' : 'Open Quick Chat'}
+              </button>
               <button type="button" className="button-secondary" onClick={handleServerSetup}>
                 {t(language, 'changeServer')}
               </button>
@@ -655,6 +747,14 @@ function MainPanelApp() {
                   void handlePetSelect(nextPetType)
                 }}
                 saving={savingPet}
+              />
+              <VoiceSettingsPanel
+                language={language}
+                voiceSettings={voiceSettings}
+                onOutputModeChange={(nextMode) => {
+                  void handleVoiceOutputModeChange(nextMode)
+                }}
+                saving={savingVoiceSettings}
               />
 
               <div className="sidebar-section">

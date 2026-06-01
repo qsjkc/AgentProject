@@ -4,8 +4,11 @@ contextBridge.exposeInMainWorld('desktopBridge', {
   openMainPanel: () => ipcRenderer.invoke('desktop:open-main-panel'),
   minimizeMainPanel: () => ipcRenderer.invoke('desktop:minimize-main-panel'),
   hideMainPanel: () => ipcRenderer.invoke('desktop:hide-main-panel'),
+  openQuickChat: () => ipcRenderer.invoke('desktop:open-quick-chat'),
+  hideQuickChat: () => ipcRenderer.invoke('desktop:hide-quick-chat'),
   toggleQuickChat: () => ipcRenderer.invoke('desktop:toggle-quick-chat'),
   showPet: () => ipcRenderer.invoke('desktop:show-pet'),
+  focusPetWindow: () => ipcRenderer.invoke('desktop:focus-pet-window'),
   resetPetPosition: () => ipcRenderer.invoke('desktop:reset-pet-position'),
   setPetInteractive: (interactive) => ipcRenderer.invoke('desktop:set-pet-interactive', interactive),
   switchPetFromMainPanel: (payload) => ipcRenderer.invoke('desktop:switch-pet-from-main-panel', payload),
@@ -22,6 +25,13 @@ contextBridge.exposeInMainWorld('desktopBridge', {
   setApiBaseUrl: (value) => ipcRenderer.invoke('desktop:set-api-base-url', value),
   getLanguage: () => ipcRenderer.invoke('desktop:get-language'),
   setLanguage: (value) => ipcRenderer.invoke('desktop:set-language', value),
+  getVoiceSettings: () => ipcRenderer.invoke('desktop:get-voice-settings'),
+  updateVoiceSettings: (patch) => ipcRenderer.invoke('desktop:update-voice-settings', patch),
+  onVoiceSettingsChanged: (callback) => {
+    const listener = (_event, payload) => callback(payload)
+    ipcRenderer.on('desktop:voice-settings-changed', listener)
+    return () => ipcRenderer.removeListener('desktop:voice-settings-changed', listener)
+  },
   getPetState: () => ipcRenderer.invoke('desktop:get-pet-state'),
   getPetBounds: () => ipcRenderer.invoke('desktop:get-pet-bounds'),
   setPetPosition: (position) => ipcRenderer.invoke('desktop:set-pet-position', position),

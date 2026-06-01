@@ -1,11 +1,29 @@
+from typing import Literal
+
 from fastapi import APIRouter, Depends
+from pydantic import BaseModel, Field
 
 from app.core.security import get_current_user, get_internal_service_identity
 from app.models.user import User
+from app.services.llm.base import Message
 from app.services.llm.service import llm_service
 from app.services.tools.weather import weather_service
 
-router = APIRouter(prefix="/tools", tags=["工具"])
+router = APIRouter(prefix="/tools", tags=["tools"])
+
+
+class InternalChatMessage(BaseModel):
+    role: Literal["user", "assistant", "system"] = "user"
+    content: str = Field(default="", max_length=2000)
+
+
+class InternalChatRequest(BaseModel):
+    messages: list[InternalChatMessage] = Field(default_factory=list, max_length=12)
+    compact: bool = True
+
+
+class InternalChatResponse(BaseModel):
+    content: str
 
 
 @router.get("/providers")
@@ -27,3 +45,42 @@ async def get_internal_weather(
     _: str = Depends(get_internal_service_identity),
 ):
     return await weather_service.get_weather(city)
+
+
+@router.post("/internal/chat", response_model=InternalChatResponse)
+async def get_internal_chat(
+    request: InternalChatRequest,
+    _: str = Depends(get_internal_service_identity),
+):
+    messages: list[Message] = [
+        Message(
+            role="system",
+            content=(
+                "你是 Detachym 桌宠语音助手。回答要适合语音播报，直接、自然、简短；"
+                "不要输出 Markdown，不要提及内部工具或系统实现。"
+            ),
+        )
+    ]
+    if request.compact:
+        messages.append(
+            Message(
+                role="system",
+                content="请优先用 1 到 3 句中文回答，除非用户明确要求详细解释。",
+            )
+        )
+
+    for item in request.messages[-8:]:
+        content = item.content.strip()
+        if not content:
+            continue
+        messages.append(Message(role=item.role, content=content))
+
+    if not any(message.role == "user" for message in messages):
+        return InternalChatResponse(content="我没有收到明确的问题，请再说一次。")
+
+    full_response = ""
+    async for chunk in llm_service.chat(messages, stream=False, temperature=0.5, max_tokens=220):
+        full_response += chunk
+
+    content = full_response.strip() or "我暂时没有整理出可播报的回答。"
+    return InternalChatResponse(content=content)

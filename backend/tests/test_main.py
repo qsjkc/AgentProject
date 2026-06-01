@@ -278,6 +278,37 @@ async def test_chat_stream_preserves_compact_prompt_and_rag_sources(client: Asyn
 
 
 @pytest.mark.asyncio
+async def test_internal_chat_tool_requires_key_and_uses_llm(client: AsyncClient, monkeypatch):
+    from app.core import security as security_module  # noqa: E402
+    from app.api.v1 import tools as tools_module  # noqa: E402
+
+    monkeypatch.setattr(security_module.settings, "BACKEND_INTERNAL_API_KEY", "internal-test-key")
+    captured_messages = []
+
+    async def fake_chat(messages, stream=True, temperature=0.7, max_tokens=None):
+        captured_messages[:] = messages
+        yield "内部通用回答"
+
+    monkeypatch.setattr(tools_module.llm_service, "chat", fake_chat)
+
+    unauthorized = await client.post(
+        "/api/v1/tools/internal/chat",
+        json={"messages": [{"role": "user", "content": "讲一个使用建议"}]},
+    )
+    assert unauthorized.status_code == 401
+
+    response = await client.post(
+        "/api/v1/tools/internal/chat",
+        headers={"X-Internal-Api-Key": "internal-test-key"},
+        json={"messages": [{"role": "user", "content": "讲一个使用建议"}]},
+    )
+    assert response.status_code == 200
+    assert response.json()["content"] == "内部通用回答"
+    assert captured_messages[-1].role == "user"
+    assert captured_messages[-1].content == "讲一个使用建议"
+
+
+@pytest.mark.asyncio
 async def test_legacy_short_username_can_still_login_and_fetch_profile(client: AsyncClient):
     from app.core.security import get_password_hash  # noqa: E402
     from app.models.database import User, UserPreference, async_session_maker  # noqa: E402

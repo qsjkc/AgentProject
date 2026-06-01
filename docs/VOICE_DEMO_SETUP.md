@@ -122,6 +122,7 @@ AGENT_FIRST_CHUNK_TIMEOUT_MS=8000
 AGENT_TOTAL_TIMEOUT_MS=45000
 AGENT_TOOL_TIMEOUT_MS=5000
 BACKEND_BASE_URL=
+BACKEND_FALLBACK_BASE_URL=http://backend:5000
 BACKEND_INTERNAL_API_KEY=
 ```
 
@@ -135,11 +136,18 @@ BACKEND_INTERNAL_API_KEY=
   - 必须和后端 `BACKEND_INTERNAL_API_KEY` 一致。
   - 它只给 `agent-server` 调：
     - `/api/v1/tools/internal/weather`
+    - `/api/v1/tools/internal/chat`
     - 以及后续你要放到内部工具面的接口
 
 - `BACKEND_BASE_URL`
   - 填主站后端公网地址。
   - 例子：`https://app.example.com`
+  - 如果 `agent-server` 和主项目后端在同一个 Docker 网络内，推荐填 `http://backend:5000`，这样工具调用不依赖公网 HTTPS 回环。
+
+- `BACKEND_FALLBACK_BASE_URL`
+  - 可选兜底地址。
+  - Docker Compose 部署时建议保持 `http://backend:5000`。
+  - 当 `BACKEND_BASE_URL` 指向公网域名但证书、DNS 或代理暂时不可用时，天气和平台状态工具会尝试这个内部地址。
 
 ## 4. 如何部署 agent-server
 
@@ -248,6 +256,7 @@ python -m uvicorn app.main:app --reload --port 8000
 - 检查 AI 用户是否真的发流。
 - 检查浏览器是否拦截了自动播放。
 - 检查火山侧 TTS 配置是否有效。
+- 桌面端默认是 `text_only`，只有在主面板把桌面语音回复模式切到 `voice_and_text` 才会自动外放。
 
 ### 打断无效
 
@@ -260,12 +269,27 @@ python -m uvicorn app.main:app --reload --port 8000
 - 主站前端调后端 RTC API 依赖现有登录 token。
 - `agent-server` 依赖 `Authorization: Bearer <AGENT_API_KEY>`。
 - 内部天气工具依赖 `X-Internal-Api-Key: <BACKEND_INTERNAL_API_KEY>`。
+- 内部通用聊天工具也依赖同一个 `X-Internal-Api-Key`。
 
 ### Agent SSE 不返回 `[DONE]`
 
 - 检查 `agent-server` 是否正常跑到了流尾。
 - 检查反向代理是否截断了 SSE。
 - 检查超时或异常时是否被代理层改写为 502 / 504。
+- 当前实现会先发送一个 OpenAI-compatible 空 SSE chunk，慢工具不会再因为首包超时直接取消。
+
+### 天气服务暂时不可用
+
+- 先在服务器上测 `curl http://backend:5000/api/v1/tools/internal/weather -H "X-Internal-Api-Key: <同后端一致的 key>"`。
+- 如果公网域名 HTTPS 还没配好，`agent-server/.env` 里的 `BACKEND_BASE_URL` 不要填 `https://detachym.top`，先填 Docker 内网地址 `http://backend:5000`。
+- 如果内网地址可用但公网不可用，保留 `BACKEND_FALLBACK_BASE_URL=http://backend:5000`。
+- 如果仍然失败，检查服务器是否能访问 Open-Meteo：`https://geocoding-api.open-meteo.com` 和 `https://api.open-meteo.com`。
+
+### 很多普通问题无法回答
+
+- 确认主后端的 LLM provider 已配置，例如 `ZHIPU_API_KEY`。
+- 确认 `agent-server` 能通过内部 key 调到 `/api/v1/tools/internal/chat`。
+- 这个通用聊天兜底不读取用户私有 RAG 文档；如果要做用户级 RAG，需要后续设计语音会话和用户身份绑定。
 
 ### 火山 `StartVoiceChat` 失败
 

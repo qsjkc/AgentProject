@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     AGENT_TOTAL_TIMEOUT_MS: int = 45000
     AGENT_TOOL_TIMEOUT_MS: int = 5000
     BACKEND_BASE_URL: str = "http://localhost:5000"
+    BACKEND_FALLBACK_BASE_URL: str | None = None
     BACKEND_INTERNAL_API_KEY: str | None = None
     AGENT_MODEL_NAME: str = "voice-agent-demo-v1"
 
@@ -36,6 +37,14 @@ class Settings(BaseSettings):
         if not trimmed:
             raise ValueError("BACKEND_BASE_URL is required")
         return trimmed.rstrip("/")
+
+    @field_validator("BACKEND_FALLBACK_BASE_URL", mode="before")
+    @classmethod
+    def normalize_backend_fallback_base_url(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        trimmed = str(value).strip()
+        return trimmed.rstrip("/") if trimmed else None
 
     @property
     def first_chunk_timeout_seconds(self) -> float:

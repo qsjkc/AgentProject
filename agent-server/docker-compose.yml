@@ -7,6 +7,8 @@ services:
     restart: unless-stopped
     env_file:
       - ./.env
+    environment:
+      BACKEND_FALLBACK_BASE_URL: http://backend:5000
     ports:
       - "127.0.0.1:8001:8000"
     networks:

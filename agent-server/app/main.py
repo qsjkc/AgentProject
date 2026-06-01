@@ -138,12 +138,30 @@ async def _stream_chat_completion(
     completion_id = f"chatcmpl_{uuid4().hex}"
     created = int(time.time())
     task = asyncio.create_task(agent.complete_text(request))
+    initial_payload = _chunk_payload(
+        completion_id=completion_id,
+        created=created,
+        model=model_name,
+        content="",
+        finish_reason=None,
+    )
+    yield f"data: {json.dumps(initial_payload, ensure_ascii=False)}\n\n"
 
     try:
         response_text = await asyncio.wait_for(asyncio.shield(task), timeout=first_chunk_timeout_seconds)
     except asyncio.TimeoutError:
-        task.cancel()
-        response_text = "我暂时没有及时收到结果，请稍后再试一次。"
+        waiting_payload = _chunk_payload(
+            completion_id=completion_id,
+            created=created,
+            model=model_name,
+            content="我正在处理，请稍等。",
+            finish_reason=None,
+        )
+        yield f"data: {json.dumps(waiting_payload, ensure_ascii=False)}\n\n"
+        try:
+            response_text = await task
+        except Exception:  # pragma: no cover - defensive guard
+            response_text = "我现在暂时处理不了这个请求，请稍后再试。"
     except Exception:  # pragma: no cover - defensive guard
         response_text = "我现在暂时处理不了这个请求，请稍后再试。"
 

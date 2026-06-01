@@ -24,6 +24,26 @@ See `.env.example`.
 
 `AGENT_API_KEY` must match the credential configured for the third-party agent URL used by the backend RTC control plane.
 
+When the agent runs in Docker Compose with the main backend, prefer:
+
+```env
+BACKEND_BASE_URL=http://backend:5000
+BACKEND_FALLBACK_BASE_URL=http://backend:5000
+```
+
+If `BACKEND_BASE_URL` points at the public domain and that route is temporarily unavailable, `BACKEND_FALLBACK_BASE_URL` lets weather and platform-status tools retry through the shared Docker network.
+
+Streaming responses send an initial OpenAI-compatible empty SSE chunk immediately, then continue waiting for the real tool result. This prevents slow weather/status calls from being canceled by the first-chunk timeout.
+
+The agent routes deterministic requests to dedicated tools first:
+
+- time: local server time
+- weather: `GET /api/v1/tools/internal/weather`
+- platform status: `GET /health/ready`
+- general questions: `POST /api/v1/tools/internal/chat`
+
+All backend tool calls use `X-Internal-Api-Key` when `BACKEND_INTERNAL_API_KEY` is configured.
+
 ## Docker
 
 ```bash

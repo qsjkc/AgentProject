@@ -1,3 +1,6 @@
+import asyncio
+import json
+
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
@@ -7,21 +10,32 @@ from app.main import create_app
 
 
 class FakeTools:
-    def __init__(self, *, weather_error: bool = False) -> None:
+    def __init__(self, *, weather_error: bool = False, weather_delay: float = 0, chat_error: bool = False) -> None:
         self.weather_error = weather_error
+        self.weather_delay = weather_delay
+        self.chat_error = chat_error
         self.last_weather_city: str | None = None
+        self.last_chat_messages: list[dict[str, str]] | None = None
 
     async def get_current_time(self) -> str:
         return "现在是北京时间 2026-05-29 10:00:00。"
 
     async def get_demo_weather(self, city: str = "Beijing") -> str:
         self.last_weather_city = city
+        if self.weather_delay:
+            await asyncio.sleep(self.weather_delay)
         if self.weather_error:
             raise RuntimeError("weather backend unavailable")
         return f"{city} 当前天气 Sunny，气温 25°C。"
 
     async def get_platform_status(self) -> str:
         return "平台状态正常，当前后端就绪状态是 ready。"
+
+    async def get_project_chat(self, messages: list[dict[str, str]]) -> str:
+        self.last_chat_messages = messages
+        if self.chat_error:
+            raise RuntimeError("chat backend unavailable")
+        return "这是项目通用聊天能力给出的简短回答。"
 
 
 @pytest_asyncio.fixture
@@ -187,7 +201,8 @@ async def test_chat_completions_weather_city_strips_query_prefix():
 
 
 @pytest.mark.asyncio
-async def test_chat_completions_unsupported_prompt_stays_silent():
+async def test_chat_completions_weather_followup_uses_previous_weather_context():
+    tools = FakeTools()
     settings = Settings(
         AGENT_API_KEY="test-agent-key",
         BACKEND_BASE_URL="http://backend.test",
@@ -195,7 +210,62 @@ async def test_chat_completions_unsupported_prompt_stays_silent():
         AGENT_TOTAL_TIMEOUT_MS=5000,
         AGENT_TOOL_TIMEOUT_MS=1000,
     )
-    app = create_app(settings_override=settings, tools_override=FakeTools())
+    app = create_app(settings_override=settings, tools_override=tools)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+        response = await client.post(
+            "/v1/chat/completions",
+            headers=_auth_headers(),
+            json={
+                "stream": False,
+                "messages": [
+                    {"role": "user", "content": "北京天气怎么样"},
+                    {"role": "assistant", "content": "北京 当前天气 Sunny，气温 25°C。"},
+                    {"role": "user", "content": "那上海呢"},
+                ],
+            },
+        )
+
+    assert response.status_code == 200
+    assert "上海 当前天气" in response.json()["choices"][0]["message"]["content"]
+    assert tools.last_weather_city == "上海"
+
+
+@pytest.mark.asyncio
+async def test_chat_completions_weather_without_city_defaults_to_beijing():
+    tools = FakeTools()
+    settings = Settings(
+        AGENT_API_KEY="test-agent-key",
+        BACKEND_BASE_URL="http://backend.test",
+        AGENT_FIRST_CHUNK_TIMEOUT_MS=2000,
+        AGENT_TOTAL_TIMEOUT_MS=5000,
+        AGENT_TOOL_TIMEOUT_MS=1000,
+    )
+    app = create_app(settings_override=settings, tools_override=tools)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+        response = await client.post(
+            "/v1/chat/completions",
+            headers=_auth_headers(),
+            json={
+                "stream": False,
+                "messages": [{"role": "user", "content": "今天天气怎么样"}],
+            },
+        )
+
+    assert response.status_code == 200
+    assert tools.last_weather_city == "Beijing"
+
+
+@pytest.mark.asyncio
+async def test_chat_completions_general_prompt_uses_project_chat_tool():
+    tools = FakeTools()
+    settings = Settings(
+        AGENT_API_KEY="test-agent-key",
+        BACKEND_BASE_URL="http://backend.test",
+        AGENT_FIRST_CHUNK_TIMEOUT_MS=2000,
+        AGENT_TOTAL_TIMEOUT_MS=5000,
+        AGENT_TOOL_TIMEOUT_MS=1000,
+    )
+    app = create_app(settings_override=settings, tools_override=tools)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
         response = await client.post(
             "/v1/chat/completions",
@@ -207,7 +277,33 @@ async def test_chat_completions_unsupported_prompt_stays_silent():
         )
 
     assert response.status_code == 200
-    assert response.json()["choices"][0]["message"]["content"] == ""
+    assert "项目通用聊天能力" in response.json()["choices"][0]["message"]["content"]
+    assert tools.last_chat_messages
+    assert tools.last_chat_messages[-1]["content"] == "火星上有猫吗"
+
+
+@pytest.mark.asyncio
+async def test_chat_completions_general_prompt_failure_returns_fallback():
+    settings = Settings(
+        AGENT_API_KEY="test-agent-key",
+        BACKEND_BASE_URL="http://backend.test",
+        AGENT_FIRST_CHUNK_TIMEOUT_MS=2000,
+        AGENT_TOTAL_TIMEOUT_MS=5000,
+        AGENT_TOOL_TIMEOUT_MS=1000,
+    )
+    app = create_app(settings_override=settings, tools_override=FakeTools(chat_error=True))
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+        response = await client.post(
+            "/v1/chat/completions",
+            headers=_auth_headers(),
+            json={
+                "stream": False,
+                "messages": [{"role": "user", "content": "火星上有猫吗"}],
+            },
+        )
+
+    assert response.status_code == 200
+    assert "暂时没有稳定的回答" in response.json()["choices"][0]["message"]["content"]
 
 
 @pytest.mark.asyncio
@@ -256,3 +352,37 @@ async def test_chat_completions_identity_returns_brief_intro():
 
     assert response.status_code == 200
     assert "语音 Demo 助手" in response.json()["choices"][0]["message"]["content"]
+
+
+@pytest.mark.asyncio
+async def test_chat_completions_stream_does_not_cancel_slow_tool_result():
+    settings = Settings(
+        AGENT_API_KEY="test-agent-key",
+        BACKEND_BASE_URL="http://backend.test",
+        AGENT_FIRST_CHUNK_TIMEOUT_MS=50,
+        AGENT_TOTAL_TIMEOUT_MS=5000,
+        AGENT_TOOL_TIMEOUT_MS=1000,
+    )
+    app = create_app(settings_override=settings, tools_override=FakeTools(weather_delay=0.2))
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+        async with client.stream(
+            "POST",
+            "/v1/chat/completions",
+            headers=_auth_headers(),
+            json={
+                "stream": True,
+                "messages": [{"role": "user", "content": "上海天气怎么样"}],
+            },
+        ) as response:
+            assert response.status_code == 200
+            body = await response.aread()
+
+    text = body.decode("utf-8")
+    content = "".join(
+        json.loads(line.removeprefix("data: "))["choices"][0]["delta"].get("content", "")
+        for line in text.splitlines()
+        if line.startswith("data: {")
+    )
+    assert "我正在处理，请稍等。" in text
+    assert "上海 当前天气 Sunny" in content
+    assert text.strip().endswith("data: [DONE]")

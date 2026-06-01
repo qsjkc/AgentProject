@@ -21,6 +21,13 @@ const defaultApiBaseUrl =
 
 const DEFAULT_LANGUAGE = 'zh-CN'
 const PET_TYPES = ['cat', 'dog', 'pig']
+const VOICE_OUTPUT_MODES = ['text_only', 'voice_and_text']
+const DEFAULT_VOICE_SETTINGS = {
+  desktop_voice_enabled: true,
+  desktop_voice_trigger_key: 'KeyD',
+  desktop_voice_idle_timeout_seconds: 8,
+  desktop_voice_output_mode: 'text_only',
+}
 const PET_WINDOW_WIDTH = 220
 const PET_WINDOW_HEIGHT = 240
 const PET_VISIBLE_WIDTH = 126
@@ -75,6 +82,23 @@ function normalizeLanguage(value) {
 function normalizePetType(value) {
   const normalizedValue = String(value || '').trim().toLowerCase()
   return PET_TYPES.includes(normalizedValue) ? normalizedValue : 'cat'
+}
+
+function normalizeVoiceSettings(value = {}) {
+  const outputMode = VOICE_OUTPUT_MODES.includes(value.desktop_voice_output_mode)
+    ? value.desktop_voice_output_mode
+    : DEFAULT_VOICE_SETTINGS.desktop_voice_output_mode
+
+  return {
+    desktop_voice_enabled: value.desktop_voice_enabled ?? DEFAULT_VOICE_SETTINGS.desktop_voice_enabled,
+    desktop_voice_trigger_key:
+      value.desktop_voice_trigger_key || DEFAULT_VOICE_SETTINGS.desktop_voice_trigger_key,
+    desktop_voice_idle_timeout_seconds: Math.max(
+      3,
+      Number(value.desktop_voice_idle_timeout_seconds) || DEFAULT_VOICE_SETTINGS.desktop_voice_idle_timeout_seconds,
+    ),
+    desktop_voice_output_mode: outputMode,
+  }
 }
 
 function getLanguageMessages() {
@@ -167,6 +191,7 @@ async function createStore() {
       },
       quickBounds: { width: QUICK_CHAT_WIDTH, height: QUICK_CHAT_HEIGHT },
       mainBounds: { width: MAIN_PANEL_WIDTH, height: MAIN_PANEL_HEIGHT },
+      voiceSettings: DEFAULT_VOICE_SETTINGS,
       autoLaunch: false,
       mute: false,
       apiBaseUrl: defaultApiBaseUrl,
@@ -255,6 +280,19 @@ function getPetState() {
   }
 }
 
+function getVoiceSettings() {
+  return normalizeVoiceSettings(getStore().get('voiceSettings') || DEFAULT_VOICE_SETTINGS)
+}
+
+function setVoiceSettings(patch = {}) {
+  const nextSettings = normalizeVoiceSettings({
+    ...getVoiceSettings(),
+    ...(patch || {}),
+  })
+  getStore().set('voiceSettings', nextSettings)
+  return nextSettings
+}
+
 function setStoredPetState(payload = {}) {
   const currentState = getPetState()
   const nextState = {
@@ -297,6 +335,34 @@ function sendPetStateToWindow(windowInstance, state) {
   }
 
   emit()
+}
+
+function sendVoiceSettingsToWindow(windowInstance, settings) {
+  if (!windowInstance || windowInstance.isDestroyed()) {
+    return
+  }
+
+  const emit = () => {
+    if (!windowInstance || windowInstance.isDestroyed()) {
+      return
+    }
+    windowInstance.webContents.send('desktop:voice-settings-changed', settings)
+  }
+
+  if (windowInstance.webContents.isLoading()) {
+    windowInstance.webContents.once('did-finish-load', emit)
+    return
+  }
+
+  emit()
+}
+
+function broadcastVoiceSettings(patch = {}) {
+  const nextSettings = setVoiceSettings(patch)
+  sendVoiceSettingsToWindow(petWindow, nextSettings)
+  sendVoiceSettingsToWindow(quickChatWindow, nextSettings)
+  sendVoiceSettingsToWindow(mainPanelWindow, nextSettings)
+  return nextSettings
 }
 
 function broadcastPetState(payload = {}) {
@@ -449,6 +515,7 @@ function createPetWindow() {
   })
   petWindow.webContents.on('did-finish-load', () => {
     sendPetStateToWindow(petWindow, getPetState())
+    sendVoiceSettingsToWindow(petWindow, getVoiceSettings())
   })
 
   loadWindow(petWindow, 'pet.html')
@@ -496,6 +563,7 @@ function createQuickChatWindow() {
   })
   quickChatWindow.webContents.on('did-finish-load', () => {
     sendPetStateToWindow(quickChatWindow, getPetState())
+    sendVoiceSettingsToWindow(quickChatWindow, getVoiceSettings())
   })
 
   loadWindow(quickChatWindow, 'quick-chat.html')
@@ -535,8 +603,37 @@ function createMainPanelWindow() {
       mainPanelWindow.hide()
     }
   })
+  mainPanelWindow.webContents.on('did-finish-load', () => {
+    sendVoiceSettingsToWindow(mainPanelWindow, getVoiceSettings())
+  })
 
   loadWindow(mainPanelWindow, 'main-panel.html')
+}
+
+function openQuickChat() {
+  createQuickChatWindow()
+  if (!quickChatWindow || !petWindow) {
+    return false
+  }
+
+  const quickBounds = quickChatWindow.getBounds()
+  const nextPosition = getQuickChatPosition(quickBounds.width, quickBounds.height)
+  quickChatWindow.setSize(quickBounds.width, quickBounds.height)
+  quickChatWindow.setPosition(nextPosition.x, nextPosition.y)
+  getStore().set('quickBounds', { ...getStore().get('quickBounds'), x: nextPosition.x, y: nextPosition.y })
+  sendPetStateToWindow(quickChatWindow, getPetState())
+  sendVoiceSettingsToWindow(quickChatWindow, getVoiceSettings())
+  quickChatWindow.show()
+  quickChatWindow.focus()
+  return true
+}
+
+function hideQuickChat() {
+  if (!quickChatWindow || quickChatWindow.isDestroyed()) {
+    return false
+  }
+  quickChatWindow.hide()
+  return false
 }
 
 function toggleQuickChat() {
@@ -546,20 +643,10 @@ function toggleQuickChat() {
   }
 
   if (quickChatWindow.isVisible()) {
-    quickChatWindow.hide()
-    return false
+    return hideQuickChat()
   }
 
-  const quickBounds = quickChatWindow.getBounds()
-  const nextPosition = getQuickChatPosition(quickBounds.width, quickBounds.height)
-
-  quickChatWindow.setSize(quickBounds.width, quickBounds.height)
-  quickChatWindow.setPosition(nextPosition.x, nextPosition.y)
-  getStore().set('quickBounds', { ...getStore().get('quickBounds'), x: nextPosition.x, y: nextPosition.y })
-  sendPetStateToWindow(quickChatWindow, getPetState())
-  quickChatWindow.show()
-  quickChatWindow.focus()
-  return true
+  return openQuickChat()
 }
 
 function openMainPanel() {
@@ -666,6 +753,7 @@ function syncPetState(payload = {}) {
 function getRuntimeState() {
   return {
     petState: getPetState(),
+    voiceSettings: getVoiceSettings(),
     windows: {
       petVisible: Boolean(petWindow && !petWindow.isDestroyed() && petWindow.isVisible()),
       quickChatVisible: Boolean(quickChatWindow && !quickChatWindow.isDestroyed() && quickChatWindow.isVisible()),
@@ -679,8 +767,14 @@ function registerIpc() {
   ipcMain.handle('desktop:open-main-panel', async () => openMainPanel())
   ipcMain.handle('desktop:minimize-main-panel', async () => minimizeMainPanel())
   ipcMain.handle('desktop:hide-main-panel', async () => hideMainPanel())
+  ipcMain.handle('desktop:open-quick-chat', async () => openQuickChat())
+  ipcMain.handle('desktop:hide-quick-chat', async () => hideQuickChat())
   ipcMain.handle('desktop:toggle-quick-chat', async () => toggleQuickChat())
   ipcMain.handle('desktop:show-pet', async () => showPetWindow())
+  ipcMain.handle('desktop:focus-pet-window', async () => {
+    showPetWindow({ focus: true })
+    return true
+  })
   ipcMain.handle('desktop:reset-pet-position', async () => resetPetPosition())
   ipcMain.handle('desktop:set-pet-interactive', async (_event, interactive) => {
     if (!petWindow || petWindow.isDestroyed()) {
@@ -719,6 +813,8 @@ function registerIpc() {
     }
     return petWindow.getBounds()
   })
+  ipcMain.handle('desktop:get-voice-settings', async () => getVoiceSettings())
+  ipcMain.handle('desktop:update-voice-settings', async (_event, patch) => broadcastVoiceSettings(patch))
   ipcMain.handle('desktop:set-pet-position', async (_event, position) => {
     if (!position || typeof position !== 'object') {
       return null

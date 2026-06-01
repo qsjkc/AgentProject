@@ -52,6 +52,22 @@ export async function setLanguage(value) {
   return getDesktopBridge()?.setLanguage?.(value)
 }
 
+export async function getVoiceSettings() {
+  return getDesktopBridge()?.getVoiceSettings?.()
+}
+
+export async function updateVoiceSettings(patch) {
+  return getDesktopBridge()?.updateVoiceSettings?.(patch)
+}
+
+export async function openQuickChat() {
+  return getDesktopBridge()?.openQuickChat?.()
+}
+
+export async function hideQuickChat() {
+  return getDesktopBridge()?.hideQuickChat?.()
+}
+
 export async function checkApiConnection(value) {
   const apiBaseUrl = normalizeApiBaseUrl(value)
   if (!apiBaseUrl) {
@@ -99,6 +115,10 @@ async function request(path, options = {}) {
 
   if (!response.ok) {
     const payload = await response.json().catch(() => ({ detail: '请求失败' }))
+    if (response.status === 401 || response.status === 403) {
+      await clearSessionToken().catch(() => undefined)
+      throw new Error('登录已过期，请重新登录。')
+    }
     throw new Error(payload.detail || '请求失败')
   }
 

@@ -1,8 +1,21 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
 import ReactDOM from 'react-dom/client'
 
 import './desktop.css'
-import { desktopApi, getLanguage, getSessionToken } from './shared/api'
+import { getLanguage, getSessionToken, getVoiceSettings } from './shared/api'
+import { formatVoiceError, truncateForPetBubble } from './shared/voice-format'
+import { getPetVoiceCopy } from './shared/pet-voice-copy'
+import { isVoiceAuthError } from './shared/voice-errors'
+import { createDesktopVoiceSession } from './shared/voice-rtc'
+import { createVoiceDebugLogger } from './shared/voice-debug'
+import {
+  createInitialVoiceUiState,
+  DEFAULT_VOICE_SETTINGS,
+  isVoiceUiActive,
+  normalizeVoiceSettings,
+  VOICE_PHASES,
+  voiceStateReducer,
+} from './shared/voice-state'
 import { getMessagePool, getPetMessagePool, normalizeLanguage, t } from './shared/i18n'
 import { getPetVisual } from './shared/pets'
 
@@ -12,6 +25,9 @@ const DEFAULT_PREFERENCES = {
 }
 
 const DRAG_THRESHOLD = 8
+const REPLY_VISIBLE_MS = 8000
+const PROCESSING_TIMEOUT_MS = 18000
+const AUTH_EXPIRED_BUBBLE_MS = 4200
 
 function pickRandom(items) {
   if (!items.length) {
@@ -21,25 +37,66 @@ function pickRandom(items) {
   return items[Math.floor(Math.random() * items.length)]
 }
 
+function getVoiceIntroHint(language) {
+  if (language === 'zh-CN') {
+    return '单击进入语音态，按住 D 说话，松开结束；拖动可以移动桌宠。'
+  }
+
+  return 'Single click enters voice mode. Hold D to talk, release to send, and drag to move the pet.'
+}
+
+function getQuickChatEntryHint(language) {
+  if (language === 'zh-CN') {
+    return '文字聊天仍然保留在托盘菜单和主面板里。'
+  }
+
+  return 'Text chat stays available from the tray menu and the main panel.'
+}
+
+function getAuthExpiredMessage(language) {
+  return language === 'zh-CN'
+    ? '登录已过期，请打开主面板重新登录。'
+    : 'Your login has expired. Open the main panel and sign in again.'
+}
+
 function PetApp() {
   const [petType, setPetType] = useState('cat')
   const [language, setLanguageState] = useState('zh-CN')
-  const [petMood, setPetMood] = useState('idle')
-  const [bubbleText, setBubbleText] = useState('')
   const [hasSession, setHasSession] = useState(false)
   const [preferences, setPreferences] = useState(DEFAULT_PREFERENCES)
+  const [voiceSettings, setVoiceSettings] = useState(DEFAULT_VOICE_SETTINGS)
+  const [transientBubble, setTransientBubble] = useState('')
+  const [hovering, setHovering] = useState(false)
+  const [voiceUiState, dispatchVoice] = useReducer(voiceStateReducer, undefined, createInitialVoiceUiState)
 
-  const clickTimerRef = useRef(null)
-  const bubbleTimerRef = useRef(null)
-  const moodTimerRef = useRef(null)
+  const managerRef = useRef(null)
+  const keyHeldRef = useRef(false)
+  const transientBubbleTimerRef = useRef(null)
   const idleBubbleTimerRef = useRef(null)
-  const rafRef = useRef(null)
-  const flushPromiseRef = useRef(null)
+  const uiIdleTimerRef = useRef(null)
+  const processingTimerRef = useRef(null)
+  const replyTimerRef = useRef(null)
+  const previousSessionRef = useRef(null)
+  const previousPhaseRef = useRef(VOICE_PHASES.IDLE)
+  const phaseRef = useRef(VOICE_PHASES.IDLE)
+  const languageRef = useRef(language)
+  const petTypeRef = useRef(petType)
+  const voiceSettingsRef = useRef(voiceSettings)
+  const hasSessionRef = useRef(hasSession)
+  const petPositionRef = useRef({ x: 90, y: 90 })
+  const loggerRef = useRef(
+    createVoiceDebugLogger((payload) => {
+      void window.desktopBridge?.logDebug?.({
+        scope: 'desktop-pet-voice',
+        ...payload,
+      })
+    }),
+  )
+  const suppressClickRef = useRef(false)
   const settlingPointerRef = useRef(false)
   const sendingPositionRef = useRef(false)
-  const suppressClickRef = useRef(false)
-  const previousSessionRef = useRef(null)
-  const petPositionRef = useRef({ x: 90, y: 90 })
+  const rafRef = useRef(null)
+  const flushPromiseRef = useRef(null)
   const dragRef = useRef({
     pointerId: null,
     thresholdScreenX: 0,
@@ -53,57 +110,148 @@ function PetApp() {
     moved: false,
   })
 
-  const clearMoodTimer = () => {
-    if (moodTimerRef.current) {
-      window.clearTimeout(moodTimerRef.current)
-      moodTimerRef.current = null
+  const clearTransientBubbleTimer = useCallback(() => {
+    if (transientBubbleTimerRef.current) {
+      window.clearTimeout(transientBubbleTimerRef.current)
+      transientBubbleTimerRef.current = null
     }
-  }
+  }, [])
 
-  const clearBubbleTimer = () => {
-    if (bubbleTimerRef.current) {
-      window.clearTimeout(bubbleTimerRef.current)
-      bubbleTimerRef.current = null
+  const clearUiIdleTimer = useCallback(() => {
+    if (uiIdleTimerRef.current) {
+      window.clearTimeout(uiIdleTimerRef.current)
+      uiIdleTimerRef.current = null
     }
-  }
+  }, [])
 
-  const resetMood = () => {
-    setPetMood(hasSession ? 'idle' : 'sad')
-  }
-
-  const setTemporaryMood = (nextMood, duration = 1400) => {
-    clearMoodTimer()
-    setPetMood(nextMood)
-    moodTimerRef.current = window.setTimeout(() => {
-      resetMood()
-    }, duration)
-  }
-
-  const showBubble = (text, options = {}) => {
-    if (!text) {
-      return
+  const clearProcessingTimer = useCallback(() => {
+    if (processingTimerRef.current) {
+      window.clearTimeout(processingTimerRef.current)
+      processingTimerRef.current = null
     }
+  }, [])
 
-    const { mood = hasSession ? 'happy' : 'sad', duration = 2600 } = options
+  const clearReplyTimer = useCallback(() => {
+    if (replyTimerRef.current) {
+      window.clearTimeout(replyTimerRef.current)
+      replyTimerRef.current = null
+    }
+  }, [])
 
-    clearBubbleTimer()
-    setBubbleText(text)
-    setTemporaryMood(mood, Math.min(duration, 2200))
-    bubbleTimerRef.current = window.setTimeout(() => {
-      setBubbleText('')
-    }, duration)
-  }
+  const setTransientBubbleForDuration = useCallback(
+    (text, duration = 2800) => {
+      if (!text) {
+        return
+      }
+      clearTransientBubbleTimer()
+      setTransientBubble(text)
+      transientBubbleTimerRef.current = window.setTimeout(() => {
+        setTransientBubble('')
+        transientBubbleTimerRef.current = null
+      }, duration)
+    },
+    [clearTransientBubbleTimer],
+  )
+
+  const getVoiceCopy = useCallback((key) => {
+    return getPetVoiceCopy(languageRef.current, petTypeRef.current, key)
+  }, [])
+
+  const transitionToIdle = useCallback(() => {
+    loggerRef.current.event('voice:exit', {
+      from: phaseRef.current,
+    })
+    clearUiIdleTimer()
+    clearProcessingTimer()
+    clearReplyTimer()
+    dispatchVoice({ type: 'VOICE_IDLE' })
+  }, [clearProcessingTimer, clearReplyTimer, clearUiIdleTimer])
+
+  const resetUiIdleTimer = useCallback(() => {
+    clearUiIdleTimer()
+    const timeoutMs = Math.max(
+      3,
+      Number(voiceSettingsRef.current?.desktop_voice_idle_timeout_seconds) || DEFAULT_VOICE_SETTINGS.desktop_voice_idle_timeout_seconds,
+    ) * 1000
+
+    uiIdleTimerRef.current = window.setTimeout(() => {
+      if (phaseRef.current === VOICE_PHASES.VOICE_ARMED || phaseRef.current === VOICE_PHASES.READY) {
+        dispatchVoice({ type: 'VOICE_IDLE' })
+      }
+    }, timeoutMs)
+  }, [clearUiIdleTimer])
+
+  const scheduleReplyAutoHide = useCallback(() => {
+    clearReplyTimer()
+    replyTimerRef.current = window.setTimeout(() => {
+      dispatchVoice({ type: 'VOICE_IDLE' })
+    }, REPLY_VISIBLE_MS)
+  }, [clearReplyTimer])
+
+  const scheduleProcessingTimeout = useCallback(() => {
+    clearProcessingTimer()
+    processingTimerRef.current = window.setTimeout(() => {
+      dispatchVoice({
+        type: 'VOICE_ERROR',
+        bubbleText: getVoiceCopy('subtitleUnavailable'),
+        errorMessage: getVoiceCopy('subtitleUnavailable'),
+      })
+    }, PROCESSING_TIMEOUT_MS)
+  }, [clearProcessingTimer, getVoiceCopy])
+
+  const handleFatalVoiceError = useCallback(
+    (message) => {
+      clearUiIdleTimer()
+      clearProcessingTimer()
+      clearReplyTimer()
+      dispatchVoice({
+        type: 'VOICE_ERROR',
+        bubbleText: message,
+        errorMessage: message,
+      })
+    },
+    [clearProcessingTimer, clearReplyTimer, clearUiIdleTimer],
+  )
+
+  useEffect(() => {
+    const previousPhase = previousPhaseRef.current
+    phaseRef.current = voiceUiState.phase
+    if (previousPhase !== voiceUiState.phase) {
+      loggerRef.current.event('voice:state-change', {
+        from: previousPhase,
+        to: voiceUiState.phase,
+      })
+      previousPhaseRef.current = voiceUiState.phase
+    }
+  }, [voiceUiState.phase])
+
+  useEffect(() => {
+    languageRef.current = language
+  }, [language])
+
+  useEffect(() => {
+    petTypeRef.current = petType
+  }, [petType])
+
+  useEffect(() => {
+    voiceSettingsRef.current = voiceSettings
+  }, [voiceSettings])
+
+  useEffect(() => {
+    hasSessionRef.current = hasSession
+  }, [hasSession])
 
   useEffect(() => {
     let mounted = true
 
     const syncState = async ({ refreshRemote = false } = {}) => {
       try {
-        const [savedLanguage, token, bounds, storedPetState] = await Promise.all([
+        const [savedLanguage, token, bounds, storedPetState, storedVoiceSettings] = await Promise.all([
           getLanguage(),
           getSessionToken(),
           window.desktopBridge?.getPetBounds?.(),
           window.desktopBridge?.getPetState?.(),
+          getVoiceSettings(),
         ])
 
         if (!mounted) {
@@ -112,6 +260,7 @@ function PetApp() {
 
         setLanguageState(normalizeLanguage(savedLanguage || storedPetState?.language))
         setHasSession(Boolean(token))
+        setVoiceSettings(normalizeVoiceSettings(storedVoiceSettings))
 
         if (bounds?.x !== undefined && bounds?.y !== undefined) {
           petPositionRef.current = bounds
@@ -129,33 +278,18 @@ function PetApp() {
         }
 
         if (!token) {
-          setPetMood('sad')
           return
         }
 
         if (!refreshRemote) {
-          setPetMood('idle')
           return
         }
-
-        const user = await desktopApi.me()
-        if (!mounted) {
-          return
-        }
-
-        const nextPreferences = {
-          quick_chat_enabled: user?.preferences?.quick_chat_enabled ?? DEFAULT_PREFERENCES.quick_chat_enabled,
-          bubble_frequency: user?.preferences?.bubble_frequency ?? DEFAULT_PREFERENCES.bubble_frequency,
-        }
-        setPetType(user?.preferences?.pet_type || storedPetState?.petType || 'cat')
-        setPreferences(nextPreferences)
-        setPetMood('idle')
       } catch {
         if (mounted) {
           setHasSession(false)
           setPetType('cat')
           setPreferences(DEFAULT_PREFERENCES)
-          setPetMood('sad')
+          setVoiceSettings(DEFAULT_VOICE_SETTINGS)
         }
       }
     }
@@ -174,7 +308,7 @@ function PetApp() {
   }, [])
 
   useEffect(() => {
-    const unsubscribe = window.desktopBridge?.onPetStateChanged?.((payload) => {
+    const unsubscribePet = window.desktopBridge?.onPetStateChanged?.((payload) => {
       if (!payload || typeof payload !== 'object') {
         return
       }
@@ -196,23 +330,103 @@ function PetApp() {
 
       if (typeof payload.hasSession === 'boolean') {
         setHasSession(payload.hasSession)
-        setPetMood(payload.hasSession ? 'idle' : 'sad')
       }
     })
 
+    const unsubscribeVoice = window.desktopBridge?.onVoiceSettingsChanged?.((payload) => {
+      const nextSettings = normalizeVoiceSettings(payload)
+      setVoiceSettings(nextSettings)
+      managerRef.current?.updateSettings?.(nextSettings)
+    })
+
     return () => {
-      unsubscribe?.()
+      unsubscribePet?.()
+      unsubscribeVoice?.()
     }
   }, [])
+
+  useEffect(() => {
+    const logger = loggerRef.current
+    const manager = createDesktopVoiceSession({
+      settings: voiceSettingsRef.current,
+      onEvent: (event, details) => {
+        logger.event(event, details)
+      },
+      onLog: () => {
+        // events already go through the debug logger
+      },
+      onError: (payload) => {
+        if (payload?.fatal === false) {
+          logger.event('voice:warning', {
+            phase: payload.phase,
+            message: payload.message,
+          })
+          return
+        }
+
+        logger.event('voice:error', {
+          phase: payload?.phase || 'unknown',
+          message: payload?.message || 'voice error',
+        })
+        logger.error(
+          payload?.phase || 'voice:error',
+          new Error(payload?.message || 'voice error'),
+          payload?.details || {},
+        )
+        handleFatalVoiceError(payload?.message || '语音连接失败。')
+      },
+      onReplyPartial: ({ text }) => {
+        clearProcessingTimer()
+        clearReplyTimer()
+        dispatchVoice({
+          type: 'VOICE_REPLYING',
+          bubbleText: truncateForPetBubble(text, languageRef.current),
+          errorMessage: '',
+        })
+      },
+      onReplyFinal: ({ text }) => {
+        clearProcessingTimer()
+        clearUiIdleTimer()
+        dispatchVoice({
+          type: 'VOICE_REPLYING',
+          bubbleText: truncateForPetBubble(text, languageRef.current),
+          errorMessage: '',
+        })
+        scheduleReplyAutoHide()
+      },
+      onCleanup: ({ reason }) => {
+        logger.event('voice:cleanup', { reason })
+      },
+    })
+
+    managerRef.current = manager
+    return () => {
+      managerRef.current = null
+      clearTransientBubbleTimer()
+      clearUiIdleTimer()
+      clearProcessingTimer()
+      clearReplyTimer()
+      void manager
+        .shutdownVoiceSession({ reason: 'component-unmount' })
+        .catch(() => undefined)
+        .finally(() => {
+          manager.destroy()
+        })
+    }
+  }, [
+    clearProcessingTimer,
+    clearReplyTimer,
+    clearTransientBubbleTimer,
+    clearUiIdleTimer,
+    handleFatalVoiceError,
+    scheduleReplyAutoHide,
+  ])
 
   useEffect(() => {
     if (previousSessionRef.current === null) {
       previousSessionRef.current = hasSession
       const introTimer = window.setTimeout(() => {
-        showBubble(t(language, hasSession ? 'interactionHint' : 'signInHint'), {
-          mood: hasSession ? 'happy' : 'sad',
-          duration: 3200,
-        })
+        setTransientBubbleForDuration(hasSession ? getVoiceIntroHint(language) : t(language, 'signInHint'), 3400)
       }, 700)
 
       return () => {
@@ -222,12 +436,13 @@ function PetApp() {
 
     if (previousSessionRef.current !== hasSession) {
       previousSessionRef.current = hasSession
-      showBubble(t(language, hasSession ? 'interactionHint' : 'signInHint'), {
-        mood: hasSession ? 'happy' : 'sad',
-        duration: 3200,
-      })
+      setTransientBubbleForDuration(hasSession ? getVoiceIntroHint(language) : t(language, 'signInHint'), 3400)
+      if (!hasSession) {
+        transitionToIdle()
+        void managerRef.current?.shutdownVoiceSession?.({ reason: 'signed-out' })
+      }
     }
-  }, [hasSession, language])
+  }, [hasSession, language, setTransientBubbleForDuration, transitionToIdle])
 
   useEffect(() => {
     if (idleBubbleTimerRef.current) {
@@ -237,14 +452,19 @@ function PetApp() {
 
     const frequencySeconds = Math.max(30, Number(preferences.bubble_frequency) || DEFAULT_PREFERENCES.bubble_frequency)
     idleBubbleTimerRef.current = window.setInterval(() => {
-      if (dragRef.current.pointerId !== null || clickTimerRef.current || bubbleText) {
+      if (
+        phaseRef.current !== VOICE_PHASES.IDLE ||
+        dragRef.current.pointerId !== null ||
+        transientBubble ||
+        settlingPointerRef.current
+      ) {
         return
       }
 
-      const pool = hasSession
-        ? getPetMessagePool(language, petType, 'IdleMessages')
-        : getMessagePool(language, 'petSadMessages')
-      showBubble(pickRandom(pool), { mood: hasSession ? 'idle' : 'sad' })
+      const pool = hasSessionRef.current
+        ? getPetMessagePool(languageRef.current, petTypeRef.current, 'IdleMessages')
+        : getMessagePool(languageRef.current, 'petSadMessages')
+      setTransientBubbleForDuration(pickRandom(pool), 2800)
     }, frequencySeconds * 1000)
 
     return () => {
@@ -253,15 +473,211 @@ function PetApp() {
         idleBubbleTimerRef.current = null
       }
     }
-  }, [bubbleText, hasSession, language, petType, preferences.bubble_frequency])
+  }, [preferences.bubble_frequency, setTransientBubbleForDuration, transientBubble])
+
+  const stopCurrentListeningTurn = useCallback(async () => {
+    if (phaseRef.current !== VOICE_PHASES.LISTENING) {
+      return
+    }
+
+    keyHeldRef.current = false
+    clearUiIdleTimer()
+    clearReplyTimer()
+    dispatchVoice({
+      type: 'VOICE_PROCESSING',
+      bubbleText: getVoiceCopy('processing'),
+      errorMessage: '',
+    })
+    scheduleProcessingTimeout()
+
+    try {
+      await managerRef.current?.stopPressToTalk?.()
+    } catch (error) {
+      handleFatalVoiceError(formatVoiceError(error, '结束语音输入失败。'))
+    }
+  }, [clearReplyTimer, clearUiIdleTimer, getVoiceCopy, handleFatalVoiceError, scheduleProcessingTimeout])
+
+  const handleInterrupt = useCallback(async () => {
+    try {
+      const result = await managerRef.current?.interruptVoiceReply?.()
+      loggerRef.current.event('voice:interrupt-click', {
+        accepted: result?.accepted ?? false,
+      })
+      clearProcessingTimer()
+      clearReplyTimer()
+      dispatchVoice({
+        type: 'VOICE_READY',
+        bubbleText: '',
+        errorMessage: '',
+      })
+      resetUiIdleTimer()
+    } catch (error) {
+      handleFatalVoiceError(formatVoiceError(error, '打断当前回复失败。'))
+    }
+  }, [clearProcessingTimer, clearReplyTimer, handleFatalVoiceError, resetUiIdleTimer])
+
+  const handleEnterVoiceMode = useCallback(async () => {
+    if (!hasSessionRef.current) {
+      setTransientBubbleForDuration(t(languageRef.current, 'signInHint'), 3200)
+      return
+    }
+
+    if (!voiceSettingsRef.current.desktop_voice_enabled) {
+      setTransientBubbleForDuration(`${getVoiceCopy('voiceDisabled')} ${getQuickChatEntryHint(languageRef.current)}`, 3600)
+      return
+    }
+
+    if (phaseRef.current === VOICE_PHASES.LISTENING) {
+      return
+    }
+
+    if (phaseRef.current === VOICE_PHASES.PROCESSING || phaseRef.current === VOICE_PHASES.REPLYING) {
+      await handleInterrupt()
+      return
+    }
+
+    if (phaseRef.current === VOICE_PHASES.READY || phaseRef.current === VOICE_PHASES.VOICE_ARMED) {
+      resetUiIdleTimer()
+      return
+    }
+
+    if (phaseRef.current === VOICE_PHASES.CONNECTING) {
+      return
+    }
+
+    clearTransientBubbleTimer()
+    setTransientBubble('')
+    clearReplyTimer()
+    clearProcessingTimer()
+    loggerRef.current.event('voice:enter', {
+      outputMode: voiceSettingsRef.current.desktop_voice_output_mode,
+    })
+    dispatchVoice({
+      type: 'VOICE_ARMED',
+      bubbleText: getVoiceCopy('voiceArmed'),
+      errorMessage: '',
+    })
+    resetUiIdleTimer()
+
+    try {
+      await window.desktopBridge?.focusPetWindow?.()
+      dispatchVoice({
+        type: 'VOICE_CONNECTING',
+        bubbleText: getVoiceCopy('connecting'),
+        errorMessage: '',
+      })
+      await managerRef.current?.enterVoiceMode?.()
+      dispatchVoice({
+        type: 'VOICE_READY',
+        bubbleText: getVoiceCopy('ready'),
+        errorMessage: '',
+      })
+      resetUiIdleTimer()
+    } catch (error) {
+      if (isVoiceAuthError(error)) {
+        loggerRef.current.event('voice:auth-expired', {
+          phase: phaseRef.current,
+        })
+        setHasSession(false)
+        hasSessionRef.current = false
+        transitionToIdle()
+        void managerRef.current?.shutdownVoiceSession?.({ reason: 'auth-expired' })
+        setTransientBubbleForDuration(getAuthExpiredMessage(languageRef.current), AUTH_EXPIRED_BUBBLE_MS)
+        return
+      }
+      handleFatalVoiceError(formatVoiceError(error, '语音连接失败。'))
+    }
+  }, [
+    clearProcessingTimer,
+    clearReplyTimer,
+    clearTransientBubbleTimer,
+    getVoiceCopy,
+    handleFatalVoiceError,
+    handleInterrupt,
+    resetUiIdleTimer,
+    setTransientBubbleForDuration,
+    transitionToIdle,
+  ])
+
+  useEffect(() => {
+    const handleKeyDown = (event) => {
+      if (event.code === 'Escape' && isVoiceUiActive(phaseRef.current)) {
+        event.preventDefault()
+        keyHeldRef.current = false
+        transitionToIdle()
+        void managerRef.current?.shutdownVoiceSession?.({ reason: 'escape' })
+        return
+      }
+
+      if (event.code !== voiceSettingsRef.current.desktop_voice_trigger_key) {
+        return
+      }
+
+      if (event.repeat || keyHeldRef.current || phaseRef.current !== VOICE_PHASES.READY) {
+        return
+      }
+
+      event.preventDefault()
+      keyHeldRef.current = true
+      clearUiIdleTimer()
+      clearReplyTimer()
+      clearProcessingTimer()
+      dispatchVoice({
+        type: 'VOICE_LISTENING',
+        bubbleText: getVoiceCopy('listening'),
+        errorMessage: '',
+      })
+      void managerRef.current?.startPressToTalk?.().catch((error) => {
+        handleFatalVoiceError(formatVoiceError(error, '开始语音输入失败。'))
+      })
+    }
+
+    const handleKeyUp = (event) => {
+      if (event.code !== voiceSettingsRef.current.desktop_voice_trigger_key) {
+        return
+      }
+
+      if (!keyHeldRef.current) {
+        return
+      }
+
+      event.preventDefault()
+      void stopCurrentListeningTurn()
+    }
+
+    const handleBlur = () => {
+      keyHeldRef.current = false
+      if (phaseRef.current === VOICE_PHASES.LISTENING) {
+        void stopCurrentListeningTurn()
+        return
+      }
+
+      if (isVoiceUiActive(phaseRef.current)) {
+        transitionToIdle()
+      }
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+    window.addEventListener('keyup', handleKeyUp)
+    window.addEventListener('blur', handleBlur)
+
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown)
+      window.removeEventListener('keyup', handleKeyUp)
+      window.removeEventListener('blur', handleBlur)
+    }
+  }, [
+    clearProcessingTimer,
+    clearReplyTimer,
+    clearUiIdleTimer,
+    getVoiceCopy,
+    handleFatalVoiceError,
+    stopCurrentListeningTurn,
+    transitionToIdle,
+  ])
 
   useEffect(
     () => () => {
-      if (clickTimerRef.current) {
-        window.clearTimeout(clickTimerRef.current)
-      }
-      clearBubbleTimer()
-      clearMoodTimer()
       if (idleBubbleTimerRef.current) {
         window.clearInterval(idleBubbleTimerRef.current)
       }
@@ -393,8 +809,6 @@ function PetApp() {
       baseWindowY: petPositionRef.current.y ?? 90,
       moved: false,
     }
-    clearMoodTimer()
-    setPetMood('excited')
   }
 
   const handlePointerMove = (event) => {
@@ -457,71 +871,67 @@ function PetApp() {
       window.setTimeout(() => {
         suppressClickRef.current = false
       }, 240)
-      showBubble(t(language, 'dragSaved'), { mood: 'happy', duration: 1400 })
-      return
+      setTransientBubbleForDuration(t(languageRef.current, 'dragSaved'), 1500)
     }
-
-    resetMood()
-  }
-
-  const handleSingleClick = async () => {
-    if (!hasSession) {
-      showBubble(pickRandom(getMessagePool(language, 'petSadMessages')) || t(language, 'signInHint'), {
-        mood: 'sad',
-        duration: 2800,
-      })
-      return
-    }
-
-    const tapMessage = pickRandom(getPetMessagePool(language, petType, 'TapMessages'))
-
-    if (!preferences.quick_chat_enabled) {
-      showBubble(tapMessage || t(language, 'quickChatDisabledHint'), { mood: 'happy', duration: 2200 })
-      return
-    }
-
-    const visible = await window.desktopBridge?.toggleQuickChat?.()
-    showBubble(tapMessage || t(language, visible ? 'quickChatOpened' : 'quickChatClosed'), {
-      mood: visible ? 'excited' : 'happy',
-      duration: 1800,
-    })
   }
 
   const handleClick = () => {
     if (suppressClickRef.current) {
       return
     }
-
-    if (clickTimerRef.current) {
-      window.clearTimeout(clickTimerRef.current)
-      clickTimerRef.current = null
-      window.desktopBridge?.openMainPanel?.()
-      showBubble(pickRandom(getPetMessagePool(language, petType, 'PanelMessages')) || t(language, 'mainPanelOpened'), {
-        mood: 'excited',
-        duration: 2000,
-      })
-      return
-    }
-
-    clickTimerRef.current = window.setTimeout(() => {
-      clickTimerRef.current = null
-      void handleSingleClick()
-    }, 220)
+    void handleEnterVoiceMode()
   }
 
-  const handleMouseEnter = () => {
-    if (dragRef.current.pointerId !== null || bubbleText) {
-      return
+  const bubbleText = useMemo(() => {
+    if (voiceUiState.phase !== VOICE_PHASES.IDLE) {
+      switch (voiceUiState.phase) {
+        case VOICE_PHASES.VOICE_ARMED:
+          return getVoiceCopy('voiceArmed')
+        case VOICE_PHASES.CONNECTING:
+          return getVoiceCopy('connecting')
+        case VOICE_PHASES.READY:
+          return getVoiceCopy('ready')
+        case VOICE_PHASES.LISTENING:
+          return getVoiceCopy('listening')
+        case VOICE_PHASES.PROCESSING:
+          return getVoiceCopy('processing')
+        case VOICE_PHASES.REPLYING:
+          return voiceUiState.bubbleText || getVoiceCopy('replyingPrefix')
+        case VOICE_PHASES.ERROR:
+          return voiceUiState.errorMessage || getVoiceCopy('subtitleUnavailable')
+        default:
+          return ''
+      }
     }
-    setPetMood(hasSession ? 'happy' : 'sad')
-  }
+    return transientBubble
+  }, [
+    getVoiceCopy,
+    transientBubble,
+    voiceUiState.bubbleText,
+    voiceUiState.errorMessage,
+    voiceUiState.phase,
+  ])
 
-  const handleMouseLeave = () => {
-    if (dragRef.current.pointerId !== null || bubbleText) {
-      return
+  const petMood = useMemo(() => {
+    if (!hasSession) {
+      return 'sad'
     }
-    resetMood()
-  }
+
+    switch (voiceUiState.phase) {
+      case VOICE_PHASES.CONNECTING:
+      case VOICE_PHASES.LISTENING:
+      case VOICE_PHASES.PROCESSING:
+        return 'excited'
+      case VOICE_PHASES.VOICE_ARMED:
+      case VOICE_PHASES.READY:
+      case VOICE_PHASES.REPLYING:
+        return 'happy'
+      case VOICE_PHASES.ERROR:
+        return 'sad'
+      default:
+        return hovering ? 'happy' : 'idle'
+    }
+  }, [hasSession, hovering, voiceUiState.phase])
 
   const petVisual = getPetVisual(petType, petMood)
   const petLabel = t(language, petVisual.labelKey)
@@ -534,8 +944,8 @@ function PetApp() {
           type="button"
           className="pet-button"
           onClick={handleClick}
-          onMouseEnter={handleMouseEnter}
-          onMouseLeave={handleMouseLeave}
+          onMouseEnter={() => setHovering(true)}
+          onMouseLeave={() => setHovering(false)}
           onPointerDown={handlePointerDown}
           onPointerMove={handlePointerMove}
           onPointerUp={finishPointerInteraction}

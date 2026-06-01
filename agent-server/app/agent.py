@@ -17,6 +17,14 @@ GENERIC_WEATHER_WORDS = {
     "\u5929\u6c14",
     "\u6c14\u6e29",
     "\u6e29\u5ea6",
+    "\u4eca\u5929",
+    "\u4eca\u65e5",
+    "\u73b0\u5728",
+    "\u5f53\u524d",
+    "\u672c\u5730",
+    "\u8fd9\u91cc",
+    "\u8fd9\u8fb9",
+    "\u600e\u4e48\u6837",
 }
 
 TIME_KEYWORDS = (
@@ -96,6 +104,8 @@ SUPPORT_KEYWORDS = (
 
 class AgentState(TypedDict, total=False):
     prompt: str
+    previous_user_prompts: list[str]
+    chat_messages: list[dict[str, str]]
     tool_name: str
     city: str
     tool_output: str
@@ -118,6 +128,7 @@ class VoiceDemoAgent:
         graph.add_node("identity_tool", self._identity_tool_node)
         graph.add_node("help_tool", self._help_tool_node)
         graph.add_node("support_tool", self._support_tool_node)
+        graph.add_node("project_chat_tool", self._project_chat_tool_node)
         graph.add_node("silent_tool", self._silent_tool_node)
         graph.add_node("respond", self._respond_node)
 
@@ -133,6 +144,7 @@ class VoiceDemoAgent:
                 "identity_tool": "identity_tool",
                 "help_tool": "help_tool",
                 "support_tool": "support_tool",
+                "project_chat_tool": "project_chat_tool",
                 "silent_tool": "silent_tool",
             },
         )
@@ -143,6 +155,7 @@ class VoiceDemoAgent:
         graph.add_edge("identity_tool", "respond")
         graph.add_edge("help_tool", "respond")
         graph.add_edge("support_tool", "respond")
+        graph.add_edge("project_chat_tool", "respond")
         graph.add_edge("silent_tool", "respond")
         graph.add_edge("respond", END)
         return graph.compile()
@@ -153,11 +166,25 @@ class VoiceDemoAgent:
                 return message.content.strip()
         return ""
 
+    def _user_prompts(self, request: ChatCompletionRequest) -> list[str]:
+        return [message.content.strip() for message in request.messages if message.role == "user" and message.content.strip()]
+
+    def _chat_messages(self, request: ChatCompletionRequest) -> list[dict[str, str]]:
+        messages: list[dict[str, str]] = []
+        for message in request.messages[-10:]:
+            content = message.content.strip()
+            if not content or message.role not in {"user", "assistant", "system"}:
+                continue
+            messages.append({"role": message.role, "content": content[:1200]})
+        return messages
+
     def _contains_any(self, text: str, keywords: tuple[str, ...]) -> bool:
         return any(keyword in text for keyword in keywords)
 
     def _normalize_city_candidate(self, candidate: str) -> str | None:
         normalized = candidate.strip()
+        normalized = re.sub(r"^(?:\u90a3|\u90a3\u4e48|\u8fd8\u6709|\u6362\u6210|\u518d\u67e5|what about|how about)\s*", "", normalized, flags=re.IGNORECASE)
+        normalized = re.sub(r"(?:\u5462|\u5417|\u5427|\u600e\u4e48\u6837|how about|what about)$", "", normalized, flags=re.IGNORECASE)
         normalized = re.sub(
             r"^(?:\u5e2e\u6211|\u8bf7|\u9ebb\u70e6\u4f60?|\u60f3\u77e5\u9053|\u544a\u8bc9\u6211|\u6211\u60f3\u77e5\u9053|\u5e2e\u5fd9)?",
             "",
@@ -182,6 +209,22 @@ class VoiceDemoAgent:
         if len(normalized) < 2:
             return None
         return normalized
+
+    def _extract_followup_city(self, prompt: str) -> str | None:
+        text = re.sub(r"\s+", " ", prompt.strip())
+        text = re.sub(
+            r"(?:\u5929\u6c14|\u6c14\u6e29|\u6e29\u5ea6|\u4eca\u5929|\u4eca\u65e5|\u73b0\u5728|\u5f53\u524d|\u5462|\u5417|\u5427|\u600e\u4e48\u6837|[?？!！。])",
+            "",
+            text,
+        )
+        candidate = self._normalize_city_candidate(text)
+        if candidate:
+            return candidate
+
+        english_match = re.search(r"(?P<city>[A-Za-z][A-Za-z\s-]{1,40})", prompt)
+        if english_match:
+            return self._normalize_city_candidate(english_match.group("city"))
+        return None
 
     def _extract_weather_city(self, prompt: str) -> str | None:
         text = re.sub(r"\s+", " ", prompt.strip())
@@ -209,8 +252,35 @@ class VoiceDemoAgent:
                 return candidate
         return None
 
+    def _previous_weather_city(self, previous_user_prompts: list[str]) -> str | None:
+        for previous_prompt in reversed(previous_user_prompts[-6:]):
+            lowered = previous_prompt.lower()
+            if self._contains_any(lowered, WEATHER_KEYWORDS):
+                city = self._extract_weather_city(previous_prompt)
+                if city:
+                    return city
+        return None
+
+    def _is_weather_followup(self, prompt: str, previous_user_prompts: list[str]) -> bool:
+        if not previous_user_prompts:
+            return False
+        previous_was_weather = any(
+            self._contains_any(previous_prompt.lower(), WEATHER_KEYWORDS)
+            for previous_prompt in previous_user_prompts[-4:]
+        )
+        if not previous_was_weather:
+            return False
+
+        lowered = prompt.lower()
+        if self._contains_any(lowered, TIME_KEYWORDS) or self._contains_any(lowered, PLATFORM_KEYWORDS):
+            return False
+        if self._extract_followup_city(prompt):
+            return True
+        return any(marker in lowered for marker in ("\u5462", "\u90a3", "\u8fd8\u6709", "\u6362\u6210", "what about", "how about"))
+
     def _route_node(self, state: AgentState) -> AgentState:
         prompt = state.get("prompt", "").strip()
+        previous_user_prompts = state.get("previous_user_prompts", [])
         lowered = prompt.lower()
 
         if self._contains_any(lowered, TIME_KEYWORDS):
@@ -219,6 +289,11 @@ class VoiceDemoAgent:
             route_state = {
                 "tool_name": "weather_tool",
                 "city": self._extract_weather_city(prompt) or "Beijing",
+            }
+        elif self._is_weather_followup(prompt, previous_user_prompts):
+            route_state = {
+                "tool_name": "weather_tool",
+                "city": self._extract_followup_city(prompt) or self._previous_weather_city(previous_user_prompts) or "Beijing",
             }
         elif (
             self._contains_any(lowered, PLATFORM_KEYWORDS)
@@ -234,7 +309,7 @@ class VoiceDemoAgent:
         elif self._contains_any(lowered, SUPPORT_KEYWORDS):
             route_state = {"tool_name": "support_tool"}
         else:
-            route_state = {"tool_name": "silent_tool"}
+            route_state = {"tool_name": "project_chat_tool"}
 
         logger.info(
             "agent_route tool=%s city=%s prompt=%s",
@@ -292,8 +367,18 @@ class VoiceDemoAgent:
             "tool_output": "\u5982\u679c\u4f60\u521a\u624d\u6ca1\u6709\u542c\u5230\u56de\u7b54\uff0c\u53ef\u4ee5\u5148\u70b9\u91cd\u8fde\uff0c\u518d\u95ee\u6211\u5929\u6c14\u3001\u65f6\u95f4\u6216\u5e73\u53f0\u72b6\u6001\u3002"
         }
 
+    async def _project_chat_tool_node(self, state: AgentState) -> AgentState:
+        return {
+            "tool_output": await self._run_tool(
+                lambda: self._tools.get_project_chat(state.get("chat_messages", [])),
+                "\u8fd9\u4e2a\u95ee\u9898\u6211\u6682\u65f6\u6ca1\u6709\u7a33\u5b9a\u7684\u56de\u7b54\uff0c\u4f60\u53ef\u4ee5\u6362\u4e00\u79cd\u8bf4\u6cd5\u518d\u8bd5\u3002",
+            )
+        }
+
     async def _silent_tool_node(self, _: AgentState) -> AgentState:
-        return {"tool_output": ""}
+        return {
+            "tool_output": "\u8fd9\u4e2a\u95ee\u9898\u6211\u73b0\u5728\u8fd8\u4e0d\u80fd\u7a33\u5b9a\u5904\u7406\u3002\u4f60\u53ef\u4ee5\u76f4\u63a5\u95ee\u6211\u73b0\u5728\u51e0\u70b9\u3001\u67d0\u4e2a\u57ce\u5e02\u7684\u5929\u6c14\uff0c\u6216\u8005\u5e73\u53f0\u72b6\u6001\u3002"
+        }
 
     def _respond_node(self, state: AgentState) -> AgentState:
         if "tool_output" in state:
@@ -306,22 +391,30 @@ class VoiceDemoAgent:
         except asyncio.TimeoutError:
             logger.warning(
                 "tool_timeout tool=%s timeout_ms=%s",
-                tool_func.__name__,
+                getattr(tool_func, "__name__", tool_func.__class__.__name__),
                 self._settings.AGENT_TOOL_TIMEOUT_MS,
             )
             return fallback_text
         except Exception as exc:  # pragma: no cover - logged and converted to natural language
-            logger.warning("tool_failure tool=%s error=%s", tool_func.__name__, exc)
+            logger.warning("tool_failure tool=%s error=%s", getattr(tool_func, "__name__", tool_func.__class__.__name__), exc)
             return fallback_text
 
     async def complete_text(self, request: ChatCompletionRequest) -> str:
         prompt = self._latest_user_prompt(request)
         if not prompt:
             return ""
+        user_prompts = self._user_prompts(request)
+        chat_messages = self._chat_messages(request)
 
         try:
             state = await asyncio.wait_for(
-                self._graph.ainvoke({"prompt": prompt}),
+                self._graph.ainvoke(
+                    {
+                        "prompt": prompt,
+                        "previous_user_prompts": user_prompts[:-1],
+                        "chat_messages": chat_messages,
+                    }
+                ),
                 timeout=self._settings.total_timeout_seconds,
             )
         except asyncio.TimeoutError:

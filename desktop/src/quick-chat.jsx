@@ -44,6 +44,14 @@ function truncateReply(content, language) {
   return `${normalized.slice(0, 72).trim()}… ${t(language, 'openMainPanelForMore')}`
 }
 
+function getQuickChatIntro(language, petLabel) {
+  if (language === 'zh-CN') {
+    return `桌宠单击现在会进入语音态。这里继续保留给 ${petLabel} 的文字快捷聊天。`
+  }
+
+  return `Single-clicking the pet now enters voice mode. This window stays available for quick text chat with ${petLabel}.`
+}
+
 function QuickChatApp() {
   const [ready, setReady] = useState(false)
   const [message, setMessage] = useState('')
@@ -273,7 +281,7 @@ function QuickChatApp() {
               <div className="quick-chat-hero-copy">
                 <div className="quick-chat-chip">{t(language, 'quickChat')}</div>
                 <div className="quick-chat-title">{t(language, 'desktopQuickChat', { pet: petLabel })}</div>
-                <div className="quick-chat-subtitle">{t(language, 'quickChatEmpty', { pet: petLabel })}</div>
+                <div className="quick-chat-subtitle">{getQuickChatIntro(language, petLabel)}</div>
               </div>
               <button
                 type="button"
@@ -298,7 +306,7 @@ function QuickChatApp() {
                 <div className="quick-chat-thread">
                   {recentMessages.length === 0 && (
                     <div className="quick-chat-message assistant quick-chat-message-empty">
-                      {t(language, 'quickChatEmpty', { pet: petLabel })}
+                      {getQuickChatIntro(language, petLabel)}
                     </div>
                   )}
                   {recentMessages.map((item, index) => (
