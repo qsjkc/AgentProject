@@ -1,10 +1,13 @@
 import sys
+from datetime import timedelta
 from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
 
 from app.services.rtc.service import VoiceDemoRtcClient, voice_demo_service
+from app.services.rtc.store import VoiceDemoSessionRecord
+from app.core.time import utc_now
 
 
 def test_rtc_client_normalizes_plain_string_response():
@@ -46,6 +49,38 @@ def test_rtc_client_accepts_public_agent_chat_url(monkeypatch):
 
     assert config["URL"] == "https://detachym.top/agent/v1/chat/completions"
     assert config["APIKey"] == "agent-key"
+
+
+def test_start_body_enables_ai_rts_subtitle(monkeypatch):
+    from app.core.config import settings
+
+    client = VoiceDemoRtcClient()
+    monkeypatch.setattr(settings, "VOLC_AGENT_CHAT_COMPLETIONS_URL", "https://detachym.top/agent/v1/chat/completions")
+    monkeypatch.setattr(settings, "VOLC_AGENT_API_KEY", "agent-key")
+    monkeypatch.setattr(settings, "VOLC_VOICE_CHAT_ASR_CONFIG_JSON", '{"ResourceId":"asr-resource"}')
+    monkeypatch.setattr(settings, "VOLC_VOICE_CHAT_TTS_CONFIG_JSON", '{"ResourceId":"tts-resource"}')
+    monkeypatch.setattr(settings, "VOLC_VOICE_CHAT_LLM_CONFIG_JSON", "{}")
+    monkeypatch.setattr(settings, "VOLC_VOICE_CHAT_ENABLE_RTS_SUBTITLE", True)
+    monkeypatch.setattr(settings, "VOLC_VOICE_CHAT_SUBTITLE_MODE", 1)
+
+    record = VoiceDemoSessionRecord(
+        session_id="vs_test",
+        owner_user_id=1,
+        app_id="app-id",
+        room_id="room-id",
+        user_id="user-id",
+        ai_user_id="BOTUSER123",
+        token="token",
+        expires_at=utc_now() + timedelta(seconds=60),
+    )
+
+    body = client._build_start_body(record, "task-id")
+
+    assert body["Config"]["SubtitleConfig"] == {
+        "DisableRTSSubtitle": False,
+        "SubtitleMode": 1,
+    }
+    assert "ServerMessageUrl" not in body["Config"]
 
 
 @pytest.mark.asyncio

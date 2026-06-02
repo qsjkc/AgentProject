@@ -305,6 +305,10 @@ class VoiceDemoRtcClient:
                 "ASRConfig": asr_config,
                 "LLMConfig": self._build_llm_config(),
                 "TTSConfig": tts_config,
+                "SubtitleConfig": {
+                    "DisableRTSSubtitle": not settings.VOLC_VOICE_CHAT_ENABLE_RTS_SUBTITLE,
+                    "SubtitleMode": settings.VOLC_VOICE_CHAT_SUBTITLE_MODE,
+                },
             },
         }
 

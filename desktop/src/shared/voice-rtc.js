@@ -1,4 +1,4 @@
-import VERTC, { AudioProfileType, MediaType, StreamIndex, SUBTITLE_MODE } from '@volcengine/rtc'
+import VERTC, { AudioProfileType, MediaType, StreamIndex } from '@volcengine/rtc'
 
 import {
   createVoiceDemoSession,
@@ -8,13 +8,19 @@ import {
   stopVoiceDemoSession,
 } from './voice-api'
 import { isVoiceAuthError } from './voice-errors'
-import { formatVoiceError, normalizeDisplayText, normalizeSubtitleItems } from './voice-format'
+import {
+  formatVoiceError,
+  normalizeDisplayText,
+  normalizeRtsSubtitleItems,
+  normalizeSubtitleItems,
+} from './voice-format'
 import { DEFAULT_VOICE_SETTINGS, VOICE_OUTPUT_MODES, normalizeVoiceSettings } from './voice-state'
 
 const ACTIVE_CAPTURE_VOLUME = 100
 const IDLE_CAPTURE_VOLUME = 0
 const REMOTE_PLAYBACK_VOLUME = 100
 const INACTIVITY_TIMEOUT_MS = 30_000
+const POST_TALK_DRAIN_MS = 220
 const REMOTE_TRACK_WAIT_ATTEMPTS = 12
 const REMOTE_TRACK_WAIT_INTERVAL_MS = 200
 const HIDDEN_AUDIO_ID = 'detachym-desktop-voice-audio'
@@ -74,6 +80,8 @@ function buildDesktopVoiceSession(options = {}) {
   let session = null
   let joined = false
   let listening = false
+  let localAudioCapturing = false
+  let localAudioPublished = false
   let cleaningUp = null
   let starting = null
   let destroyed = false
@@ -194,13 +202,12 @@ function buildDesktopVoiceSession(options = {}) {
       }
     }
 
-    const handleSubtitleMessageReceived = (payload) => {
-      const items = normalizeSubtitleItems(payload)
+    const processSubtitleItems = (items, source, rawDetails = {}) => {
       emitEvent('voice:subtitle-message', {
+        source,
         count: items.length,
         speakers: [...new Set(items.map((item) => item.speakerId || 'unknown'))],
-        rawType: Array.isArray(payload) ? 'array' : typeof payload,
-        rawKeys: payload && !Array.isArray(payload) && typeof payload === 'object' ? Object.keys(payload).slice(0, 12) : [],
+        ...rawDetails,
       })
 
       for (const item of items) {
@@ -256,6 +263,51 @@ function buildDesktopVoiceSession(options = {}) {
       }
     }
 
+    const handleSubtitleMessageReceived = (payload) => {
+      processSubtitleItems(normalizeSubtitleItems(payload), 'sdk-subtitle', {
+        rawType: Array.isArray(payload) ? 'array' : typeof payload,
+        rawKeys: payload && !Array.isArray(payload) && typeof payload === 'object' ? Object.keys(payload).slice(0, 12) : [],
+      })
+    }
+
+    const handleRoomBinaryMessageReceived = (event) => {
+      const items = normalizeRtsSubtitleItems(event?.message)
+      if (!items.length) {
+        emitEvent('voice:room-binary-message', {
+          userId: event?.userId ?? null,
+          byteLength: event?.message?.byteLength ?? event?.message?.length ?? null,
+          parsed: false,
+        })
+        return
+      }
+
+      processSubtitleItems(items, 'rts-subtitle', {
+        userId: event?.userId ?? null,
+        byteLength: event?.message?.byteLength ?? event?.message?.length ?? null,
+      })
+    }
+
+    const handleRoomMessageReceived = (event) => {
+      let payload = event?.message
+      if (typeof payload === 'string') {
+        try {
+          payload = JSON.parse(payload)
+        } catch {
+          emitEvent('voice:room-message', {
+            userId: event?.userId ?? null,
+            parsed: false,
+            textLength: payload.length,
+          })
+          return
+        }
+      }
+
+      processSubtitleItems(normalizeSubtitleItems(payload), 'room-message', {
+        userId: event?.userId ?? null,
+        rawType: typeof payload,
+      })
+    }
+
     const handleUserPublishStream = async (event) => {
       if (!session || event.userId !== session.aiUserId || !hasAudio(event.mediaType)) {
         return
@@ -301,6 +353,8 @@ function buildDesktopVoiceSession(options = {}) {
 
     engine.on(VERTC.events.onSubtitleStateChanged, handleSubtitleStateChanged)
     engine.on(VERTC.events.onSubtitleMessageReceived, handleSubtitleMessageReceived)
+    engine.on(VERTC.events.onRoomBinaryMessageReceived, handleRoomBinaryMessageReceived)
+    engine.on(VERTC.events.onRoomMessageReceived, handleRoomMessageReceived)
     engine.on(VERTC.events.onUserPublishStream, handleUserPublishStream)
     engine.on(VERTC.events.onUserUnpublishStream, handleUserUnpublishStream)
     engine.on(VERTC.events.onUserLeave, handleUserLeave)
@@ -310,6 +364,8 @@ function buildDesktopVoiceSession(options = {}) {
     boundListeners = {
       handleSubtitleStateChanged,
       handleSubtitleMessageReceived,
+      handleRoomBinaryMessageReceived,
+      handleRoomMessageReceived,
       handleUserPublishStream,
       handleUserUnpublishStream,
       handleUserLeave,
@@ -325,52 +381,14 @@ function buildDesktopVoiceSession(options = {}) {
 
     engine.off(VERTC.events.onSubtitleStateChanged, boundListeners.handleSubtitleStateChanged)
     engine.off(VERTC.events.onSubtitleMessageReceived, boundListeners.handleSubtitleMessageReceived)
+    engine.off(VERTC.events.onRoomBinaryMessageReceived, boundListeners.handleRoomBinaryMessageReceived)
+    engine.off(VERTC.events.onRoomMessageReceived, boundListeners.handleRoomMessageReceived)
     engine.off(VERTC.events.onUserPublishStream, boundListeners.handleUserPublishStream)
     engine.off(VERTC.events.onUserUnpublishStream, boundListeners.handleUserUnpublishStream)
     engine.off(VERTC.events.onUserLeave, boundListeners.handleUserLeave)
     engine.off(VERTC.events.onAutoplayFailed, boundListeners.handleAutoplayFailed)
     engine.off(VERTC.events.onError, boundListeners.handleRtcError)
     boundListeners = null
-  }
-
-  const startSubtitleWithFallback = async () => {
-    if (!engine) {
-      return
-    }
-
-    const configs = [
-      {
-        mode: SUBTITLE_MODE.ASR_ONLY,
-        targetLanguage: 'zh-CN',
-      },
-      {
-        mode: SUBTITLE_MODE.ASR_ONLY,
-      },
-    ]
-
-    let lastError = null
-    for (const config of configs) {
-      try {
-        await engine.startSubtitle(config)
-        emitEvent('voice:subtitle-start', {
-          mode: config.mode,
-          targetLanguage: config.targetLanguage ?? null,
-        })
-        return
-      } catch (error) {
-        lastError = error
-        emitEvent('voice:subtitle-start-failed', {
-          mode: config.mode,
-          targetLanguage: config.targetLanguage ?? null,
-          message: formatVoiceError(error, '字幕启动失败。'),
-        })
-      }
-    }
-
-    emitError(formatVoiceError(lastError, '字幕启动失败。'), {
-      fatal: false,
-      phase: 'subtitle-start',
-    })
   }
 
   const ensureMicPermission = async () => {
@@ -448,14 +466,9 @@ function buildDesktopVoiceSession(options = {}) {
         userId: createdSession.userId,
       })
 
-      await engine.startAudioCapture()
-      emitEvent('voice:local-audio-start', {
-        mode: 'warm',
-      })
-      await engine.publishStream(MediaType.AUDIO)
+      localAudioCapturing = false
+      localAudioPublished = false
       setCaptureVolume(IDLE_CAPTURE_VOLUME)
-
-      await startSubtitleWithFallback()
 
       const startedSession = await startVoiceDemoSession(createdSession.sessionId)
       emitEvent('voice:session-start', {
@@ -494,14 +507,56 @@ function buildDesktopVoiceSession(options = {}) {
       throw new Error('语音连接尚未就绪。')
     }
 
-    listening = true
-    currentSubtitleSequence = null
-    setCaptureVolume(ACTIVE_CAPTURE_VOLUME)
-    emitEvent('voice:key-down', {
-      sessionId: result.session.sessionId,
-    })
-    resetInactivityTimer()
-    return { accepted: true }
+    try {
+      listening = true
+      currentSubtitleSequence = null
+      if (!localAudioCapturing) {
+        await engine.startAudioCapture()
+        localAudioCapturing = true
+        emitEvent('voice:local-audio-start', {
+          mode: 'push-to-talk',
+        })
+      }
+      if (!localAudioPublished) {
+        await engine.publishStream(MediaType.AUDIO)
+        localAudioPublished = true
+        emitEvent('voice:local-audio-publish', {
+          mode: 'push-to-talk',
+        })
+      }
+      setCaptureVolume(ACTIVE_CAPTURE_VOLUME)
+      emitEvent('voice:key-down', {
+        sessionId: result.session.sessionId,
+      })
+      resetInactivityTimer()
+      return { accepted: true }
+    } catch (error) {
+      listening = false
+      try {
+        setCaptureVolume(IDLE_CAPTURE_VOLUME)
+      } catch {
+        // best effort
+      }
+      if (localAudioPublished) {
+        try {
+          await engine.unpublishStream(MediaType.AUDIO)
+        } catch {
+          // best effort
+        } finally {
+          localAudioPublished = false
+        }
+      }
+      if (localAudioCapturing) {
+        try {
+          await engine.stopAudioCapture()
+        } catch {
+          // best effort
+        } finally {
+          localAudioCapturing = false
+        }
+      }
+      throw error
+    }
   }
 
   async function stopPressToTalk() {
@@ -510,7 +565,25 @@ function buildDesktopVoiceSession(options = {}) {
     }
 
     listening = false
+    await sleep(POST_TALK_DRAIN_MS)
     setCaptureVolume(IDLE_CAPTURE_VOLUME)
+    if (localAudioPublished) {
+      try {
+        await engine.unpublishStream(MediaType.AUDIO)
+      } finally {
+        localAudioPublished = false
+        emitEvent('voice:local-audio-unpublish', {
+          mode: 'push-to-talk',
+        })
+      }
+    }
+    if (localAudioCapturing) {
+      try {
+        await engine.stopAudioCapture()
+      } finally {
+        localAudioCapturing = false
+      }
+    }
     emitEvent('voice:key-up', {
       sessionId: session?.sessionId ?? null,
     })
@@ -591,17 +664,23 @@ function buildDesktopVoiceSession(options = {}) {
         }
 
         try {
-          if (joined) {
+          if (joined && localAudioPublished) {
             await engine.unpublishStream(MediaType.AUDIO)
           }
         } catch {
           // best effort
+        } finally {
+          localAudioPublished = false
         }
 
         try {
-          await engine.stopAudioCapture()
+          if (localAudioCapturing) {
+            await engine.stopAudioCapture()
+          }
         } catch {
           // best effort
+        } finally {
+          localAudioCapturing = false
         }
 
         try {

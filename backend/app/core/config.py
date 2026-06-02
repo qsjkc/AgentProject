@@ -67,6 +67,8 @@ class Settings(BaseSettings):
     VOLC_VOICE_CHAT_ASR_CONFIG_JSON: str = "{}"
     VOLC_VOICE_CHAT_TTS_CONFIG_JSON: str = "{}"
     VOLC_VOICE_CHAT_LLM_CONFIG_JSON: str = "{}"
+    VOLC_VOICE_CHAT_ENABLE_RTS_SUBTITLE: bool = True
+    VOLC_VOICE_CHAT_SUBTITLE_MODE: int = 1
     VOLC_VOICE_CHAT_WELCOME_MESSAGE: str = ""
     VOLC_VOICE_CHAT_SYSTEM_PROMPT: str = (
         "你是一个简洁、自然、适合语音播报的中文智能助手。"

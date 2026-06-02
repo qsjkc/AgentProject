@@ -2,7 +2,13 @@ import assert from 'node:assert/strict'
 
 import { normalizeApiBaseUrl } from '../src/shared/api-base-url.js'
 import { getPetMessagePool, normalizeLanguage, t } from '../src/shared/i18n.js'
-import { normalizeSubtitleItems, stripMarkdown, truncateForPetBubble } from '../src/shared/voice-format.js'
+import {
+  decodeRtsSubtitlePayload,
+  normalizeRtsSubtitleItems,
+  normalizeSubtitleItems,
+  stripMarkdown,
+  truncateForPetBubble,
+} from '../src/shared/voice-format.js'
 import { createVoiceAuthError, isVoiceAuthError, VOICE_AUTH_ERROR_CODE } from '../src/shared/voice-errors.js'
 import {
   createInitialVoiceUiState,
@@ -100,6 +106,57 @@ assert.equal(nestedSubtitleItems[0].isFinal, true)
 assert.equal(nestedSubtitleItems[0].sequence, 9)
 assert.equal(nestedSubtitleItems[1].speakerId, 'local-user')
 assert.equal(nestedSubtitleItems[1].isFinal, false)
+
+const rtsSubtitleJson = JSON.stringify([
+  {
+    userId: 'ai-user',
+    text: 'final reply',
+    definite: true,
+    sequence: 11,
+  },
+])
+const rtsSubtitleBytes = new TextEncoder().encode(rtsSubtitleJson)
+const rtsSubtitlePayload = new Uint8Array(8 + rtsSubtitleBytes.byteLength)
+rtsSubtitlePayload[0] = 's'.charCodeAt(0)
+rtsSubtitlePayload[1] = 'u'.charCodeAt(0)
+rtsSubtitlePayload[2] = 'b'.charCodeAt(0)
+rtsSubtitlePayload[3] = 'v'.charCodeAt(0)
+new DataView(rtsSubtitlePayload.buffer).setUint32(4, rtsSubtitleBytes.byteLength, false)
+rtsSubtitlePayload.set(rtsSubtitleBytes, 8)
+
+assert.deepEqual(decodeRtsSubtitlePayload(rtsSubtitlePayload.buffer), JSON.parse(rtsSubtitleJson))
+const rtsSubtitleItems = normalizeRtsSubtitleItems(rtsSubtitlePayload)
+assert.equal(rtsSubtitleItems.length, 1)
+assert.equal(rtsSubtitleItems[0].speakerId, 'ai-user')
+assert.equal(rtsSubtitleItems[0].isFinal, true)
+assert.equal(rtsSubtitleItems[0].text, 'final reply')
+
+const wrappedRtsSubtitleJson = JSON.stringify({
+  type: 'subtitle',
+  data: [
+    {
+      UserId: 'ai-user',
+      Text: 'wrapped final reply',
+      Definite: true,
+      Sequence: 12,
+    },
+  ],
+})
+const wrappedRtsSubtitleBytes = new TextEncoder().encode(wrappedRtsSubtitleJson)
+const wrappedRtsSubtitlePayload = new Uint8Array(8 + wrappedRtsSubtitleBytes.byteLength)
+wrappedRtsSubtitlePayload[0] = 's'.charCodeAt(0)
+wrappedRtsSubtitlePayload[1] = 'u'.charCodeAt(0)
+wrappedRtsSubtitlePayload[2] = 'b'.charCodeAt(0)
+wrappedRtsSubtitlePayload[3] = 'v'.charCodeAt(0)
+new DataView(wrappedRtsSubtitlePayload.buffer).setUint32(4, wrappedRtsSubtitleBytes.byteLength, true)
+wrappedRtsSubtitlePayload.set(wrappedRtsSubtitleBytes, 8)
+
+const wrappedRtsSubtitleItems = normalizeRtsSubtitleItems(wrappedRtsSubtitlePayload.buffer)
+assert.equal(wrappedRtsSubtitleItems.length, 1)
+assert.equal(wrappedRtsSubtitleItems[0].speakerId, 'ai-user')
+assert.equal(wrappedRtsSubtitleItems[0].isFinal, true)
+assert.equal(wrappedRtsSubtitleItems[0].sequence, 12)
+assert.equal(wrappedRtsSubtitleItems[0].text, 'wrapped final reply')
 
 const authError = createVoiceAuthError()
 assert.equal(authError.code, VOICE_AUTH_ERROR_CODE)
