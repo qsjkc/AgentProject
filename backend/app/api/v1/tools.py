@@ -66,7 +66,10 @@ async def get_internal_chat(
         messages.append(
             Message(
                 role="system",
-                content="请优先用 1 到 3 句中文回答，除非用户明确要求详细解释。",
+                content=(
+                    "请优先用 1 到 3 句中文回答，除非用户明确要求详细解释。"
+                    "如果用户问生活建议或常识短问题，直接给一个可执行建议；不要只说请说清楚。"
+                ),
             )
         )
 

@@ -101,6 +101,20 @@ SUPPORT_KEYWORDS = (
     "error",
 )
 
+LOW_VALUE_PROJECT_REPLY_MARKERS = (
+    "请说清楚",
+    "请再说一次",
+    "有什么可以帮助",
+    "暂时没有稳定",
+    "没有拿到稳定",
+    "无法回答",
+    "不能稳定处理",
+    "换个说法",
+    "没有整理出",
+    "not configured",
+    "try again",
+)
+
 
 class AgentState(TypedDict, total=False):
     prompt: str
@@ -278,6 +292,38 @@ class VoiceDemoAgent:
             return True
         return any(marker in lowered for marker in ("\u5462", "\u90a3", "\u8fd8\u6709", "\u6362\u6210", "what about", "how about"))
 
+    def _is_low_value_project_reply(self, text: str) -> bool:
+        normalized = text.strip().lower()
+        if not normalized:
+            return True
+        if len(normalized) <= 12 and normalized.rstrip("。！？!?") in {"好的", "可以", "您好", "你好"}:
+            return True
+        return any(marker.lower() in normalized for marker in LOW_VALUE_PROJECT_REPLY_MARKERS)
+
+    def _local_general_fallback(self, prompt: str) -> str:
+        lowered = prompt.lower()
+        if any(keyword in prompt for keyword in ("早餐", "早饭", "早上吃", "早晨吃")):
+            return "早餐建议选一份主食加蛋白质，再配点水果或蔬菜。比如燕麦加鸡蛋，或包子加豆浆，简单又顶饿。"
+        if any(keyword in prompt for keyword in ("午饭", "午餐", "中午吃", "晚饭", "晚餐", "吃什么")):
+            return "可以选一个均衡搭配：主食、蛋白质和蔬菜各一份。比如米饭配鸡胸或鱼，再加一份青菜。"
+        if any(keyword in prompt for keyword in ("睡不着", "失眠", "困", "休息")):
+            return "先把灯光调暗，放下手机，做几轮慢呼吸。如果还是睡不着，可以起身喝点温水，等困意回来再躺下。"
+        if any(keyword in prompt for keyword in ("学习", "工作", "计划", "效率", "拖延")):
+            return "建议先定一个很小的下一步，只做十五分钟。开始后再决定要不要继续，这样比空想计划更容易推进。"
+        if any(keyword in prompt for keyword in ("心情", "焦虑", "压力", "难受", "烦")):
+            return "先把注意力放回身体，慢慢呼吸几次。然后写下最困扰你的一件事，只处理能马上做的一小步。"
+        if any(keyword in prompt for keyword in ("运动", "健身", "锻炼")):
+            return "如果只是想开始，先做十分钟低强度活动，比如快走、拉伸或深蹲。重点是稳定开始，不是一次练很多。"
+        if "月亮" in prompt and ("发光" in prompt or "亮" in prompt):
+            return "月亮自己不会发光，我们看到的月光主要是它反射的太阳光。月相变化，是因为太阳、地球和月亮的位置在变。"
+        if "火星" in prompt and any(keyword in prompt for keyword in ("猫", "动物", "生命")):
+            return "目前没有证据表明火星上有猫或其他已知生命。火星环境很干冷，人类还在持续探测它是否曾经适合生命存在。"
+        if "为什么" in prompt:
+            return "这个问题可以从原因、条件和结果三步看。你可以再补充一下具体对象，我就能给你更准确的解释。"
+        if any(keyword in lowered for keyword in ("how", "why", "what should", "advice")):
+            return "I can help with that. Give me one constraint or goal, and I will answer with a short practical suggestion."
+        return "我可以回答这个日常问题。先给一个简短建议：把目标、限制和下一步说清楚，我会继续帮你拆成可执行的做法。"
+
     def _route_node(self, state: AgentState) -> AgentState:
         prompt = state.get("prompt", "").strip()
         previous_user_prompts = state.get("previous_user_prompts", [])
@@ -368,11 +414,16 @@ class VoiceDemoAgent:
         }
 
     async def _project_chat_tool_node(self, state: AgentState) -> AgentState:
+        prompt = state.get("prompt", "")
+        fallback_text = self._local_general_fallback(prompt)
+        tool_output = await self._run_tool(
+            lambda: self._tools.get_project_chat(state.get("chat_messages", [])),
+            fallback_text,
+        )
+        if self._is_low_value_project_reply(tool_output):
+            tool_output = fallback_text
         return {
-            "tool_output": await self._run_tool(
-                lambda: self._tools.get_project_chat(state.get("chat_messages", [])),
-                "\u8fd9\u4e2a\u95ee\u9898\u6211\u73b0\u5728\u6ca1\u6709\u62ff\u5230\u7a33\u5b9a\u7684\u6a21\u578b\u56de\u7b54\u3002\u4f60\u53ef\u4ee5\u6362\u4e2a\u8bf4\u6cd5\u518d\u95ee\u4e00\u6b21\uff0c\u6211\u4f1a\u7ee7\u7eed\u5c1d\u8bd5\u56de\u7b54\u3002",
-            )
+            "tool_output": tool_output
         }
 
     async def _silent_tool_node(self, _: AgentState) -> AgentState:

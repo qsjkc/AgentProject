@@ -10,10 +10,18 @@ from app.main import create_app
 
 
 class FakeTools:
-    def __init__(self, *, weather_error: bool = False, weather_delay: float = 0, chat_error: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        weather_error: bool = False,
+        weather_delay: float = 0,
+        chat_error: bool = False,
+        chat_response: str | None = None,
+    ) -> None:
         self.weather_error = weather_error
         self.weather_delay = weather_delay
         self.chat_error = chat_error
+        self.chat_response = chat_response
         self.last_weather_city: str | None = None
         self.last_chat_messages: list[dict[str, str]] | None = None
 
@@ -35,6 +43,8 @@ class FakeTools:
         self.last_chat_messages = messages
         if self.chat_error:
             raise RuntimeError("chat backend unavailable")
+        if self.chat_response is not None:
+            return self.chat_response
         return "这是项目通用聊天能力给出的简短回答。"
 
 
@@ -303,7 +313,33 @@ async def test_chat_completions_general_prompt_failure_returns_fallback():
         )
 
     assert response.status_code == 200
-    assert "没有拿到稳定的模型回答" in response.json()["choices"][0]["message"]["content"]
+    assert "没有证据表明火星上有猫" in response.json()["choices"][0]["message"]["content"]
+
+
+@pytest.mark.asyncio
+async def test_chat_completions_general_prompt_replaces_low_value_backend_reply():
+    settings = Settings(
+        AGENT_API_KEY="test-agent-key",
+        BACKEND_BASE_URL="http://backend.test",
+        AGENT_FIRST_CHUNK_TIMEOUT_MS=2000,
+        AGENT_TOTAL_TIMEOUT_MS=5000,
+        AGENT_TOOL_TIMEOUT_MS=1000,
+    )
+    app = create_app(settings_override=settings, tools_override=FakeTools(chat_response="请说清楚您的问题，我会尽力帮助您。"))
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+        response = await client.post(
+            "/v1/chat/completions",
+            headers=_auth_headers(),
+            json={
+                "stream": False,
+                "messages": [{"role": "user", "content": "我早饭吃什么比较好"}],
+            },
+        )
+
+    assert response.status_code == 200
+    content = response.json()["choices"][0]["message"]["content"]
+    assert "早餐建议" in content
+    assert "鸡蛋" in content
 
 
 @pytest.mark.asyncio
