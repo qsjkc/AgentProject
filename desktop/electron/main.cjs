@@ -26,8 +26,9 @@ const DEFAULT_VOICE_SETTINGS = {
   desktop_voice_enabled: true,
   desktop_voice_trigger_key: 'KeyD',
   desktop_voice_idle_timeout_seconds: 8,
-  desktop_voice_output_mode: 'text_only',
+  desktop_voice_output_mode: 'voice_and_text',
 }
+const VOICE_SETTINGS_OUTPUT_MIGRATION_KEY = 'voiceSettingsOutputModeMigratedAt'
 const PET_WINDOW_WIDTH = 220
 const PET_WINDOW_HEIGHT = 240
 const PET_VISIBLE_WIDTH = 126
@@ -290,6 +291,21 @@ function setVoiceSettings(patch = {}) {
     ...(patch || {}),
   })
   getStore().set('voiceSettings', nextSettings)
+  return nextSettings
+}
+
+function migrateVoiceSettings() {
+  if (getStore().get(VOICE_SETTINGS_OUTPUT_MIGRATION_KEY)) {
+    return getVoiceSettings()
+  }
+
+  const nextSettings = setVoiceSettings({
+    desktop_voice_output_mode: 'voice_and_text',
+  })
+  getStore().set(VOICE_SETTINGS_OUTPUT_MIGRATION_KEY, new Date().toISOString())
+  logDesktop('voice-settings-migrated', {
+    desktop_voice_output_mode: nextSettings.desktop_voice_output_mode,
+  })
   return nextSettings
 }
 
@@ -892,6 +908,7 @@ if (!app.requestSingleInstanceLock()) {
 
   app.whenReady().then(async () => {
     store = await createStore()
+    migrateVoiceSettings()
     app.setLoginItemSettings({ openAtLogin: Boolean(getStore().get('autoLaunch')) })
     bootstrap()
   })

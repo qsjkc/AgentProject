@@ -18,7 +18,7 @@ export const DEFAULT_VOICE_SETTINGS = {
   desktop_voice_enabled: true,
   desktop_voice_trigger_key: 'KeyD',
   desktop_voice_idle_timeout_seconds: 8,
-  desktop_voice_output_mode: VOICE_OUTPUT_MODES.TEXT_ONLY,
+  desktop_voice_output_mode: VOICE_OUTPUT_MODES.VOICE_AND_TEXT,
 }
 
 export function normalizeVoiceSettings(value = {}) {

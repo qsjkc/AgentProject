@@ -38,7 +38,7 @@ const normalizedVoiceSettings = normalizeVoiceSettings({
 })
 assert.equal(normalizedVoiceSettings.desktop_voice_output_mode, VOICE_OUTPUT_MODES.VOICE_AND_TEXT)
 assert.equal(normalizedVoiceSettings.desktop_voice_idle_timeout_seconds, 12)
-assert.equal(DEFAULT_VOICE_SETTINGS.desktop_voice_output_mode, VOICE_OUTPUT_MODES.TEXT_ONLY)
+assert.equal(DEFAULT_VOICE_SETTINGS.desktop_voice_output_mode, VOICE_OUTPUT_MODES.VOICE_AND_TEXT)
 
 const initialVoiceState = createInitialVoiceUiState()
 const armedState = voiceStateReducer(initialVoiceState, {

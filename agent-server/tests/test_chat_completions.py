@@ -303,7 +303,7 @@ async def test_chat_completions_general_prompt_failure_returns_fallback():
         )
 
     assert response.status_code == 200
-    assert "暂时没有稳定的回答" in response.json()["choices"][0]["message"]["content"]
+    assert "没有拿到稳定的模型回答" in response.json()["choices"][0]["message"]["content"]
 
 
 @pytest.mark.asyncio
@@ -327,7 +327,9 @@ async def test_chat_completions_greeting_returns_short_capability_hint():
         )
 
     assert response.status_code == 200
-    assert "时间" in response.json()["choices"][0]["message"]["content"]
+    content = response.json()["choices"][0]["message"]["content"]
+    assert "日常问题" in content
+    assert "天气" in content
 
 
 @pytest.mark.asyncio
@@ -351,7 +353,33 @@ async def test_chat_completions_identity_returns_brief_intro():
         )
 
     assert response.status_code == 200
-    assert "语音 Demo 助手" in response.json()["choices"][0]["message"]["content"]
+    assert "Detachym 桌宠语音助手" in response.json()["choices"][0]["message"]["content"]
+
+
+@pytest.mark.asyncio
+async def test_chat_completions_help_mentions_daily_questions():
+    settings = Settings(
+        AGENT_API_KEY="test-agent-key",
+        BACKEND_BASE_URL="http://backend.test",
+        AGENT_FIRST_CHUNK_TIMEOUT_MS=2000,
+        AGENT_TOTAL_TIMEOUT_MS=5000,
+        AGENT_TOOL_TIMEOUT_MS=1000,
+    )
+    app = create_app(settings_override=settings, tools_override=FakeTools())
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+        response = await client.post(
+            "/v1/chat/completions",
+            headers=_auth_headers(),
+            json={
+                "stream": False,
+                "messages": [{"role": "user", "content": "你能做什么"}],
+            },
+        )
+
+    assert response.status_code == 200
+    content = response.json()["choices"][0]["message"]["content"]
+    assert "早餐建议" in content
+    assert "平台状态" in content
 
 
 @pytest.mark.asyncio

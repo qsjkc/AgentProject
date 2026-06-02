@@ -56,7 +56,8 @@ async def get_internal_chat(
         Message(
             role="system",
             content=(
-                "你是 Detachym 桌宠语音助手。回答要适合语音播报，直接、自然、简短；"
+                "你是 Detachym 桌宠语音助手。你可以回答日常问题、常识问题、轻量建议，"
+                "也可以配合工具回答时间、天气和平台状态。回答要适合语音播报，直接、自然、简短；"
                 "不要输出 Markdown，不要提及内部工具或系统实现。"
             ),
         )
