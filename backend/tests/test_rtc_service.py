@@ -20,6 +20,34 @@ def test_rtc_client_normalizes_plain_string_response():
     }
 
 
+def test_rtc_client_rejects_local_agent_chat_url(monkeypatch):
+    from app.core.config import settings
+
+    client = VoiceDemoRtcClient()
+    monkeypatch.setattr(settings, "VOLC_AGENT_CHAT_COMPLETIONS_URL", "http://127.0.0.1:8000/v1/chat/completions")
+    monkeypatch.setattr(settings, "VOLC_AGENT_API_KEY", "agent-key")
+
+    with pytest.raises(HTTPException) as exc_info:
+        client._build_llm_config()
+
+    assert exc_info.value.status_code == 503
+    assert "localhost or 127.0.0.1" in exc_info.value.detail
+
+
+def test_rtc_client_accepts_public_agent_chat_url(monkeypatch):
+    from app.core.config import settings
+
+    client = VoiceDemoRtcClient()
+    monkeypatch.setattr(settings, "VOLC_AGENT_CHAT_COMPLETIONS_URL", "https://detachym.top/agent/v1/chat/completions")
+    monkeypatch.setattr(settings, "VOLC_AGENT_API_KEY", "agent-key")
+    monkeypatch.setattr(settings, "VOLC_VOICE_CHAT_LLM_CONFIG_JSON", "{}")
+
+    config = client._build_llm_config()
+
+    assert config["URL"] == "https://detachym.top/agent/v1/chat/completions"
+    assert config["APIKey"] == "agent-key"
+
+
 @pytest.mark.asyncio
 async def test_create_session_uses_safe_ai_user_id(monkeypatch):
     from app.core.config import settings

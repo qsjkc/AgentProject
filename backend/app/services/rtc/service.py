@@ -1,8 +1,10 @@
 import asyncio
+import ipaddress
 import json
 from copy import deepcopy
 from datetime import timedelta
 from typing import Any
+from urllib.parse import urlparse
 from uuid import uuid4
 
 from fastapi import HTTPException, status
@@ -31,6 +33,8 @@ FORBIDDEN_VOICE_CONFIG_KEYS = {
     "ToolChoice",
     "Tools",
 }
+
+LOCAL_AGENT_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0", "::1"}
 
 
 class VoiceDemoNotFoundError(Exception):
@@ -76,6 +80,49 @@ class VoiceDemoRtcClient:
         elif isinstance(value, list):
             for child in value:
                 self._reject_forbidden_keys(label, child, forbidden_keys)
+
+    def _validate_agent_chat_url(self, url: str) -> str:
+        parsed = urlparse(url.strip())
+        host = (parsed.hostname or "").strip().lower()
+        if not host:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="VOLC_AGENT_CHAT_COMPLETIONS_URL must be a public HTTPS URL reachable by Volcengine",
+            )
+
+        if host in LOCAL_AGENT_HOSTS:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="VOLC_AGENT_CHAT_COMPLETIONS_URL cannot use localhost or 127.0.0.1 because Volcengine calls it from the cloud",
+            )
+
+        try:
+            ip = ipaddress.ip_address(host)
+        except ValueError:
+            if "." not in host:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="VOLC_AGENT_CHAT_COMPLETIONS_URL must use a public DNS name, not a container-only hostname",
+                )
+        else:
+            if ip.is_loopback or ip.is_private or ip.is_link_local or ip.is_unspecified:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="VOLC_AGENT_CHAT_COMPLETIONS_URL must not use a private or loopback IP address",
+                )
+
+        if parsed.scheme != "https":
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="VOLC_AGENT_CHAT_COMPLETIONS_URL must be a public HTTPS URL reachable by Volcengine",
+            )
+
+        if not parsed.path.rstrip("/").endswith("/v1/chat/completions"):
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="VOLC_AGENT_CHAT_COMPLETIONS_URL must point to /v1/chat/completions",
+            )
+        return url.strip()
 
     def _get_api(self):
         if self._api is not None:
@@ -194,9 +241,10 @@ class VoiceDemoRtcClient:
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="Agent chat completions URL or API key is not configured",
             )
+        agent_url = self._validate_agent_chat_url(settings.VOLC_AGENT_CHAT_COMPLETIONS_URL)
         config = {
             "Mode": "OpenAI",
-            "URL": settings.VOLC_AGENT_CHAT_COMPLETIONS_URL,
+            "URL": agent_url,
             "APIKey": settings.VOLC_AGENT_API_KEY,
             "ModelName": settings.VOLC_AGENT_MODEL_NAME,
             "SystemMessages": [settings.VOLC_VOICE_CHAT_SYSTEM_PROMPT],

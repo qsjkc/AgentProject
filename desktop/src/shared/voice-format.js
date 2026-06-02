@@ -51,14 +51,41 @@ export function normalizeSubtitleItems(payload) {
       const speakerId =
         item.userId ??
         item.speakerId ??
+        item.sourceUserId ??
         item.uid ??
+        item.user?.userId ??
+        item.speaker?.userId ??
         item.streamKey?.userId ??
         item.streamKey?.uid ??
+        item.streamKey?.user_id ??
+        item.stream_key?.userId ??
+        item.stream_key?.uid ??
+        item.stream_key?.user_id ??
         null
 
-      const text = normalizeDisplayText(item.text ?? item.content ?? item.message ?? '')
-      const isFinal = Boolean(item.isFinal ?? item.final ?? item.definite)
-      const sequence = Number.isFinite(Number(item.sequence)) ? Number(item.sequence) : null
+      const text = normalizeDisplayText(
+        item.text ??
+          item.content ??
+          item.message ??
+          item.result?.text ??
+          item.subtitle?.text ??
+          item.texts?.[0]?.text ??
+          '',
+      )
+      const isFinal = Boolean(
+        item.isFinal ??
+          item.final ??
+          item.definite ??
+          item.result?.definite ??
+          item.subtitle?.definite,
+      )
+      const rawSequence =
+        item.sequence ??
+        item.seq ??
+        item.result?.sequence ??
+        item.subtitle?.sequence ??
+        null
+      const sequence = Number.isFinite(Number(rawSequence)) ? Number(rawSequence) : null
 
       if (!text) {
         return null

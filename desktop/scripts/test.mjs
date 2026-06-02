@@ -76,6 +76,31 @@ assert.equal(subtitleItems[0].isFinal, true)
 assert.equal(subtitleItems[1].speakerId, 'local-user')
 assert.equal(subtitleItems[1].isFinal, false)
 
+const nestedSubtitleItems = normalizeSubtitleItems([
+  {
+    speaker: { userId: 'ai-user' },
+    result: {
+      text: 'reply text',
+      definite: true,
+      sequence: 9,
+    },
+  },
+  {
+    stream_key: { user_id: 'local-user' },
+    subtitle: {
+      text: 'local text',
+      definite: false,
+      sequence: 10,
+    },
+  },
+])
+assert.equal(nestedSubtitleItems.length, 2)
+assert.equal(nestedSubtitleItems[0].speakerId, 'ai-user')
+assert.equal(nestedSubtitleItems[0].isFinal, true)
+assert.equal(nestedSubtitleItems[0].sequence, 9)
+assert.equal(nestedSubtitleItems[1].speakerId, 'local-user')
+assert.equal(nestedSubtitleItems[1].isFinal, false)
+
 const authError = createVoiceAuthError()
 assert.equal(authError.code, VOICE_AUTH_ERROR_CODE)
 assert.equal(isVoiceAuthError(authError), true)

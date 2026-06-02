@@ -330,37 +330,107 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          ssh deploy-target \
-            "cd '$DEPLOY_APP_DIR' \
-             && if [ ! -f .env ]; then echo 'Missing .env' >&2; exit 1; fi \
-             && AGENT_API_KEY=\$(grep '^VOLC_AGENT_API_KEY=' .env | cut -d= -f2-) \
-             && BACKEND_INTERNAL_API_KEY=\$(grep '^BACKEND_INTERNAL_API_KEY=' .env | cut -d= -f2-) \
-             && if [ -z \"\$AGENT_API_KEY\" ] || [ -z \"\$BACKEND_INTERNAL_API_KEY\" ]; then echo 'Missing VOLC_AGENT_API_KEY or BACKEND_INTERNAL_API_KEY in .env' >&2; exit 1; fi \
-             && printf 'AGENT_API_KEY=%s\nAGENT_LOG_LEVEL=info\nAGENT_FIRST_CHUNK_TIMEOUT_MS=8000\nAGENT_TOTAL_TIMEOUT_MS=45000\nAGENT_TOOL_TIMEOUT_MS=5000\nBACKEND_BASE_URL=http://agentproject-backend:5000\nBACKEND_INTERNAL_API_KEY=%s\n' \"\$AGENT_API_KEY\" \"\$BACKEND_INTERNAL_API_KEY\" > agent-server/.env \
-             && command -v docker >/dev/null \
-             && export DOCKER_BUILDKIT=1 COMPOSE_PROGRESS=plain \
-             && docker compose up -d --build --remove-orphans \
-             && cd agent-server \
-             && docker compose up -d --build --remove-orphans \
-             && cd .. \
-             && for attempt in 1 2 3 4 5 6; do \
-                  if docker compose exec -T backend python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/health/ready')\"; then \
-                    break; \
-                  fi; \
-                  if [ \"\$attempt\" -eq 6 ]; then \
-                    echo 'Post-deploy readiness checks failed' >&2; \
-                    exit 1; \
-                  fi; \
-                  sleep 5; \
-                done \
-             && for attempt in 1 2 3 4 5 6; do \
-                  if curl -fsS http://127.0.0.1:8001/health >/dev/null; then \
-                    break; \
-                  fi; \
-                  if [ \"\$attempt\" -eq 6 ]; then \
-                    echo 'Agent-server readiness checks failed' >&2; \
-                    exit 1; \
-                  fi; \
-                  sleep 5; \
-                done \
-             && docker compose ps"
+          ssh deploy-target "cd '$DEPLOY_APP_DIR' && PUBLIC_DEPLOY_HOST='$DEPLOY_HOST' bash -s" <<'REMOTE_DEPLOY'
+          set -euo pipefail
+
+          if [ ! -f .env ]; then
+            echo 'Missing .env' >&2
+            exit 1
+          fi
+
+          read_env() {
+            grep -m1 "^$1=" .env | cut -d= -f2- | tr -d '\r' || true
+          }
+
+          upsert_env() {
+            key="$1"
+            value="$2"
+            tmp_env="$(mktemp)"
+            if grep -q "^${key}=" .env; then
+              awk -v key="$key" -v value="$value" '
+                BEGIN { replaced = 0 }
+                $0 ~ "^" key "=" {
+                  print key "=" value
+                  replaced = 1
+                  next
+                }
+                { print }
+                END {
+                  if (!replaced) {
+                    print key "=" value
+                  }
+                }
+              ' .env > "$tmp_env"
+            else
+              cat .env > "$tmp_env"
+              printf '%s=%s\n' "$key" "$value" >> "$tmp_env"
+            fi
+            mv "$tmp_env" .env
+          }
+
+          AGENT_API_KEY="$(read_env VOLC_AGENT_API_KEY)"
+          BACKEND_INTERNAL_API_KEY="$(read_env BACKEND_INTERNAL_API_KEY)"
+          if [ -z "$AGENT_API_KEY" ] || [ -z "$BACKEND_INTERNAL_API_KEY" ]; then
+            echo 'Missing VOLC_AGENT_API_KEY or BACKEND_INTERNAL_API_KEY in .env' >&2
+            exit 1
+          fi
+
+          PUBLIC_ORIGIN="$(read_env WEB_APP_URL)"
+          case "$PUBLIC_ORIGIN" in
+            ""|http://localhost*|https://localhost*|http://127.0.0.1*|https://127.0.0.1*|http://0.0.0.0*|https://0.0.0.0*)
+              PUBLIC_ORIGIN="https://${PUBLIC_DEPLOY_HOST}"
+              ;;
+          esac
+          case "$PUBLIC_ORIGIN" in
+            http://*) PUBLIC_ORIGIN="https://${PUBLIC_ORIGIN#http://}" ;;
+          esac
+          PUBLIC_ORIGIN="${PUBLIC_ORIGIN%/}"
+
+          AGENT_CHAT_URL="$(read_env VOLC_AGENT_CHAT_COMPLETIONS_URL)"
+          case "$AGENT_CHAT_URL" in
+            ""|http://localhost*|https://localhost*|http://127.0.0.1*|https://127.0.0.1*|http://0.0.0.0*|https://0.0.0.0*)
+              AGENT_CHAT_URL="${PUBLIC_ORIGIN}/agent/v1/chat/completions"
+              upsert_env VOLC_AGENT_CHAT_COMPLETIONS_URL "$AGENT_CHAT_URL"
+              ;;
+          esac
+          case "$AGENT_CHAT_URL" in
+            https://*/v1/chat/completions) ;;
+            *)
+              echo "VOLC_AGENT_CHAT_COMPLETIONS_URL must be a public HTTPS /v1/chat/completions URL" >&2
+              exit 1
+              ;;
+          esac
+
+          printf 'AGENT_API_KEY=%s\nAGENT_LOG_LEVEL=info\nAGENT_FIRST_CHUNK_TIMEOUT_MS=8000\nAGENT_TOTAL_TIMEOUT_MS=45000\nAGENT_TOOL_TIMEOUT_MS=5000\nBACKEND_BASE_URL=http://agentproject-backend:5000\nBACKEND_INTERNAL_API_KEY=%s\n' "$AGENT_API_KEY" "$BACKEND_INTERNAL_API_KEY" > agent-server/.env
+
+          command -v docker >/dev/null
+          export DOCKER_BUILDKIT=1 COMPOSE_PROGRESS=plain
+          docker compose up -d --build --remove-orphans
+          cd agent-server
+          docker compose up -d --build --remove-orphans
+          cd ..
+
+          for attempt in 1 2 3 4 5 6; do
+            if docker compose exec -T backend python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/health/ready')"; then
+              break
+            fi
+            if [ "$attempt" -eq 6 ]; then
+              echo 'Post-deploy readiness checks failed' >&2
+              exit 1
+            fi
+            sleep 5
+          done
+
+          for attempt in 1 2 3 4 5 6; do
+            if curl -fsS http://127.0.0.1:8001/health >/dev/null; then
+              break
+            fi
+            if [ "$attempt" -eq 6 ]; then
+              echo 'Agent-server readiness checks failed' >&2
+              exit 1
+            fi
+            sleep 5
+          done
+
+          docker compose ps
+          REMOTE_DEPLOY

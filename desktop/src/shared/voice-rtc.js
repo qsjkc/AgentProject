@@ -185,6 +185,13 @@ function buildDesktopVoiceSession(options = {}) {
         errorCode: payload?.errorCode ?? null,
         errorMessage: payload?.errorMessage ?? null,
       })
+      if (payload?.errorCode || payload?.errorMessage) {
+        emitError(formatVoiceError(payload?.errorMessage || payload?.errorCode, '字幕服务暂时不可用。'), {
+          fatal: false,
+          phase: 'subtitle',
+          errorCode: payload?.errorCode ?? null,
+        })
+      }
     }
 
     const handleSubtitleMessageReceived = (payload) => {
@@ -192,6 +199,8 @@ function buildDesktopVoiceSession(options = {}) {
       emitEvent('voice:subtitle-message', {
         count: items.length,
         speakers: [...new Set(items.map((item) => item.speakerId || 'unknown'))],
+        rawType: Array.isArray(payload) ? 'array' : typeof payload,
+        rawKeys: payload && !Array.isArray(payload) && typeof payload === 'object' ? Object.keys(payload).slice(0, 12) : [],
       })
 
       for (const item of items) {
@@ -206,6 +215,11 @@ function buildDesktopVoiceSession(options = {}) {
         const isRemoteCandidate = isAiSpeaker || Boolean(speakerId && speakerId !== session.userId)
 
         if (isLocalSpeaker || !isRemoteCandidate) {
+          emitEvent('voice:subtitle-ignored', {
+            speakerId,
+            reason: isLocalSpeaker ? 'local-speaker' : 'unknown-speaker',
+            final: item.isFinal,
+          })
           continue
         }
 
@@ -319,6 +333,46 @@ function buildDesktopVoiceSession(options = {}) {
     boundListeners = null
   }
 
+  const startSubtitleWithFallback = async () => {
+    if (!engine) {
+      return
+    }
+
+    const configs = [
+      {
+        mode: SUBTITLE_MODE.ASR_ONLY,
+        targetLanguage: 'zh-CN',
+      },
+      {
+        mode: SUBTITLE_MODE.ASR_ONLY,
+      },
+    ]
+
+    let lastError = null
+    for (const config of configs) {
+      try {
+        await engine.startSubtitle(config)
+        emitEvent('voice:subtitle-start', {
+          mode: config.mode,
+          targetLanguage: config.targetLanguage ?? null,
+        })
+        return
+      } catch (error) {
+        lastError = error
+        emitEvent('voice:subtitle-start-failed', {
+          mode: config.mode,
+          targetLanguage: config.targetLanguage ?? null,
+          message: formatVoiceError(error, '字幕启动失败。'),
+        })
+      }
+    }
+
+    emitError(formatVoiceError(lastError, '字幕启动失败。'), {
+      fatal: false,
+      phase: 'subtitle-start',
+    })
+  }
+
   const ensureMicPermission = async () => {
     if (!navigator.mediaDevices?.getUserMedia) {
       throw new Error('当前环境不支持麦克风采集。')
@@ -401,9 +455,7 @@ function buildDesktopVoiceSession(options = {}) {
       await engine.publishStream(MediaType.AUDIO)
       setCaptureVolume(IDLE_CAPTURE_VOLUME)
 
-      await engine.startSubtitle({
-        mode: SUBTITLE_MODE.ASR_ONLY,
-      })
+      await startSubtitleWithFallback()
 
       const startedSession = await startVoiceDemoSession(createdSession.sessionId)
       emitEvent('voice:session-start', {

@@ -249,6 +249,8 @@ python -m uvicorn app.main:app --reload --port 8000
 
 - 浏览器环境下，麦克风和 RTC 采集默认要求安全上下文。
 - 只有 `localhost` / `127.0.0.1` 可以在本地例外使用。
+- 这个本地例外只适用于浏览器/桌面端采集，不适用于火山回调第三方 Agent。
+- `VOLC_AGENT_CHAT_COMPLETIONS_URL` 必须是火山云端能访问的公网 HTTPS 地址，例如 `https://detachym.top/agent/v1/chat/completions`。
 
 ### 听不到 AI 声音
 
@@ -297,6 +299,7 @@ python -m uvicorn app.main:app --reload --port 8000
 - 检查 `VOLC_VOICE_CHAT_ASR_CONFIG_JSON`。
 - 检查 `VOLC_VOICE_CHAT_TTS_CONFIG_JSON`。
 - 检查 `VOLC_AGENT_CHAT_COMPLETIONS_URL` 是否公网可达且 HTTPS 可用。
+- 不要把 `VOLC_AGENT_CHAT_COMPLETIONS_URL` 配成 `localhost`、`127.0.0.1`、Docker 内部 hostname 或非 HTTPS 地址；这些地址火山云端无法回调。
 
 ### token 过期
 
