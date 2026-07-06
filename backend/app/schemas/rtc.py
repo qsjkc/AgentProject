@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import AliasChoices, BaseModel, Field
 
 
 VoiceDemoState = Literal[
@@ -14,10 +14,19 @@ VoiceDemoState = Literal[
     "cleanup_failed",
     "failed",
 ]
+VoiceDemoPetType = Literal["cat", "dog", "pig"]
+
+
+class VoiceDemoSessionCreateRequest(BaseModel):
+    pet_type: VoiceDemoPetType = Field(
+        default="cat",
+        validation_alias=AliasChoices("pet_type", "petType"),
+    )
 
 
 class VoiceDemoSessionCreateResponse(BaseModel):
     sessionId: str
+    petType: VoiceDemoPetType
     appId: str
     roomId: str
     userId: str

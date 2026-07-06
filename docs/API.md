@@ -161,6 +161,63 @@ GET /chat/sessions/{session_id}
 DELETE /chat/sessions/{session_id}
 ```
 
+## RTC 语音 Demo 接口
+
+### 创建语音会话
+
+```http
+POST /rtc/voice-demo/session
+```
+
+请求体可省略；桌面端会传当前桌宠类型，用于语音回复 persona。
+
+```json
+{
+  "pet_type": "dog"
+}
+```
+
+返回示例：
+
+```json
+{
+  "sessionId": "vs_xxx",
+  "petType": "dog",
+  "appId": "rtc_app_id",
+  "roomId": "voice_demo_room_xxx",
+  "userId": "user_1_xxx",
+  "aiUserId": "BOTUSERXXX",
+  "token": "rtc_token",
+  "sessionActive": false,
+  "state": "creating",
+  "expiresAt": "2026-06-04T12:00:00"
+}
+```
+
+### 启动语音会话
+
+```http
+POST /rtc/voice-demo/session/{session_id}/start
+```
+
+### 查询语音会话
+
+```http
+GET /rtc/voice-demo/session/{session_id}
+```
+
+### 打断 AI 回复
+
+```http
+POST /rtc/voice-demo/session/{session_id}/interrupt
+```
+
+### 停止语音会话
+
+```http
+POST /rtc/voice-demo/session/{session_id}/stop
+```
+
 ## 知识库接口
 
 ### 上传文档

@@ -17,6 +17,7 @@ export const VOICE_OUTPUT_MODES = {
 export const DEFAULT_VOICE_SETTINGS = {
   desktop_voice_enabled: true,
   desktop_voice_trigger_key: 'KeyD',
+  desktop_voice_global_shortcut: 'CommandOrControl+Alt+D',
   desktop_voice_idle_timeout_seconds: 8,
   desktop_voice_output_mode: VOICE_OUTPUT_MODES.VOICE_AND_TEXT,
 }
@@ -26,6 +27,10 @@ export function normalizeVoiceSettings(value = {}) {
     typeof value.desktop_voice_trigger_key === 'string' && value.desktop_voice_trigger_key.trim()
       ? value.desktop_voice_trigger_key.trim()
       : DEFAULT_VOICE_SETTINGS.desktop_voice_trigger_key
+  const globalShortcut =
+    typeof value.desktop_voice_global_shortcut === 'string' && value.desktop_voice_global_shortcut.trim()
+      ? value.desktop_voice_global_shortcut.trim()
+      : DEFAULT_VOICE_SETTINGS.desktop_voice_global_shortcut
 
   const outputMode = Object.values(VOICE_OUTPUT_MODES).includes(value.desktop_voice_output_mode)
     ? value.desktop_voice_output_mode
@@ -39,6 +44,7 @@ export function normalizeVoiceSettings(value = {}) {
         ? value.desktop_voice_enabled
         : DEFAULT_VOICE_SETTINGS.desktop_voice_enabled,
     desktop_voice_trigger_key: triggerKey,
+    desktop_voice_global_shortcut: globalShortcut,
     desktop_voice_idle_timeout_seconds:
       Number.isFinite(idleTimeout) && idleTimeout >= 3 && idleTimeout <= 60
         ? Math.round(idleTimeout)

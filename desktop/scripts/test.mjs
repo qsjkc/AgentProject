@@ -3,6 +3,12 @@ import assert from 'node:assert/strict'
 import { normalizeApiBaseUrl } from '../src/shared/api-base-url.js'
 import { getPetMessagePool, normalizeLanguage, t } from '../src/shared/i18n.js'
 import {
+  ANIMATION_ACTIONS,
+  createInitialPetAnimationState,
+  petAnimationReducer,
+} from '../src/shared/pet-animation-state.js'
+import { parseOneTimeReminder } from '../src/shared/reminder-parser.js'
+import {
   decodeRtsSubtitlePayload,
   normalizeRtsSubtitleItems,
   normalizeSubtitleItems,
@@ -38,7 +44,14 @@ const normalizedVoiceSettings = normalizeVoiceSettings({
 })
 assert.equal(normalizedVoiceSettings.desktop_voice_output_mode, VOICE_OUTPUT_MODES.VOICE_AND_TEXT)
 assert.equal(normalizedVoiceSettings.desktop_voice_idle_timeout_seconds, 12)
+assert.equal(normalizedVoiceSettings.desktop_voice_global_shortcut, DEFAULT_VOICE_SETTINGS.desktop_voice_global_shortcut)
 assert.equal(DEFAULT_VOICE_SETTINGS.desktop_voice_output_mode, VOICE_OUTPUT_MODES.VOICE_AND_TEXT)
+assert.equal(DEFAULT_VOICE_SETTINGS.desktop_voice_global_shortcut, 'CommandOrControl+Alt+D')
+assert.equal(
+  normalizeVoiceSettings({ desktop_voice_global_shortcut: 'CommandOrControl+Shift+Space' }).desktop_voice_global_shortcut,
+  'CommandOrControl+Shift+Space',
+)
+assert.equal(normalizeVoiceSettings({ desktop_voice_enabled: false }).desktop_voice_enabled, false)
 
 const initialVoiceState = createInitialVoiceUiState()
 const armedState = voiceStateReducer(initialVoiceState, {
@@ -163,5 +176,49 @@ assert.equal(authError.code, VOICE_AUTH_ERROR_CODE)
 assert.equal(isVoiceAuthError(authError), true)
 assert.equal(isVoiceAuthError(new Error('Could not validate credentials')), true)
 assert.equal(isVoiceAuthError(new Error('other error')), false)
+
+const initialPetAnimation = createInitialPetAnimationState()
+assert.equal(initialPetAnimation.action, ANIMATION_ACTIONS.IDLE)
+
+const remindingPetAnimation = petAnimationReducer(initialPetAnimation, {
+  type: 'REMINDER_DUE',
+  message: '15:00 meeting',
+})
+assert.equal(remindingPetAnimation.action, ANIMATION_ACTIONS.REMINDING)
+assert.equal(remindingPetAnimation.locked, true)
+
+const ignoredIdle = petAnimationReducer(remindingPetAnimation, { type: 'IDLE_TICK' })
+assert.equal(ignoredIdle.action, ANIMATION_ACTIONS.REMINDING)
+
+const released = petAnimationReducer(remindingPetAnimation, { type: 'ANIMATION_DONE' })
+assert.equal(released.action, ANIMATION_ACTIONS.IDLE)
+assert.equal(released.locked, false)
+
+const confused = petAnimationReducer(initialPetAnimation, { type: 'REMINDER_PARSE_FAILED' })
+assert.equal(confused.action, ANIMATION_ACTIONS.CONFUSED)
+
+const fixedNow = new Date('2026-07-06T10:00:00+08:00')
+
+const todayMeeting = parseOneTimeReminder('下午三点有一个会议', fixedNow)
+assert.equal(todayMeeting.ok, true)
+assert.equal(todayMeeting.title, '开会')
+assert.equal(todayMeeting.remindAt.getTime(), new Date('2026-07-06T15:00:00+08:00').getTime())
+
+const tomorrowTask = parseOneTimeReminder('明早九点交材料', fixedNow)
+assert.equal(tomorrowTask.ok, true)
+assert.equal(tomorrowTask.title, '交材料')
+assert.equal(tomorrowTask.remindAt.getTime(), new Date('2026-07-07T09:00:00+08:00').getTime())
+
+const unclear = parseOneTimeReminder('提醒我一下', fixedNow)
+assert.equal(unclear.ok, false)
+assert.equal(unclear.reason, 'missing_time')
+
+const afternoonGreeting = parseOneTimeReminder('下午好', fixedNow)
+assert.equal(afternoonGreeting.ok, false)
+assert.equal(afternoonGreeting.reason, 'not_reminder')
+
+const tomorrowQuestion = parseOneTimeReminder('明天有哪些计划？', fixedNow)
+assert.equal(tomorrowQuestion.ok, false)
+assert.equal(tomorrowQuestion.reason, 'not_reminder')
 
 console.log('desktop tests passed')

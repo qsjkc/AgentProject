@@ -74,6 +74,7 @@ function buildDesktopVoiceSession(options = {}) {
     onReplyFinal: options.onReplyFinal || (() => {}),
     onCleanup: options.onCleanup || (() => {}),
   }
+  const getPetType = typeof options.getPetType === 'function' ? options.getPetType : () => 'cat'
 
   let settings = normalizeVoiceSettings(options.settings || DEFAULT_VOICE_SETTINGS)
   let engine = null
@@ -442,7 +443,9 @@ function buildDesktopVoiceSession(options = {}) {
         throw new Error('当前环境不支持火山 RTC。')
       }
 
-      const createdSession = await createVoiceDemoSession()
+      const createdSession = await createVoiceDemoSession({
+        pet_type: getPetType(),
+      })
       session = createdSession
       currentSubtitleSequence = null
 

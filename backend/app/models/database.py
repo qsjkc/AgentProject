@@ -22,6 +22,7 @@ LEGACY_APP_TABLES = {
     "chat_sessions",
     "chat_messages",
     "documents",
+    "reminders",
 }
 
 engine = create_async_engine(
@@ -147,6 +148,7 @@ class User(Base):
     sessions = relationship("ChatSession", back_populates="user", cascade="all, delete-orphan")
     documents = relationship("Document", back_populates="user", cascade="all, delete-orphan")
     preferences = relationship("UserPreference", back_populates="user", uselist=False, cascade="all, delete-orphan")
+    reminders = relationship("Reminder", back_populates="user", cascade="all, delete-orphan")
 
 
 class UserPreference(Base):
@@ -217,3 +219,21 @@ class Document(Base):
     updated_at = Column(DateTime, default=utc_now, onupdate=utc_now, nullable=False)
 
     user = relationship("User", back_populates="documents")
+
+
+class Reminder(Base):
+    __tablename__ = "reminders"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    pet_type = Column(String(20), nullable=False, index=True)
+    title = Column(String(200), nullable=False)
+    source_text = Column(Text, nullable=True)
+    remind_at = Column(DateTime, nullable=False, index=True)
+    status = Column(String(20), nullable=False, default="pending", index=True)
+    triggered_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=utc_now, nullable=False)
+    updated_at = Column(DateTime, default=utc_now, onupdate=utc_now, nullable=False)
+
+    user = relationship("User", back_populates="reminders")

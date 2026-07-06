@@ -24,6 +24,7 @@ class FakeTools:
         self.chat_response = chat_response
         self.last_weather_city: str | None = None
         self.last_chat_messages: list[dict[str, str]] | None = None
+        self.last_pet_type: str | None = None
 
     async def get_current_time(self) -> str:
         return "现在是北京时间 2026-05-29 10:00:00。"
@@ -39,8 +40,9 @@ class FakeTools:
     async def get_platform_status(self) -> str:
         return "平台状态正常，当前后端就绪状态是 ready。"
 
-    async def get_project_chat(self, messages: list[dict[str, str]]) -> str:
+    async def get_project_chat(self, messages: list[dict[str, str]], pet_type: str | None = None) -> str:
         self.last_chat_messages = messages
+        self.last_pet_type = pet_type
         if self.chat_error:
             raise RuntimeError("chat backend unavailable")
         if self.chat_response is not None:
@@ -290,6 +292,34 @@ async def test_chat_completions_general_prompt_uses_project_chat_tool():
     assert "项目通用聊天能力" in response.json()["choices"][0]["message"]["content"]
     assert tools.last_chat_messages
     assert tools.last_chat_messages[-1]["content"] == "火星上有猫吗"
+
+
+@pytest.mark.asyncio
+async def test_chat_completions_forwards_pet_persona_to_project_chat_tool():
+    tools = FakeTools()
+    settings = Settings(
+        AGENT_API_KEY="test-agent-key",
+        BACKEND_BASE_URL="http://backend.test",
+        AGENT_FIRST_CHUNK_TIMEOUT_MS=2000,
+        AGENT_TOTAL_TIMEOUT_MS=5000,
+        AGENT_TOOL_TIMEOUT_MS=1000,
+    )
+    app = create_app(settings_override=settings, tools_override=tools)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+        response = await client.post(
+            "/v1/chat/completions",
+            headers=_auth_headers(),
+            json={
+                "stream": False,
+                "messages": [
+                    {"role": "system", "content": "You are speaking as a desktop dog companion."},
+                    {"role": "user", "content": "火星上有猫吗"},
+                ],
+            },
+        )
+
+    assert response.status_code == 200
+    assert tools.last_pet_type == "dog"
 
 
 @pytest.mark.asyncio

@@ -17,7 +17,10 @@ import {
   updateVoiceSettings,
 } from './shared/api'
 import { normalizeLanguage, SUPPORTED_LANGUAGES, t } from './shared/i18n'
+import { getPetReminderCopy } from './shared/pet-personality'
 import { getPetVisual } from './shared/pets'
+import { parseOneTimeReminder } from './shared/reminder-parser'
+import { createReminder, getPendingReminderSummary } from './shared/reminders-api'
 import { DEFAULT_VOICE_SETTINGS, normalizeVoiceSettings, VOICE_OUTPUT_MODES } from './shared/voice-state'
 
 const PET_OPTIONS = ['cat', 'dog', 'pig']
@@ -192,29 +195,61 @@ function getVoiceModeLabel(language, mode) {
   return language === 'zh-CN' ? '仅文本' : 'Text only'
 }
 
-function VoiceSettingsPanel({ language, voiceSettings, onOutputModeChange, saving }) {
+function formatVoiceShortcut(value) {
+  const shortcut = String(value || DEFAULT_VOICE_SETTINGS.desktop_voice_global_shortcut)
+  return shortcut.replace('CommandOrControl', 'Ctrl/Command').replace(/\+/g, ' + ')
+}
+
+function formatVoiceTriggerKey(value) {
+  const key = String(value || DEFAULT_VOICE_SETTINGS.desktop_voice_trigger_key)
+  if (/^Key[A-Z]$/.test(key)) {
+    return key.slice(3)
+  }
+  if (/^Digit[0-9]$/.test(key)) {
+    return key.slice(5)
+  }
+  return key
+}
+
+function VoiceSettingsPanel({ language, voiceSettings, onEnabledChange, onOutputModeChange, saving }) {
   const title = language === 'zh-CN' ? '语音模式' : 'Voice Mode'
+  const enabledLabel = language === 'zh-CN' ? '启用桌宠语音' : 'Enable desktop voice'
   const label = language === 'zh-CN' ? '回复模式' : 'Reply Mode'
   const hint =
     language === 'zh-CN'
-      ? '默认只显示桌宠气泡文本。切换到语音模式后，AI 回复会自动播放语音。'
-      : 'Text-only keeps AI replies silent. Voice + text will auto-play the AI reply audio.'
+      ? '可选择 AI 回复只显示文字，或同时播放语音；桌面语音默认使用语音 + 文本。'
+      : 'Choose whether AI replies stay silent or also play audio. Desktop voice defaults to voice + text.'
+  const globalShortcutLabel = formatVoiceShortcut(voiceSettings.desktop_voice_global_shortcut)
+  const triggerKeyLabel = formatVoiceTriggerKey(voiceSettings.desktop_voice_trigger_key)
   const shortcutHint =
-    language === 'zh-CN'
-      ? '桌宠语音快捷键固定为 D，仅在桌宠窗口聚焦时生效。'
-      : 'The desktop voice shortcut is fixed to D and only works while the pet window is focused.'
+    !voiceSettings.desktop_voice_enabled
+      ? language === 'zh-CN'
+        ? '桌宠语音已关闭，全局唤起键不会注册。'
+        : 'Desktop voice is off, so the global wake shortcut is not registered.'
+      : language === 'zh-CN'
+        ? `按 ${globalShortcutLabel} 可从任意窗口唤起桌宠语音；进入后按住 ${triggerKeyLabel} 说话。`
+        : `Press ${globalShortcutLabel} from anywhere to wake desktop voice, then hold ${triggerKeyLabel} to talk.`
 
   return (
     <div className="pet-selector-block" style={{ marginTop: 18 }}>
       <div className="sidebar-title">{title}</div>
       <div className="sidebar-copy">{hint}</div>
+      <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 12, fontSize: 13, color: '#475569' }}>
+        <input
+          type="checkbox"
+          checked={voiceSettings.desktop_voice_enabled}
+          onChange={(event) => onEnabledChange(event.target.checked)}
+          disabled={saving}
+        />
+        <span>{enabledLabel}</span>
+      </label>
       <label style={{ display: 'grid', gap: 8, marginTop: 12 }}>
         <span style={{ fontSize: 13, color: '#475569' }}>{label}</span>
         <select
           className="select"
           value={voiceSettings.desktop_voice_output_mode}
           onChange={(event) => onOutputModeChange(event.target.value)}
-          disabled={saving}
+          disabled={saving || !voiceSettings.desktop_voice_enabled}
         >
           <option value={VOICE_OUTPUT_MODES.TEXT_ONLY}>{getVoiceModeLabel(language, VOICE_OUTPUT_MODES.TEXT_ONLY)}</option>
           <option value={VOICE_OUTPUT_MODES.VOICE_AND_TEXT}>
@@ -418,6 +453,63 @@ function MainPanelApp() {
     }
 
     const outgoingMessage = prompt.trim()
+    const parsedReminder = parseOneTimeReminder(outgoingMessage)
+    if (parsedReminder.ok) {
+      setPrompt('')
+      setLoading(true)
+      setStatusText(t(language, 'waitingResponse'))
+      setKnowledgeStatusText('')
+      setKnowledgeSources([])
+      try {
+        const reminder = await createReminder({
+          pet_type: currentPetType,
+          title: parsedReminder.title,
+          source_text: parsedReminder.sourceText,
+          remind_at: parsedReminder.remindAt.toISOString(),
+        })
+        const timeText = parsedReminder.remindAt.toLocaleString(language === 'zh-CN' ? 'zh-CN' : 'en-US', {
+          month: 'numeric',
+          day: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit',
+        })
+        const copy = getPetReminderCopy(currentPetType).createdReminder(reminder.title, timeText)
+        setMessages((current) => [
+          ...current,
+          { role: 'user', content: outgoingMessage },
+          { role: 'assistant', content: copy },
+        ])
+        setStatusText(copy)
+        await window.desktopBridge?.notifyPetReminderEvent?.({
+          type: 'created',
+          petType: currentPetType,
+          title: reminder.title,
+          message: copy,
+        })
+      } catch (error) {
+        setStatusText(formatError(error, t(language, 'messageDeliveryFailed')))
+      } finally {
+        setLoading(false)
+      }
+      return
+    }
+    if (parsedReminder.reason === 'missing_time') {
+      const copy = getPetReminderCopy(currentPetType).parseFailed
+      setPrompt('')
+      setMessages((current) => [
+        ...current,
+        { role: 'user', content: outgoingMessage },
+        { role: 'assistant', content: copy },
+      ])
+      setStatusText(copy)
+      await window.desktopBridge?.notifyPetReminderEvent?.({
+        type: 'parse_failed',
+        petType: currentPetType,
+        message: copy,
+      })
+      return
+    }
+
     setPrompt('')
     setLoading(true)
     setStatusText(t(language, 'waitingResponse'))
@@ -517,6 +609,17 @@ function MainPanelApp() {
 
     setSavingPet(true)
     try {
+      const summary = await getPendingReminderSummary(currentPetType)
+      if (summary.pending_count > 0) {
+        const confirmed = window.confirm(
+          language === 'zh-CN'
+            ? `${currentPetLabel} 还有 ${summary.pending_count} 个待提醒事项，切换后不会提醒。确定切换吗？`
+            : `${currentPetLabel} has ${summary.pending_count} pending reminders. They will not trigger after switching. Continue?`,
+        )
+        if (!confirmed) {
+          return
+        }
+      }
       const startedAt = Date.now()
       await logDesktopDebug({
         event: 'main-panel-switch-start',
@@ -573,6 +676,34 @@ function MainPanelApp() {
       setStatusText(formatError(error, t(language, 'messageDeliveryFailed')))
     } finally {
       setSavingPet(false)
+    }
+  }
+
+  const handleVoiceEnabledChange = async (enabled) => {
+    const nextEnabled = Boolean(enabled)
+    if (savingVoiceSettings || nextEnabled === voiceSettings.desktop_voice_enabled) {
+      return
+    }
+
+    setSavingVoiceSettings(true)
+    try {
+      const nextSettings = await updateVoiceSettings({
+        desktop_voice_enabled: nextEnabled,
+      })
+      setVoiceSettingsState(normalizeVoiceSettings(nextSettings))
+      setStatusText(
+        language === 'zh-CN'
+          ? nextEnabled
+            ? '桌宠语音已启用。'
+            : '桌宠语音已关闭。'
+          : nextEnabled
+            ? 'Desktop voice enabled.'
+            : 'Desktop voice disabled.',
+      )
+    } catch (error) {
+      setStatusText(formatError(error, language === 'zh-CN' ? '更新桌宠语音失败。' : 'Failed to update desktop voice.'))
+    } finally {
+      setSavingVoiceSettings(false)
     }
   }
 
@@ -751,6 +882,9 @@ function MainPanelApp() {
               <VoiceSettingsPanel
                 language={language}
                 voiceSettings={voiceSettings}
+                onEnabledChange={(enabled) => {
+                  void handleVoiceEnabledChange(enabled)
+                }}
                 onOutputModeChange={(nextMode) => {
                   void handleVoiceOutputModeChange(nextMode)
                 }}

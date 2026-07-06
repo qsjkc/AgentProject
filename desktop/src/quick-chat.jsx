@@ -4,7 +4,10 @@ import ReactDOM from 'react-dom/client'
 import './desktop.css'
 import { clearSessionToken, desktopApi, getApiBaseUrl, getLanguage, getSessionToken } from './shared/api'
 import { normalizeLanguage, t } from './shared/i18n'
+import { getPetReminderCopy } from './shared/pet-personality'
 import { getPetVisual } from './shared/pets'
+import { parseOneTimeReminder } from './shared/reminder-parser'
+import { createReminder } from './shared/reminders-api'
 
 function formatError(error, fallbackMessage) {
   return error instanceof Error ? error.message : fallbackMessage
@@ -207,6 +210,56 @@ function QuickChatApp() {
     }
 
     const outgoingMessage = message.trim()
+    const parsedReminder = parseOneTimeReminder(outgoingMessage)
+    if (parsedReminder.ok) {
+      setMessages((current) => [...current, { role: 'user', content: outgoingMessage }])
+      setMessage('')
+      setLoading(true)
+      try {
+        const reminder = await createReminder({
+          pet_type: petType,
+          title: parsedReminder.title,
+          source_text: parsedReminder.sourceText,
+          remind_at: parsedReminder.remindAt.toISOString(),
+        })
+        const timeText = parsedReminder.remindAt.toLocaleString(language === 'zh-CN' ? 'zh-CN' : 'en-US', {
+          month: 'numeric',
+          day: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit',
+        })
+        const copy = getPetReminderCopy(petType).createdReminder(reminder.title, timeText)
+        setMessages((current) => [...current, { role: 'assistant', content: copy }])
+        await window.desktopBridge?.notifyPetReminderEvent?.({
+          type: 'created',
+          petType,
+          title: reminder.title,
+          message: copy,
+        })
+      } catch (error) {
+        const detail = formatError(error, t(language, 'messageDeliveryFailed'))
+        setMessages((current) => [...current, { role: 'assistant', content: detail }])
+      } finally {
+        setLoading(false)
+      }
+      return
+    }
+    if (parsedReminder.reason === 'missing_time') {
+      const copy = getPetReminderCopy(petType).parseFailed
+      setMessages((current) => [
+        ...current,
+        { role: 'user', content: outgoingMessage },
+        { role: 'assistant', content: copy },
+      ])
+      setMessage('')
+      await window.desktopBridge?.notifyPetReminderEvent?.({
+        type: 'parse_failed',
+        petType,
+        message: copy,
+      })
+      return
+    }
+
     setMessages((current) => [...current, { role: 'user', content: outgoingMessage }])
     setMessage('')
     setLoading(true)

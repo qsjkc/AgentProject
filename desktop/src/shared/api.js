@@ -125,6 +125,8 @@ async function request(path, options = {}) {
   return response.json()
 }
 
+export const desktopApiRequest = request
+
 export async function login(username, password) {
   const apiBaseUrl = await requireApiBaseUrl()
   const formData = new FormData()

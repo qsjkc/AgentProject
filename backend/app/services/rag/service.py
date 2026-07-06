@@ -76,6 +76,39 @@ class RAGService:
             start = max(end - settings.CHUNK_OVERLAP, start + 1)
         return chunks
 
+    def build_source_snippet(self, document: str, question: str, max_length: int = 280) -> str:
+        normalized_document = re.sub(r"\s+", " ", document).strip()
+        if len(normalized_document) <= max_length:
+            return normalized_document
+
+        lowered_document = normalized_document.lower()
+        query_tokens = sorted(
+            {token.lower() for token in self._tokenize(question) if len(token.strip()) >= 2},
+            key=len,
+            reverse=True,
+        )
+        hit_index = -1
+        for token in query_tokens:
+            token_index = lowered_document.find(token)
+            if token_index >= 0:
+                hit_index = token_index
+                break
+
+        if hit_index < 0:
+            return f"{normalized_document[:max_length].rstrip()}..."
+
+        start = max(0, hit_index - max_length // 3)
+        end = min(len(normalized_document), start + max_length)
+        if end - start < max_length:
+            start = max(0, end - max_length)
+
+        snippet = normalized_document[start:end].strip()
+        if start > 0:
+            snippet = f"...{snippet}"
+        if end < len(normalized_document):
+            snippet = f"{snippet}..."
+        return snippet
+
     def extract_text(self, file_path: str, file_type: str | None) -> str:
         path = Path(file_path)
         suffix = (file_type or path.suffix).lower()
@@ -133,7 +166,7 @@ class RAGService:
             metadata = metadatas[index] if index < len(metadatas) else {}
             filename = metadata.get("filename", "Unknown")
             document_id = int(metadata.get("document_id", 0))
-            snippet = document[:280]
+            snippet = self.build_source_snippet(document, question)
             sources.append(
                 RAGSource(
                     document_id=document_id,

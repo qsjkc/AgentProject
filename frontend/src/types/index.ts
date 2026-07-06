@@ -91,6 +91,7 @@ export type VoiceDemoUiPhase =
 
 export interface VoiceDemoSessionCreateResponse {
   sessionId: string
+  petType: PetType
   appId: string
   roomId: string
   userId: string

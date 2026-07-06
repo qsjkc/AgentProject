@@ -119,3 +119,24 @@
 - Redis缓存热点数据
 - 数据库连接池优化
 - 前端代码分割
+
+```mermaid
+flowchart LR
+    User["用户语音"] --> Room["火山 RTC 房间"]
+    Room --> ASR["火山 ASR"]
+    ASR --> Agent["agent-server /v1/chat/completions"]
+
+    Agent --> Route{"规则路由"}
+    Route --> Local["本地回答：时间/问候/帮助"]
+    Route --> Tools["主后端内部工具：天气/平台状态"]
+    Route --> LLM["主后端 internal/chat → 你的大模型"]
+
+    Local --> Agent
+    Tools --> Agent
+    LLM --> Agent
+
+    Agent --> RTC["火山 RTC VoiceChat"]
+    RTC --> TTS["火山 TTS + 字幕"]
+    TTS --> Room
+    Room --> Client["桌面端播放音频、显示字幕"]
+```

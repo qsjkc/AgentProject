@@ -115,11 +115,27 @@ LOW_VALUE_PROJECT_REPLY_MARKERS = (
     "try again",
 )
 
+PET_PERSONA_MARKERS = {
+    "cat": (
+        "desktop cat companion",
+        "\u684c\u9762\u732b\u54aa\u4f19\u4f34",
+    ),
+    "dog": (
+        "desktop dog companion",
+        "\u684c\u9762\u72d7\u72d7\u4f19\u4f34",
+    ),
+    "pig": (
+        "desktop pig companion",
+        "\u684c\u9762\u5c0f\u732a\u4f19\u4f34",
+    ),
+}
+
 
 class AgentState(TypedDict, total=False):
     prompt: str
     previous_user_prompts: list[str]
     chat_messages: list[dict[str, str]]
+    pet_type: str | None
     tool_name: str
     city: str
     tool_output: str
@@ -191,6 +207,17 @@ class VoiceDemoAgent:
                 continue
             messages.append({"role": message.role, "content": content[:1200]})
         return messages
+
+    def _pet_type_from_messages(self, messages: list[dict[str, str]]) -> str | None:
+        system_text = "\n".join(
+            message["content"].lower()
+            for message in messages
+            if message.get("role") == "system" and message.get("content")
+        )
+        for pet_type, markers in PET_PERSONA_MARKERS.items():
+            if any(marker.lower() in system_text for marker in markers):
+                return pet_type
+        return None
 
     def _contains_any(self, text: str, keywords: tuple[str, ...]) -> bool:
         return any(keyword in text for keyword in keywords)
@@ -417,7 +444,10 @@ class VoiceDemoAgent:
         prompt = state.get("prompt", "")
         fallback_text = self._local_general_fallback(prompt)
         tool_output = await self._run_tool(
-            lambda: self._tools.get_project_chat(state.get("chat_messages", [])),
+            lambda: self._tools.get_project_chat(
+                state.get("chat_messages", []),
+                pet_type=state.get("pet_type"),
+            ),
             fallback_text,
         )
         if self._is_low_value_project_reply(tool_output):
@@ -456,6 +486,7 @@ class VoiceDemoAgent:
             return ""
         user_prompts = self._user_prompts(request)
         chat_messages = self._chat_messages(request)
+        pet_type = self._pet_type_from_messages(chat_messages)
 
         try:
             state = await asyncio.wait_for(
@@ -464,6 +495,7 @@ class VoiceDemoAgent:
                         "prompt": prompt,
                         "previous_user_prompts": user_prompts[:-1],
                         "chat_messages": chat_messages,
+                        "pet_type": pet_type,
                     }
                 ),
                 timeout=self._settings.total_timeout_seconds,

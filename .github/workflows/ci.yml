@@ -50,8 +50,8 @@ jobs:
           mkdir -p tests/.runtime/uploads
           mkdir -p tests/.runtime/downloads
 
-      - name: Run focused backend tests
-        run: pytest -q -p no:cacheprovider tests/test_main.py
+      - name: Run backend tests
+        run: pytest -q -p no:cacheprovider tests
 
   frontend-checks:
     name: Frontend Checks
@@ -109,7 +109,7 @@ jobs:
           pip install -r requirements.txt
 
       - name: Run agent-server tests
-        run: pytest -q
+        run: pytest -q -p no:cacheprovider
 
   desktop-renderer-check:
     name: Desktop Renderer Build

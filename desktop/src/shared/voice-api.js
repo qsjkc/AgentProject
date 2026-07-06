@@ -53,8 +53,11 @@ async function requestVoice(path, options = {}) {
   return response.json()
 }
 
-export function createVoiceDemoSession() {
-  return requestVoice('/rtc/voice-demo/session', { method: 'POST' })
+export function createVoiceDemoSession(payload = {}) {
+  return requestVoice('/rtc/voice-demo/session', {
+    method: 'POST',
+    body: JSON.stringify(payload || {}),
+  })
 }
 
 export function startVoiceDemoSession(sessionId) {

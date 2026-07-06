@@ -4,6 +4,7 @@ from app.core.security import get_current_user
 from app.models.user import User
 from app.schemas.rtc import (
     VoiceDemoInterruptResponse,
+    VoiceDemoSessionCreateRequest,
     VoiceDemoSessionCreateResponse,
     VoiceDemoSessionStartResponse,
     VoiceDemoSessionStatusResponse,
@@ -20,9 +21,10 @@ def _translate_not_found(exc: VoiceDemoNotFoundError) -> HTTPException:
 
 @router.post("/session", response_model=VoiceDemoSessionCreateResponse)
 async def create_session(
+    request: VoiceDemoSessionCreateRequest | None = None,
     current_user: User = Depends(get_current_user),
 ) -> VoiceDemoSessionCreateResponse:
-    return await voice_demo_service.create_session(current_user)
+    return await voice_demo_service.create_session(current_user, pet_type=(request.pet_type if request else "cat"))
 
 
 @router.post("/session/{session_id}/start", response_model=VoiceDemoSessionStartResponse)

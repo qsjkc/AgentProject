@@ -12,9 +12,9 @@
    - 表现：主面板配置服务地址；语音态显示明确错误。
    - 处理：桌面端统一从 Electron store 读取 API base URL，请求失败不继续创建 RTC session。
 
-3. 单击桌宠进入语音态
-   - 表现：进入 `voice_armed -> connecting -> ready`。
-   - 处理：重复单击不会创建多个 session；`connecting` 状态会忽略重复触发。
+3. 全局快捷键或单击桌宠进入语音态
+   - 表现：按 `CommandOrControl+Alt+D` 或单击桌宠后进入 `voice_armed -> connecting -> ready`。
+   - 处理：全局快捷键会先显示并聚焦桌宠，再复用现有进入语音态流程；重复触发不会创建多个 session，`connecting` 状态会忽略重复触发。
 
 4. 按住 D 说话
    - 表现：`keydown event.code === KeyD` 进入 `listening`。
@@ -41,7 +41,7 @@
    - 处理：收到远端音频流或字幕事件时刷新 RTC inactivity timer；回复气泡展示时间延长到 8 秒。
 
 10. `text_only` 与 `voice_and_text`
-    - 表现：默认只显示文字；用户选择语音+文字后才自动播放 AI 远端音频。
+    - 表现：桌面语音默认使用 `voice_and_text`，会显示文字并自动播放 AI 远端音频；切到 `text_only` 后只显示桌宠气泡文字。
     - 处理：RTC adapter 统一管理隐藏 audio sink 和远端音量。
 
 ## 字幕与打断
@@ -115,6 +115,6 @@
 ## 已知限制
 
 1. 内部通用聊天当前不绑定具体登录用户，因此不会读取某个用户的私有 RAG 文档。
-2. 桌面端语音热键只在桌宠窗口聚焦时生效，不是系统全局热键。
+2. 全局唤起键固定为 `CommandOrControl+Alt+D`，进入语音态后仍需要按住 D 完成本轮说话。
 3. 多 worker 后端仍需要 Redis 等共享 session store，否则 RTC session 内存状态不能跨进程共享。
 4. 语音自动播放仍受系统音频设备、Electron 权限和火山远端发流状态影响。

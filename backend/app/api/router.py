@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 
-from app.api.v1 import admin, auth, chat, public, rag, rtc, tools, users
+from app.api.v1 import admin, auth, chat, public, rag, reminders, rtc, tools, users
 
 api_router = APIRouter()
 
@@ -11,4 +11,5 @@ api_router.include_router(users.router)
 api_router.include_router(admin.router)
 api_router.include_router(public.router)
 api_router.include_router(tools.router)
+api_router.include_router(reminders.router)
 api_router.include_router(rtc.router)

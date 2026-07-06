@@ -519,16 +519,17 @@ sequenceDiagram
 ### 后端
 
 ```bash
-python -m compileall backend/app
-backend/venv/Scripts/python.exe -m pytest tests/test_rtc_service.py tests/test_weather_service.py -q
+cd backend
+venv/Scripts/python.exe -m compileall app
+venv/Scripts/python.exe -m pytest -q -p no:cacheprovider tests
 ```
 
 ### agent-server
 
 ```bash
-python -m compileall agent-server/app
 cd agent-server
-.venv/Scripts/python.exe -m pytest
+.venv/Scripts/python.exe -m compileall app
+.venv/Scripts/python.exe -m pytest -q -p no:cacheprovider
 ```
 
 ### 线上联调

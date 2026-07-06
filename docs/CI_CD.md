@@ -34,7 +34,7 @@
 ```bash
 python -m pip install --upgrade pip
 pip install -r requirements.txt
-pytest -q -p no:cacheprovider tests/test_main.py
+pytest -q -p no:cacheprovider tests
 ```
 
 说明：
@@ -51,11 +51,24 @@ pytest -q -p no:cacheprovider tests/test_main.py
 
 ```bash
 npm ci
+npm run test
 npm run lint
 npm run build
 ```
 
-### 3. Desktop Renderer Build
+### 3. Agent Server Tests
+
+- Runner: `ubuntu-latest`
+- Python: `3.11`
+- Working directory: `agent-server/`
+- Key commands:
+```bash
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+pytest -q -p no:cacheprovider
+```
+
+### 4. Desktop Renderer Build
 
 - Runner：`ubuntu-latest`
 - Node.js：`20`
@@ -64,6 +77,7 @@ npm run build
 
 ```bash
 npm ci
+npm run test
 npm run build:renderer
 ```
 

@@ -263,7 +263,7 @@ python -m uvicorn app.main:app --reload --port 8000
 - 检查 AI 用户是否真的发流。
 - 检查浏览器是否拦截了自动播放。
 - 检查火山侧 TTS 配置是否有效。
-- 桌面端默认是 `text_only`，只有在主面板把桌面语音回复模式切到 `voice_and_text` 才会自动外放。
+- 桌面端默认是 `voice_and_text`，会显示桌宠气泡文字并自动外放 AI 语音；如果在主面板切到 `text_only`，则只显示文字。
 
 ### 打断无效
 

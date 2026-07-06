@@ -1,7 +1,7 @@
 const fs = require('node:fs')
 const path = require('node:path')
 
-const { app, BrowserWindow, ipcMain, Menu, Notification, Tray, nativeImage, screen } = require('electron')
+const { app, BrowserWindow, ipcMain, Menu, Notification, Tray, globalShortcut, nativeImage, screen } = require('electron')
 
 let store
 let petWindow
@@ -10,6 +10,7 @@ let mainPanelWindow
 let tray
 let quitting = false
 let debugLogPath = null
+let registeredVoiceGlobalShortcut = null
 
 const rendererHeartbeatState = {}
 const isDev = !app.isPackaged
@@ -25,6 +26,7 @@ const VOICE_OUTPUT_MODES = ['text_only', 'voice_and_text']
 const DEFAULT_VOICE_SETTINGS = {
   desktop_voice_enabled: true,
   desktop_voice_trigger_key: 'KeyD',
+  desktop_voice_global_shortcut: 'CommandOrControl+Alt+D',
   desktop_voice_idle_timeout_seconds: 8,
   desktop_voice_output_mode: 'voice_and_text',
 }
@@ -89,11 +91,16 @@ function normalizeVoiceSettings(value = {}) {
   const outputMode = VOICE_OUTPUT_MODES.includes(value.desktop_voice_output_mode)
     ? value.desktop_voice_output_mode
     : DEFAULT_VOICE_SETTINGS.desktop_voice_output_mode
+  const globalShortcutValue =
+    typeof value.desktop_voice_global_shortcut === 'string' && value.desktop_voice_global_shortcut.trim()
+      ? value.desktop_voice_global_shortcut.trim()
+      : DEFAULT_VOICE_SETTINGS.desktop_voice_global_shortcut
 
   return {
     desktop_voice_enabled: value.desktop_voice_enabled ?? DEFAULT_VOICE_SETTINGS.desktop_voice_enabled,
     desktop_voice_trigger_key:
       value.desktop_voice_trigger_key || DEFAULT_VOICE_SETTINGS.desktop_voice_trigger_key,
+    desktop_voice_global_shortcut: globalShortcutValue,
     desktop_voice_idle_timeout_seconds: Math.max(
       3,
       Number(value.desktop_voice_idle_timeout_seconds) || DEFAULT_VOICE_SETTINGS.desktop_voice_idle_timeout_seconds,
@@ -373,11 +380,54 @@ function sendVoiceSettingsToWindow(windowInstance, settings) {
   emit()
 }
 
+function sendVoiceGlobalShortcutToPet(payload = {}) {
+  if (!petWindow || petWindow.isDestroyed()) {
+    return false
+  }
+
+  const emit = () => {
+    if (!petWindow || petWindow.isDestroyed()) {
+      return
+    }
+    petWindow.webContents.send('desktop:voice-global-shortcut', payload)
+  }
+
+  if (petWindow.webContents.isLoading()) {
+    petWindow.webContents.once('did-finish-load', emit)
+    return true
+  }
+
+  emit()
+  return true
+}
+
+function sendReminderEventToPet(payload = {}) {
+  if (!petWindow || petWindow.isDestroyed()) {
+    return false
+  }
+
+  const emit = () => {
+    if (!petWindow || petWindow.isDestroyed()) {
+      return
+    }
+    petWindow.webContents.send('desktop:pet-reminder-event', payload)
+  }
+
+  if (petWindow.webContents.isLoading()) {
+    petWindow.webContents.once('did-finish-load', emit)
+    return true
+  }
+
+  emit()
+  return true
+}
+
 function broadcastVoiceSettings(patch = {}) {
   const nextSettings = setVoiceSettings(patch)
   sendVoiceSettingsToWindow(petWindow, nextSettings)
   sendVoiceSettingsToWindow(quickChatWindow, nextSettings)
   sendVoiceSettingsToWindow(mainPanelWindow, nextSettings)
+  registerVoiceGlobalShortcut()
   return nextSettings
 }
 
@@ -475,6 +525,68 @@ function showPetWindow({ focus = false } = {}) {
   sendPetStateToWindow(petWindow, getPetState())
   syncQuickChatPosition()
   return petWindow.getBounds()
+}
+
+function unregisterVoiceGlobalShortcut() {
+  if (!registeredVoiceGlobalShortcut) {
+    return
+  }
+
+  globalShortcut.unregister(registeredVoiceGlobalShortcut)
+  registeredVoiceGlobalShortcut = null
+}
+
+function activatePetVoiceFromGlobalShortcut() {
+  const voiceSettings = getVoiceSettings()
+  if (!voiceSettings.desktop_voice_enabled) {
+    logDesktop('voice-global-shortcut-ignored', {
+      reason: 'disabled',
+      accelerator: voiceSettings.desktop_voice_global_shortcut,
+    })
+    return false
+  }
+
+  showPetWindow({ focus: true })
+  const delivered = sendVoiceGlobalShortcutToPet({
+    accelerator: voiceSettings.desktop_voice_global_shortcut,
+    triggeredAt: new Date().toISOString(),
+  })
+  logDesktop('voice-global-shortcut-triggered', {
+    accelerator: voiceSettings.desktop_voice_global_shortcut,
+    delivered,
+  })
+  return delivered
+}
+
+function registerVoiceGlobalShortcut() {
+  if (!app.isReady()) {
+    return false
+  }
+
+  unregisterVoiceGlobalShortcut()
+  const voiceSettings = getVoiceSettings()
+  if (!voiceSettings.desktop_voice_enabled) {
+    return false
+  }
+
+  const accelerator = voiceSettings.desktop_voice_global_shortcut
+  try {
+    const registered = globalShortcut.register(accelerator, activatePetVoiceFromGlobalShortcut)
+    if (!registered) {
+      logDesktop('voice-global-shortcut-register-failed', { accelerator })
+      return false
+    }
+
+    registeredVoiceGlobalShortcut = accelerator
+    logDesktop('voice-global-shortcut-registered', { accelerator })
+    return true
+  } catch (error) {
+    logDesktop('voice-global-shortcut-register-failed', {
+      accelerator,
+      message: error?.message || 'unknown',
+    })
+    return false
+  }
 }
 
 function resetPetPosition() {
@@ -770,6 +882,9 @@ function getRuntimeState() {
   return {
     petState: getPetState(),
     voiceSettings: getVoiceSettings(),
+    voiceGlobalShortcut: {
+      registered: registeredVoiceGlobalShortcut,
+    },
     windows: {
       petVisible: Boolean(petWindow && !petWindow.isDestroyed() && petWindow.isVisible()),
       quickChatVisible: Boolean(quickChatWindow && !quickChatWindow.isDestroyed() && quickChatWindow.isVisible()),
@@ -801,6 +916,7 @@ function registerIpc() {
   })
   ipcMain.handle('desktop:switch-pet-from-main-panel', async (_event, payload) => switchPetFromMainPanel(payload))
   ipcMain.handle('desktop:sync-pet-state', async (_event, payload) => syncPetState(payload))
+  ipcMain.handle('desktop:notify-pet-reminder-event', async (_event, payload) => sendReminderEventToPet(payload))
   ipcMain.handle('desktop:get-pet-state', async () => getPetState())
 
   ipcMain.handle('desktop:toggle-auto-launch', async (_event, enabled) => {
@@ -896,6 +1012,7 @@ function bootstrap() {
   createMainPanelWindow()
   createTray()
   registerIpc()
+  registerVoiceGlobalShortcut()
 }
 
 if (!app.requestSingleInstanceLock()) {
@@ -921,5 +1038,9 @@ if (!app.requestSingleInstanceLock()) {
 
   app.on('before-quit', () => {
     quitting = true
+  })
+
+  app.on('will-quit', () => {
+    unregisterVoiceGlobalShortcut()
   })
 }

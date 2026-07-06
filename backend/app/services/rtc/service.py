@@ -15,6 +15,7 @@ from app.core.time import utc_now
 from app.models.user import User
 from app.schemas.rtc import (
     VoiceDemoInterruptResponse,
+    VoiceDemoPetType,
     VoiceDemoSessionCreateResponse,
     VoiceDemoSessionStartResponse,
     VoiceDemoSessionStatusResponse,
@@ -35,6 +36,20 @@ FORBIDDEN_VOICE_CONFIG_KEYS = {
 }
 
 LOCAL_AGENT_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0", "::1"}
+VOICE_DEMO_PET_PERSONA_PROMPTS = {
+    "cat": (
+        "你正在以桌面猫咪伙伴的性格说话。回答要简洁、机敏、稍微骄傲，但仍然体贴。"
+        "适合语音播报，不要输出 Markdown。"
+    ),
+    "dog": (
+        "你正在以桌面狗狗伙伴的性格说话。回答要温暖、主动、可靠，给出清楚的下一步。"
+        "适合语音播报，不要输出 Markdown。"
+    ),
+    "pig": (
+        "你正在以桌面小猪伙伴的性格说话。回答要放松、柔和、有安抚感，但不要空泛。"
+        "适合语音播报，不要输出 Markdown。"
+    ),
+}
 
 
 class VoiceDemoNotFoundError(Exception):
@@ -235,7 +250,14 @@ class VoiceDemoRtcClient:
             )
         return response
 
-    def _build_llm_config(self) -> dict[str, Any]:
+    def _build_system_messages(self, record: VoiceDemoSessionRecord) -> list[str]:
+        messages = [settings.VOLC_VOICE_CHAT_SYSTEM_PROMPT]
+        persona_prompt = VOICE_DEMO_PET_PERSONA_PROMPTS.get(record.pet_type)
+        if persona_prompt:
+            messages.append(persona_prompt)
+        return messages
+
+    def _build_llm_config(self, record: VoiceDemoSessionRecord) -> dict[str, Any]:
         if not settings.VOLC_AGENT_CHAT_COMPLETIONS_URL or not settings.VOLC_AGENT_API_KEY:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -247,7 +269,7 @@ class VoiceDemoRtcClient:
             "URL": agent_url,
             "APIKey": settings.VOLC_AGENT_API_KEY,
             "ModelName": settings.VOLC_AGENT_MODEL_NAME,
-            "SystemMessages": [settings.VOLC_VOICE_CHAT_SYSTEM_PROMPT],
+            "SystemMessages": self._build_system_messages(record),
             "HistoryLength": 10,
             "ThinkingType": "disabled",
         }
@@ -303,7 +325,7 @@ class VoiceDemoRtcClient:
             "Config": {
                 "InterruptMode": 0,
                 "ASRConfig": asr_config,
-                "LLMConfig": self._build_llm_config(),
+                "LLMConfig": self._build_llm_config(record),
                 "TTSConfig": tts_config,
                 "SubtitleConfig": {
                     "DisableRTSSubtitle": not settings.VOLC_VOICE_CHAT_ENABLE_RTS_SUBTITLE,
@@ -559,7 +581,7 @@ class VoiceDemoService:
         )
         return terminal, False
 
-    async def create_session(self, current_user: User) -> VoiceDemoSessionCreateResponse:
+    async def create_session(self, current_user: User, pet_type: VoiceDemoPetType = "cat") -> VoiceDemoSessionCreateResponse:
         if not settings.VOLC_AI_RTC_APP_ID or not settings.VOLC_AI_RTC_APP_KEY:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -588,6 +610,7 @@ class VoiceDemoService:
             ai_user_id=ai_user_id,
             token=token,
             expires_at=expire_at,
+            pet_type=pet_type,
         )
         await self._store.create(record)
         logger.info(
@@ -598,6 +621,7 @@ class VoiceDemoService:
         )
         return VoiceDemoSessionCreateResponse(
             sessionId=record.session_id,
+            petType=record.pet_type,
             appId=record.app_id,
             roomId=record.room_id,
             userId=record.user_id,

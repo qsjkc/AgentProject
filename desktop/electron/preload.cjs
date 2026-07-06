@@ -13,10 +13,16 @@ contextBridge.exposeInMainWorld('desktopBridge', {
   setPetInteractive: (interactive) => ipcRenderer.invoke('desktop:set-pet-interactive', interactive),
   switchPetFromMainPanel: (payload) => ipcRenderer.invoke('desktop:switch-pet-from-main-panel', payload),
   syncPetState: (payload) => ipcRenderer.invoke('desktop:sync-pet-state', payload),
+  notifyPetReminderEvent: (payload) => ipcRenderer.invoke('desktop:notify-pet-reminder-event', payload),
   onPetStateChanged: (callback) => {
     const listener = (_event, payload) => callback(payload)
     ipcRenderer.on('desktop:pet-state-changed', listener)
     return () => ipcRenderer.removeListener('desktop:pet-state-changed', listener)
+  },
+  onPetReminderEvent: (callback) => {
+    const listener = (_event, payload) => callback(payload)
+    ipcRenderer.on('desktop:pet-reminder-event', listener)
+    return () => ipcRenderer.removeListener('desktop:pet-reminder-event', listener)
   },
   toggleAutoLaunch: (enabled) => ipcRenderer.invoke('desktop:toggle-auto-launch', enabled),
   getAppVersion: () => ipcRenderer.invoke('desktop:get-app-version'),
@@ -31,6 +37,11 @@ contextBridge.exposeInMainWorld('desktopBridge', {
     const listener = (_event, payload) => callback(payload)
     ipcRenderer.on('desktop:voice-settings-changed', listener)
     return () => ipcRenderer.removeListener('desktop:voice-settings-changed', listener)
+  },
+  onVoiceGlobalShortcut: (callback) => {
+    const listener = (_event, payload) => callback(payload)
+    ipcRenderer.on('desktop:voice-global-shortcut', listener)
+    return () => ipcRenderer.removeListener('desktop:voice-global-shortcut', listener)
   },
   getPetState: () => ipcRenderer.invoke('desktop:get-pet-state'),
   getPetBounds: () => ipcRenderer.invoke('desktop:get-pet-bounds'),

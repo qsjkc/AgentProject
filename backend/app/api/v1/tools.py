@@ -7,6 +7,7 @@ from app.core.security import get_current_user, get_internal_service_identity
 from app.models.user import User
 from app.services.llm.base import Message
 from app.services.llm.service import llm_service
+from app.services.chat.service import PET_PERSONA_PROMPTS
 from app.services.tools.weather import weather_service
 
 router = APIRouter(prefix="/tools", tags=["tools"])
@@ -20,6 +21,7 @@ class InternalChatMessage(BaseModel):
 class InternalChatRequest(BaseModel):
     messages: list[InternalChatMessage] = Field(default_factory=list, max_length=12)
     compact: bool = True
+    pet_type: Literal["cat", "dog", "pig"] | None = None
 
 
 class InternalChatResponse(BaseModel):
@@ -72,6 +74,9 @@ async def get_internal_chat(
                 ),
             )
         )
+    persona_prompt = PET_PERSONA_PROMPTS.get(request.pet_type or "")
+    if persona_prompt:
+        messages.append(Message(role="system", content=persona_prompt))
 
     for item in request.messages[-8:]:
         content = item.content.strip()

@@ -28,6 +28,7 @@ class VoiceDemoSessionRecord:
     ai_user_id: str
     token: str
     expires_at: datetime
+    pet_type: str = "cat"
     state: VoiceDemoState = VoiceDemoState.CREATING
     task_id: str | None = None
     started_at: datetime | None = None

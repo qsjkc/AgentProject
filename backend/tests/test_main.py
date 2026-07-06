@@ -207,17 +207,20 @@ async def test_register_rejects_existing_email_and_chat_accepts_pet_type(client:
 
 @pytest.mark.asyncio
 async def test_public_release_endpoint_reflects_download_file(client: AsyncClient):
+    from app.core.config import settings  # noqa: E402
+
     release_response = await client.get("/api/v1/public/version/win-x64")
     assert release_response.status_code == 200
     assert release_response.json()["available"] is False
 
-    release_file = TEST_ROOT / "downloads" / "DetachymAgentPet1.0.exe"
+    release_file = Path(settings.DOWNLOAD_DIR) / settings.DESKTOP_RELEASE_FILE
+    release_file.parent.mkdir(parents=True, exist_ok=True)
     release_file.write_bytes(b"binary")
 
     refreshed_response = await client.get("/api/v1/public/version/win-x64")
     assert refreshed_response.status_code == 200
     assert refreshed_response.json()["available"] is True
-    assert refreshed_response.json()["filename"] == "DetachymAgentPet1.0.exe"
+    assert refreshed_response.json()["filename"] == settings.DESKTOP_RELEASE_FILE
 
 
 @pytest.mark.asyncio
@@ -300,12 +303,13 @@ async def test_internal_chat_tool_requires_key_and_uses_llm(client: AsyncClient,
     response = await client.post(
         "/api/v1/tools/internal/chat",
         headers={"X-Internal-Api-Key": "internal-test-key"},
-        json={"messages": [{"role": "user", "content": "讲一个使用建议"}]},
+        json={"messages": [{"role": "user", "content": "讲一个使用建议"}], "pet_type": "dog"},
     )
     assert response.status_code == 200
     assert response.json()["content"] == "内部通用回答"
     assert captured_messages[-1].role == "user"
     assert captured_messages[-1].content == "讲一个使用建议"
+    assert any(item.role == "system" and "desktop dog companion" in item.content for item in captured_messages)
 
 
 @pytest.mark.asyncio

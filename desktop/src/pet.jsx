@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'r
 import ReactDOM from 'react-dom/client'
 
 import './desktop.css'
+import { PetAnimator } from './components/PetAnimator'
 import { getLanguage, getSessionToken, getVoiceSettings } from './shared/api'
 import { formatVoiceError, truncateForPetBubble } from './shared/voice-format'
 import { getPetVoiceCopy } from './shared/pet-voice-copy'
@@ -17,7 +18,13 @@ import {
   voiceStateReducer,
 } from './shared/voice-state'
 import { getMessagePool, getPetMessagePool, normalizeLanguage, t } from './shared/i18n'
+import {
+  createInitialPetAnimationState,
+  petAnimationReducer,
+} from './shared/pet-animation-state'
+import { getPetReminderCopy } from './shared/pet-personality'
 import { getPetVisual } from './shared/pets'
+import { completeReminder, getPendingReminders } from './shared/reminders-api'
 
 const DEFAULT_PREFERENCES = {
   quick_chat_enabled: true,
@@ -28,6 +35,9 @@ const DRAG_THRESHOLD = 8
 const REPLY_VISIBLE_MS = 8000
 const PROCESSING_TIMEOUT_MS = 18000
 const AUTH_EXPIRED_BUBBLE_MS = 4200
+const REMINDER_POLL_INTERVAL_MS = 30000
+const PET_IDLE_ANIMATION_INTERVAL_MS = 45000
+const PET_SLEEP_TIMEOUT_MS = 10 * 60 * 1000
 
 function pickRandom(items) {
   if (!items.length) {
@@ -68,6 +78,11 @@ function PetApp() {
   const [transientBubble, setTransientBubble] = useState('')
   const [hovering, setHovering] = useState(false)
   const [voiceUiState, dispatchVoice] = useReducer(voiceStateReducer, undefined, createInitialVoiceUiState)
+  const [petAnimationState, dispatchPetAnimation] = useReducer(
+    petAnimationReducer,
+    undefined,
+    createInitialPetAnimationState,
+  )
 
   const managerRef = useRef(null)
   const keyHeldRef = useRef(false)
@@ -76,9 +91,11 @@ function PetApp() {
   const uiIdleTimerRef = useRef(null)
   const processingTimerRef = useRef(null)
   const replyTimerRef = useRef(null)
+  const sleepTimerRef = useRef(null)
   const previousSessionRef = useRef(null)
   const previousPhaseRef = useRef(VOICE_PHASES.IDLE)
   const phaseRef = useRef(VOICE_PHASES.IDLE)
+  const transientBubbleRef = useRef(transientBubble)
   const languageRef = useRef(language)
   const petTypeRef = useRef(petType)
   const voiceSettingsRef = useRef(voiceSettings)
@@ -138,6 +155,27 @@ function PetApp() {
     }
   }, [])
 
+  const clearSleepTimer = useCallback(() => {
+    if (sleepTimerRef.current) {
+      window.clearTimeout(sleepTimerRef.current)
+      sleepTimerRef.current = null
+    }
+  }, [])
+
+  const resetPetActivityTimer = useCallback(() => {
+    clearSleepTimer()
+    sleepTimerRef.current = window.setTimeout(() => {
+      if (
+        phaseRef.current === VOICE_PHASES.IDLE &&
+        dragRef.current.pointerId === null &&
+        !transientBubbleRef.current &&
+        !settlingPointerRef.current
+      ) {
+        dispatchPetAnimation({ type: 'SLEEP' })
+      }
+    }, PET_SLEEP_TIMEOUT_MS)
+  }, [clearSleepTimer])
+
   const setTransientBubbleForDuration = useCallback(
     (text, duration = 2800) => {
       if (!text) {
@@ -145,12 +183,15 @@ function PetApp() {
       }
       clearTransientBubbleTimer()
       setTransientBubble(text)
+      transientBubbleRef.current = text
       transientBubbleTimerRef.current = window.setTimeout(() => {
         setTransientBubble('')
+        transientBubbleRef.current = ''
         transientBubbleTimerRef.current = null
       }, duration)
+      resetPetActivityTimer()
     },
-    [clearTransientBubbleTimer],
+    [clearTransientBubbleTimer, resetPetActivityTimer],
   )
 
   const getVoiceCopy = useCallback((key) => {
@@ -222,12 +263,17 @@ function PetApp() {
         to: voiceUiState.phase,
       })
       previousPhaseRef.current = voiceUiState.phase
+      resetPetActivityTimer()
     }
-  }, [voiceUiState.phase])
+  }, [resetPetActivityTimer, voiceUiState.phase])
 
   useEffect(() => {
     languageRef.current = language
   }, [language])
+
+  useEffect(() => {
+    transientBubbleRef.current = transientBubble
+  }, [transientBubble])
 
   useEffect(() => {
     petTypeRef.current = petType
@@ -240,6 +286,11 @@ function PetApp() {
   useEffect(() => {
     hasSessionRef.current = hasSession
   }, [hasSession])
+
+  useEffect(() => {
+    resetPetActivityTimer()
+    return () => clearSleepTimer()
+  }, [clearSleepTimer, resetPetActivityTimer])
 
   useEffect(() => {
     let mounted = true
@@ -346,9 +397,29 @@ function PetApp() {
   }, [])
 
   useEffect(() => {
+    const unsubscribe = window.desktopBridge?.onPetReminderEvent?.((payload) => {
+      if (!payload || payload.petType !== petTypeRef.current) {
+        return
+      }
+      if (payload.type === 'created') {
+        setTransientBubbleForDuration(payload.message, 3200)
+        dispatchPetAnimation({ type: 'REMINDER_CREATED', message: payload.message })
+        return
+      }
+      if (payload.type === 'parse_failed') {
+        setTransientBubbleForDuration(payload.message, 3200)
+        dispatchPetAnimation({ type: 'REMINDER_PARSE_FAILED', message: payload.message })
+      }
+    })
+
+    return () => unsubscribe?.()
+  }, [setTransientBubbleForDuration])
+
+  useEffect(() => {
     const logger = loggerRef.current
     const manager = createDesktopVoiceSession({
       settings: voiceSettingsRef.current,
+      getPetType: () => petTypeRef.current,
       onEvent: (event, details) => {
         logger.event(event, details)
       },
@@ -475,6 +546,60 @@ function PetApp() {
     }
   }, [preferences.bubble_frequency, setTransientBubbleForDuration, transientBubble])
 
+  useEffect(() => {
+    let mounted = true
+    let inFlight = false
+
+    const poll = async () => {
+      if (!hasSessionRef.current || inFlight) {
+        return
+      }
+      inFlight = true
+      try {
+        const due = await getPendingReminders(petTypeRef.current, new Date())
+        if (!mounted || !due.length) {
+          return
+        }
+        const reminder = due[0]
+        const copy = getPetReminderCopy(petTypeRef.current).reminderDue(reminder.title)
+        setTransientBubbleForDuration(copy, 8000)
+        dispatchPetAnimation({ type: 'REMINDER_DUE', message: copy })
+        await window.desktopBridge?.showNotification?.({
+          title: 'Detachym',
+          body: copy,
+        })
+        await completeReminder(reminder.id)
+      } catch (error) {
+        loggerRef.current.error('reminder:poll-failed', error)
+      } finally {
+        inFlight = false
+      }
+    }
+
+    void poll()
+    const timer = window.setInterval(poll, REMINDER_POLL_INTERVAL_MS)
+    return () => {
+      mounted = false
+      window.clearInterval(timer)
+    }
+  }, [setTransientBubbleForDuration])
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      if (
+        phaseRef.current !== VOICE_PHASES.IDLE ||
+        dragRef.current.pointerId !== null ||
+        transientBubbleRef.current ||
+        settlingPointerRef.current
+      ) {
+        return
+      }
+      dispatchPetAnimation({ type: 'IDLE_TICK' })
+    }, PET_IDLE_ANIMATION_INTERVAL_MS)
+
+    return () => window.clearInterval(timer)
+  }, [])
+
   const stopCurrentListeningTurn = useCallback(async () => {
     if (phaseRef.current !== VOICE_PHASES.LISTENING) {
       return
@@ -598,6 +723,19 @@ function PetApp() {
     setTransientBubbleForDuration,
     transitionToIdle,
   ])
+
+  useEffect(() => {
+    const unsubscribe = window.desktopBridge?.onVoiceGlobalShortcut?.((payload) => {
+      loggerRef.current.event('voice:global-shortcut', {
+        accelerator: payload?.accelerator || '',
+      })
+      void handleEnterVoiceMode()
+    })
+
+    return () => {
+      unsubscribe?.()
+    }
+  }, [handleEnterVoiceMode])
 
   useEffect(() => {
     const handleKeyDown = (event) => {
@@ -790,6 +928,8 @@ function PetApp() {
       return
     }
 
+    resetPetActivityTimer()
+    dispatchPetAnimation({ type: 'WAKE' })
     event.preventDefault()
     try {
       event.currentTarget.setPointerCapture?.(event.pointerId)
@@ -836,6 +976,7 @@ function PetApp() {
       return
     }
 
+    resetPetActivityTimer()
     try {
       event.currentTarget.releasePointerCapture?.(event.pointerId)
     } catch {
@@ -879,8 +1020,14 @@ function PetApp() {
     if (suppressClickRef.current) {
       return
     }
+    resetPetActivityTimer()
+    dispatchPetAnimation({ type: 'PET_CLICK' })
     void handleEnterVoiceMode()
   }
+
+  const handlePetAnimationCycleComplete = useCallback(() => {
+    dispatchPetAnimation({ type: 'ANIMATION_DONE' })
+  }, [])
 
   const bubbleText = useMemo(() => {
     if (voiceUiState.phase !== VOICE_PHASES.IDLE) {
@@ -953,7 +1100,12 @@ function PetApp() {
           aria-label={t(language, 'desktopPetAlt', { pet: petLabel })}
         >
           <div className="pet-button-inner">
-            <img className="pet-image" src={petVisual.image} alt={t(language, 'desktopPetAlt', { pet: petLabel })} draggable="false" />
+            <PetAnimator
+              petType={petType}
+              action={petAnimationState.action}
+              alt={t(language, 'desktopPetAlt', { pet: petLabel })}
+              onCycleComplete={handlePetAnimationCycleComplete}
+            />
           </div>
         </button>
       </div>

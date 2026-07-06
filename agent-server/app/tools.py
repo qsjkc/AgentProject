@@ -83,13 +83,17 @@ class BackendToolClient:
         payload = await self._get_backend_json("/health/ready")
         return f"平台状态正常，当前后端就绪状态是 {payload.get('status', 'ready')}。"
 
-    async def get_project_chat(self, messages: list[dict[str, str]]) -> str:
+    async def get_project_chat(self, messages: list[dict[str, str]], pet_type: str | None = None) -> str:
+        json_payload = {
+            "messages": messages[-8:],
+            "compact": True,
+        }
+        if pet_type in {"cat", "dog", "pig"}:
+            json_payload["pet_type"] = pet_type
+
         payload = await self._post_backend_json(
             "/api/v1/tools/internal/chat",
-            json_payload={
-                "messages": messages[-8:],
-                "compact": True,
-            },
+            json_payload=json_payload,
         )
         content = str(payload.get("content") or "").strip()
         return content or "我暂时没有整理出可播报的回答。"
