@@ -4,6 +4,7 @@ import { Cookie, Hand, Sparkles } from 'lucide-react'
 
 import './desktop.css'
 import { PetAnimator } from './components/PetAnimator'
+import { PetOutfitRenderer } from './components/PetOutfitRenderer'
 import { getLanguage, getSessionToken, getVoiceSettings } from './shared/api'
 import { formatVoiceError, truncateForPetBubble } from './shared/voice-format'
 import { getPetVoiceCopy } from './shared/pet-voice-copy'
@@ -25,7 +26,10 @@ import {
 } from './shared/pet-animation-state'
 import { getPetCareActions, getPetCareToolbarLabel } from './shared/pet-care-actions'
 import { getPetReminderCopy } from './shared/pet-personality'
-import { createRewardIdempotencyKey } from './shared/pet-relationship'
+import {
+  createRewardIdempotencyKey,
+  normalizePetRelationship,
+} from './shared/pet-relationship'
 import {
   refreshPetRelationship,
   rewardPetRelationship,
@@ -91,6 +95,7 @@ function PetApp() {
   const [transientBubble, setTransientBubble] = useState('')
   const [intimacyFeedback, setIntimacyFeedback] = useState('')
   const [activeCareAction, setActiveCareAction] = useState('')
+  const [petRelationship, setPetRelationship] = useState(null)
   const [hovering, setHovering] = useState(false)
   const [voiceUiState, dispatchVoice] = useReducer(voiceStateReducer, undefined, createInitialVoiceUiState)
   const [petAnimationState, dispatchPetAnimation] = useReducer(
@@ -311,6 +316,27 @@ function PetApp() {
   }, [voiceSettings])
 
   useEffect(() => {
+    let mounted = true
+    const loadCachedRelationship = async () => {
+      try {
+        const cachedRelationship = normalizePetRelationship(
+          await window.desktopBridge?.getCachedPetRelationship?.(petType),
+          petType,
+        )
+        if (mounted) {
+          setPetRelationship(cachedRelationship)
+        }
+      } catch (error) {
+        loggerRef.current.error('outfit:cache-load-failed', error, { petType })
+      }
+    }
+    void loadCachedRelationship()
+    return () => {
+      mounted = false
+    }
+  }, [petType])
+
+  useEffect(() => {
     hasSessionRef.current = hasSession
   }, [hasSession])
 
@@ -417,9 +443,17 @@ function PetApp() {
       managerRef.current?.updateSettings?.(nextSettings)
     })
 
+    const unsubscribeRelationship = window.desktopBridge?.onPetRelationshipChanged?.((payload) => {
+      const relationship = normalizePetRelationship(payload, petTypeRef.current)
+      if (relationship?.pet_type === petTypeRef.current) {
+        setPetRelationship(relationship)
+      }
+    })
+
     return () => {
       unsubscribePet?.()
       unsubscribeVoice?.()
+      unsubscribeRelationship?.()
     }
   }, [])
 
@@ -1245,12 +1279,19 @@ function PetApp() {
           aria-label={t(language, 'desktopPetAlt', { pet: petLabel })}
         >
           <div className="pet-button-inner">
-            <PetAnimator
-              petType={petType}
-              action={petAnimationState.action}
-              alt={t(language, 'desktopPetAlt', { pet: petLabel })}
-              onCycleComplete={handlePetAnimationCycleComplete}
-            />
+            <div className="pet-visual-stack">
+              <PetAnimator
+                petType={petType}
+                action={petAnimationState.action}
+                alt={t(language, 'desktopPetAlt', { pet: petLabel })}
+                onCycleComplete={handlePetAnimationCycleComplete}
+              />
+              <PetOutfitRenderer
+                petType={petType}
+                action={petAnimationState.action}
+                outfit={petRelationship?.pet_type === petType ? petRelationship.outfit : null}
+              />
+            </div>
           </div>
         </button>
       </div>

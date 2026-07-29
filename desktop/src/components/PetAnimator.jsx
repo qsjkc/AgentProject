@@ -7,8 +7,10 @@ export function PetAnimator({ petType, action, alt, onCycleComplete }) {
   const { frameCount, frameDuration } = animation
   const [index, setIndex] = useState(0)
   const previousIndexRef = useRef(0)
+  const resettingAnimationRef = useRef(false)
 
   useEffect(() => {
+    resettingAnimationRef.current = true
     previousIndexRef.current = 0
     setIndex(0)
   }, [action, petType])
@@ -32,6 +34,12 @@ export function PetAnimator({ petType, action, alt, onCycleComplete }) {
   }, [action, frameCount, frameDuration, onCycleComplete])
 
   useEffect(() => {
+    if (resettingAnimationRef.current) {
+      if (index === 0) {
+        resettingAnimationRef.current = false
+      }
+      return
+    }
     if (frameCount <= 1 || action === 'idle') {
       previousIndexRef.current = index
       return
