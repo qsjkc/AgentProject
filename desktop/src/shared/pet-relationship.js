@@ -59,3 +59,9 @@ export function getRelationshipStageLabel(language, stage) {
   const labels = RELATIONSHIP_STAGES[stage] || RELATIONSHIP_STAGES.new_friend
   return labels[language] || labels.en
 }
+
+export function createRewardIdempotencyKey(petType, action) {
+  const randomPart = globalThis.crypto?.randomUUID?.()
+    || `${Date.now()}-${Math.random().toString(36).slice(2)}`
+  return `pet:${petType}:${action}:${randomPart}`
+}

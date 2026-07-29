@@ -38,6 +38,7 @@ export function petAnimationReducer(state, event) {
       return transition(ANIMATION_ACTIONS.REMINDING, { message: event.message })
     case 'REMINDER_CREATED':
     case 'CHAT_SUCCESS':
+    case 'LEVEL_UP':
       return transition(ANIMATION_ACTIONS.HAPPY, { message: event.message })
     case 'REMINDER_PARSE_FAILED':
     case 'CHAT_ERROR':

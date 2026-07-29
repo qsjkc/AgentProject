@@ -23,6 +23,8 @@ import {
   petAnimationReducer,
 } from './shared/pet-animation-state'
 import { getPetReminderCopy } from './shared/pet-personality'
+import { createRewardIdempotencyKey } from './shared/pet-relationship'
+import { rewardPetRelationship } from './shared/pet-relationships-api'
 import { getPetVisual } from './shared/pets'
 import { completeReminder, getPendingReminders } from './shared/reminders-api'
 
@@ -76,6 +78,7 @@ function PetApp() {
   const [preferences, setPreferences] = useState(DEFAULT_PREFERENCES)
   const [voiceSettings, setVoiceSettings] = useState(DEFAULT_VOICE_SETTINGS)
   const [transientBubble, setTransientBubble] = useState('')
+  const [intimacyFeedback, setIntimacyFeedback] = useState('')
   const [hovering, setHovering] = useState(false)
   const [voiceUiState, dispatchVoice] = useReducer(voiceStateReducer, undefined, createInitialVoiceUiState)
   const [petAnimationState, dispatchPetAnimation] = useReducer(
@@ -87,6 +90,7 @@ function PetApp() {
   const managerRef = useRef(null)
   const keyHeldRef = useRef(false)
   const transientBubbleTimerRef = useRef(null)
+  const intimacyFeedbackTimerRef = useRef(null)
   const idleBubbleTimerRef = useRef(null)
   const uiIdleTimerRef = useRef(null)
   const processingTimerRef = useRef(null)
@@ -132,6 +136,17 @@ function PetApp() {
       window.clearTimeout(transientBubbleTimerRef.current)
       transientBubbleTimerRef.current = null
     }
+  }, [])
+
+  const showIntimacyFeedback = useCallback((text) => {
+    if (intimacyFeedbackTimerRef.current) {
+      window.clearTimeout(intimacyFeedbackTimerRef.current)
+    }
+    setIntimacyFeedback(text)
+    intimacyFeedbackTimerRef.current = window.setTimeout(() => {
+      setIntimacyFeedback('')
+      intimacyFeedbackTimerRef.current = null
+    }, 1800)
   }, [])
 
   const clearUiIdleTimer = useCallback(() => {
@@ -822,8 +837,48 @@ function PetApp() {
       if (rafRef.current) {
         window.cancelAnimationFrame(rafRef.current)
       }
+      if (intimacyFeedbackTimerRef.current) {
+        window.clearTimeout(intimacyFeedbackTimerRef.current)
+      }
     },
     [],
+  )
+
+  const rewardInteraction = useCallback(
+    async (action) => {
+      if (!hasSessionRef.current) {
+        return null
+      }
+
+      try {
+        const result = await rewardPetRelationship(
+          petTypeRef.current,
+          action,
+          createRewardIdempotencyKey(petTypeRef.current, action),
+        )
+        if (result.relationship) {
+          await window.desktopBridge?.cachePetRelationship?.(result.relationship)
+        }
+        if (result.awarded_xp > 0) {
+          const label = languageRef.current === 'zh-CN' ? '亲密度' : 'Intimacy'
+          showIntimacyFeedback(`+${result.awarded_xp} ${label}`)
+        }
+        if (result.level_up) {
+          dispatchPetAnimation({ type: 'LEVEL_UP' })
+        }
+        loggerRef.current.event('intimacy:reward', {
+          action,
+          reason: result.reason,
+          awardedXp: result.awarded_xp,
+          level: result.relationship?.level,
+        })
+        return result
+      } catch (error) {
+        loggerRef.current.error('intimacy:reward-failed', error, { action })
+        return null
+      }
+    },
+    [showIntimacyFeedback],
   )
 
   const schedulePositionFlush = () => {
@@ -1022,6 +1077,7 @@ function PetApp() {
     }
     resetPetActivityTimer()
     dispatchPetAnimation({ type: 'PET_CLICK' })
+    void rewardInteraction('poke')
     void handleEnterVoiceMode()
   }
 
@@ -1087,6 +1143,11 @@ function PetApp() {
     <div className="pet-shell">
       <div className={`pet-scene mood-${petMood}`}>
         {bubbleText && <div className={`pet-bubble pet-bubble-${petType}`}>{bubbleText}</div>}
+        {intimacyFeedback && (
+          <div className="pet-intimacy-feedback" role="status" aria-live="polite">
+            {intimacyFeedback}
+          </div>
+        )}
         <button
           type="button"
           className="pet-button"

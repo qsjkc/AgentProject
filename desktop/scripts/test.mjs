@@ -8,6 +8,7 @@ import {
   petAnimationReducer,
 } from '../src/shared/pet-animation-state.js'
 import {
+  createRewardIdempotencyKey,
   getRelationshipStageLabel,
   normalizePetRelationship,
 } from '../src/shared/pet-relationship.js'
@@ -222,6 +223,10 @@ assert.deepEqual(normalizedRelationship.progress, {
 })
 assert.equal(getRelationshipStageLabel('zh-CN', 'getting_familiar'), '有点熟')
 assert.equal(getRelationshipStageLabel('en', 'deep_bond'), 'Deeply bonded')
+assert.match(createRewardIdempotencyKey('pig', 'poke'), /^pet:pig:poke:/)
+
+const levelUpAnimation = petAnimationReducer(initialPetAnimation, { type: 'LEVEL_UP' })
+assert.equal(levelUpAnimation.action, ANIMATION_ACTIONS.HAPPY)
 
 const fixedNow = new Date('2026-07-06T10:00:00+08:00')
 

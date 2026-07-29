@@ -131,6 +131,21 @@ select {
   background: rgba(254, 226, 226, 0.95);
 }
 
+.pet-intimacy-feedback {
+  position: absolute;
+  z-index: 2;
+  right: 2px;
+  bottom: 82px;
+  color: #be123c;
+  font-size: 12px;
+  font-weight: 800;
+  pointer-events: none;
+  text-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.95),
+    0 4px 12px rgba(255, 255, 255, 0.9);
+  animation: intimacy-feedback-rise 1.8s ease forwards;
+}
+
 @keyframes bubble-rise {
   from {
     opacity: 0;
@@ -397,6 +412,23 @@ select {
 .pet-option-label {
   font-size: 13px;
   font-weight: 600;
+}
+
+@keyframes intimacy-feedback-rise {
+  0% {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  18% {
+    opacity: 1;
+  }
+  72% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-18px);
+  }
 }
 
 .relationship-summary {
