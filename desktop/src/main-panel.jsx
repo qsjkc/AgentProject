@@ -22,7 +22,10 @@ import {
   getRelationshipStageLabel,
   normalizePetRelationship,
 } from './shared/pet-relationship'
-import { getPetRelationship } from './shared/pet-relationships-api'
+import {
+  getPetRelationship,
+  refreshPetRelationship,
+} from './shared/pet-relationships-api'
 import { getPetVisual } from './shared/pets'
 import { parseOneTimeReminder } from './shared/reminder-parser'
 import { createReminder, getPendingReminderSummary } from './shared/reminders-api'
@@ -574,6 +577,13 @@ function MainPanelApp() {
           title: parsedReminder.title,
           source_text: parsedReminder.sourceText,
           remind_at: parsedReminder.remindAt.toISOString(),
+        })
+        void refreshPetRelationship(currentPetType).catch((error) => {
+          void logDesktopDebug({
+            event: 'main-panel-relationship-refresh-failed',
+            source: 'reminder-created',
+            reason: error instanceof Error ? error.message : String(error),
+          })
         })
         const timeText = parsedReminder.remindAt.toLocaleString(language === 'zh-CN' ? 'zh-CN' : 'en-US', {
           month: 'numeric',

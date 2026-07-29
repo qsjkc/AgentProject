@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.logging import logger
 from app.core.security import get_current_user
 from app.core.time import utc_now
 from app.models.database import Reminder, get_db
@@ -18,9 +19,34 @@ from app.schemas.reminder import (
     ReminderUpdate,
     normalize_reminder_datetime,
 )
+from app.services.pet_relationships import award_pet_relationship
 
 
 router = APIRouter(prefix="/reminders", tags=["reminders"])
+
+
+async def reward_reminder_action(
+    db: AsyncSession,
+    *,
+    current_user: User,
+    reminder: Reminder,
+    action: str,
+) -> None:
+    try:
+        await award_pet_relationship(
+            db,
+            user_id=current_user.id,
+            pet_type=reminder.pet_type,
+            action=action,
+            idempotency_key=f"reminder:{reminder.id}:{action}",
+        )
+    except Exception:
+        logger.exception(
+            "Failed to award reminder intimacy user_id=%s reminder_id=%s action=%s",
+            current_user.id,
+            reminder.id,
+            action,
+        )
 
 
 async def get_owned_reminder(reminder_id: int, current_user: User, db: AsyncSession) -> Reminder:
@@ -48,6 +74,12 @@ async def create_reminder(
     db.add(reminder)
     await db.commit()
     await db.refresh(reminder)
+    await reward_reminder_action(
+        db,
+        current_user=current_user,
+        reminder=reminder,
+        action="reminder_created",
+    )
     return reminder
 
 
@@ -105,6 +137,13 @@ async def update_reminder(
             reminder.completed_at = utc_now()
     await db.commit()
     await db.refresh(reminder)
+    if payload.status == "completed":
+        await reward_reminder_action(
+            db,
+            current_user=current_user,
+            reminder=reminder,
+            action="reminder_completed",
+        )
     return reminder
 
 
@@ -121,4 +160,10 @@ async def complete_reminder(
     reminder.completed_at = now
     await db.commit()
     await db.refresh(reminder)
+    await reward_reminder_action(
+        db,
+        current_user=current_user,
+        reminder=reminder,
+        action="reminder_completed",
+    )
     return reminder

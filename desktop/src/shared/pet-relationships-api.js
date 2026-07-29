@@ -8,6 +8,13 @@ export async function getPetRelationship(petType) {
 }
 
 
+export async function refreshPetRelationship(petType) {
+  const relationship = await getPetRelationship(petType)
+  await window.desktopBridge?.cachePetRelationship?.(relationship)
+  return relationship
+}
+
+
 export async function rewardPetRelationship(petType, action, idempotencyKey) {
   const result = await desktopApiRequest(`/pets/${petType}/relationship/rewards`, {
     method: 'POST',

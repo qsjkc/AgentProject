@@ -24,7 +24,10 @@ import {
 } from './shared/pet-animation-state'
 import { getPetReminderCopy } from './shared/pet-personality'
 import { createRewardIdempotencyKey } from './shared/pet-relationship'
-import { rewardPetRelationship } from './shared/pet-relationships-api'
+import {
+  refreshPetRelationship,
+  rewardPetRelationship,
+} from './shared/pet-relationships-api'
 import { getPetVisual } from './shared/pets'
 import { completeReminder, getPendingReminders } from './shared/reminders-api'
 
@@ -584,6 +587,9 @@ function PetApp() {
           body: copy,
         })
         await completeReminder(reminder.id)
+        void refreshPetRelationship(petTypeRef.current).catch((error) => {
+          loggerRef.current.error('reminder:relationship-refresh-failed', error)
+        })
       } catch (error) {
         loggerRef.current.error('reminder:poll-failed', error)
       } finally {

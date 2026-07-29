@@ -5,6 +5,7 @@ import './desktop.css'
 import { clearSessionToken, desktopApi, getApiBaseUrl, getLanguage, getSessionToken } from './shared/api'
 import { normalizeLanguage, t } from './shared/i18n'
 import { getPetReminderCopy } from './shared/pet-personality'
+import { refreshPetRelationship } from './shared/pet-relationships-api'
 import { getPetVisual } from './shared/pets'
 import { parseOneTimeReminder } from './shared/reminder-parser'
 import { createReminder } from './shared/reminders-api'
@@ -221,6 +222,13 @@ function QuickChatApp() {
           title: parsedReminder.title,
           source_text: parsedReminder.sourceText,
           remind_at: parsedReminder.remindAt.toISOString(),
+        })
+        void refreshPetRelationship(petType).catch((error) => {
+          void logDesktopDebug({
+            event: 'quick-chat-relationship-refresh-failed',
+            source: 'reminder-created',
+            reason: error instanceof Error ? error.message : String(error),
+          })
         })
         const timeText = parsedReminder.remindAt.toLocaleString(language === 'zh-CN' ? 'zh-CN' : 'en-US', {
           month: 'numeric',
