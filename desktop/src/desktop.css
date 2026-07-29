@@ -76,6 +76,66 @@ select {
   background-repeat: no-repeat;
 }
 
+.pet-care-toolbar {
+  position: absolute;
+  z-index: 3;
+  bottom: 4px;
+  left: 50%;
+  display: grid;
+  grid-template-columns: repeat(3, 30px);
+  gap: 6px;
+  width: 102px;
+  height: 30px;
+  transform: translateX(-50%);
+}
+
+.pet-care-button {
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid rgba(148, 163, 184, 0.42);
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.94);
+  color: #334155;
+  box-shadow: 0 6px 16px rgba(15, 23, 42, 0.13);
+  cursor: pointer;
+  transition:
+    transform 140ms ease,
+    border-color 140ms ease,
+    background 140ms ease;
+}
+
+.pet-care-button[data-action='pat'] {
+  color: #e11d48;
+}
+
+.pet-care-button[data-action='feed'] {
+  color: #a16207;
+}
+
+.pet-care-button[data-action='clean'] {
+  color: #0284c7;
+}
+
+.pet-care-button:hover:not(:disabled),
+.pet-care-button:focus-visible {
+  transform: translateY(-2px);
+  border-color: currentColor;
+  background: #fff;
+  outline: none;
+}
+
+.pet-care-button:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+.pet-care-button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
 .pet-bubble {
   position: absolute;
   top: 12px;
@@ -138,8 +198,8 @@ select {
 .pet-intimacy-feedback {
   position: absolute;
   z-index: 2;
-  right: 2px;
-  bottom: 82px;
+  top: 76px;
+  right: 4px;
   color: #be123c;
   font-size: 12px;
   font-weight: 800;

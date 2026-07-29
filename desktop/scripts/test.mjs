@@ -7,6 +7,7 @@ import {
   createInitialPetAnimationState,
   petAnimationReducer,
 } from '../src/shared/pet-animation-state.js'
+import { getPetCareActions, getPetCareToolbarLabel } from '../src/shared/pet-care-actions.js'
 import {
   createRewardIdempotencyKey,
   getRelationshipStageLabel,
@@ -245,6 +246,24 @@ assert.equal(
   petAnimationReducer(initialPetAnimation, { type: 'PET_CLEAN' }).action,
   ANIMATION_ACTIONS.CLEAN,
 )
+
+const pigCareActions = getPetCareActions('zh-CN', 'pig')
+assert.deepEqual(
+  pigCareActions.map(({ id, animationEvent, rewardAction }) => ({
+    id,
+    animationEvent,
+    rewardAction,
+  })),
+  [
+    { id: 'pat', animationEvent: 'PET_PAT', rewardAction: 'pat' },
+    { id: 'feed', animationEvent: 'PET_FEED', rewardAction: 'feed' },
+    { id: 'clean', animationEvent: 'PET_CLEAN', rewardAction: 'clean' },
+  ],
+)
+assert.equal(pigCareActions[0].label, '摸摸')
+assert.match(pigCareActions[1].message, /小饼干/)
+assert.equal(getPetCareActions('zh-CN', 'cat').length, 0)
+assert.equal(getPetCareToolbarLabel('en'), 'Care for pig')
 
 const fixedNow = new Date('2026-07-06T10:00:00+08:00')
 

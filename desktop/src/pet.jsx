@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
 import ReactDOM from 'react-dom/client'
+import { Cookie, Hand, Sparkles } from 'lucide-react'
 
 import './desktop.css'
 import { PetAnimator } from './components/PetAnimator'
@@ -22,6 +23,7 @@ import {
   createInitialPetAnimationState,
   petAnimationReducer,
 } from './shared/pet-animation-state'
+import { getPetCareActions, getPetCareToolbarLabel } from './shared/pet-care-actions'
 import { getPetReminderCopy } from './shared/pet-personality'
 import { createRewardIdempotencyKey } from './shared/pet-relationship'
 import {
@@ -43,6 +45,12 @@ const AUTH_EXPIRED_BUBBLE_MS = 4200
 const REMINDER_POLL_INTERVAL_MS = 30000
 const PET_IDLE_ANIMATION_INTERVAL_MS = 45000
 const PET_SLEEP_TIMEOUT_MS = 10 * 60 * 1000
+
+const CARE_ACTION_ICONS = {
+  pat: Hand,
+  feed: Cookie,
+  clean: Sparkles,
+}
 
 function pickRandom(items) {
   if (!items.length) {
@@ -82,6 +90,7 @@ function PetApp() {
   const [voiceSettings, setVoiceSettings] = useState(DEFAULT_VOICE_SETTINGS)
   const [transientBubble, setTransientBubble] = useState('')
   const [intimacyFeedback, setIntimacyFeedback] = useState('')
+  const [activeCareAction, setActiveCareAction] = useState('')
   const [hovering, setHovering] = useState(false)
   const [voiceUiState, dispatchVoice] = useReducer(voiceStateReducer, undefined, createInitialVoiceUiState)
   const [petAnimationState, dispatchPetAnimation] = useReducer(
@@ -893,6 +902,36 @@ function PetApp() {
     }
   }, [hasSession, petType, preferences.pet_type, rewardInteraction])
 
+  const careActions = useMemo(() => getPetCareActions(language, petType), [language, petType])
+
+  const handleCareAction = useCallback(
+    (event, action) => {
+      event.preventDefault()
+      event.stopPropagation()
+      if (
+        !action ||
+        activeCareAction ||
+        petAnimationState.locked ||
+        phaseRef.current !== VOICE_PHASES.IDLE
+      ) {
+        return
+      }
+
+      resetPetActivityTimer()
+      setActiveCareAction(action.id)
+      setTransientBubbleForDuration(action.message, 2400)
+      dispatchPetAnimation({ type: action.animationEvent })
+      void rewardInteraction(action.rewardAction)
+    },
+    [
+      activeCareAction,
+      petAnimationState.locked,
+      resetPetActivityTimer,
+      rewardInteraction,
+      setTransientBubbleForDuration,
+    ],
+  )
+
   const schedulePositionFlush = () => {
     if (rafRef.current) {
       return
@@ -1097,6 +1136,7 @@ function PetApp() {
   }
 
   const handlePetAnimationCycleComplete = useCallback(() => {
+    setActiveCareAction('')
     dispatchPetAnimation({ type: 'ANIMATION_DONE' })
   }, [])
 
@@ -1156,19 +1196,48 @@ function PetApp() {
 
   return (
     <div className="pet-shell">
-      <div className={`pet-scene mood-${petMood}`}>
+      <div
+        className={`pet-scene mood-${petMood}`}
+        onMouseEnter={() => setHovering(true)}
+        onMouseLeave={() => setHovering(false)}
+      >
         {bubbleText && <div className={`pet-bubble pet-bubble-${petType}`}>{bubbleText}</div>}
         {intimacyFeedback && (
           <div className="pet-intimacy-feedback" role="status" aria-live="polite">
             {intimacyFeedback}
           </div>
         )}
+        {careActions.length > 0 && (
+          <div className="pet-care-toolbar" role="toolbar" aria-label={getPetCareToolbarLabel(language)}>
+            {careActions.map((action) => {
+              const Icon = CARE_ACTION_ICONS[action.id]
+              const disabled =
+                Boolean(activeCareAction) ||
+                petAnimationState.locked ||
+                voiceUiState.phase !== VOICE_PHASES.IDLE
+
+              return (
+                <button
+                  key={action.id}
+                  type="button"
+                  className="pet-care-button"
+                  data-action={action.id}
+                  title={action.label}
+                  aria-label={action.label}
+                  aria-pressed={activeCareAction === action.id}
+                  disabled={disabled}
+                  onClick={(event) => handleCareAction(event, action)}
+                >
+                  <Icon size={16} strokeWidth={2.2} aria-hidden="true" />
+                </button>
+              )
+            })}
+          </div>
+        )}
         <button
           type="button"
           className="pet-button"
           onClick={handleClick}
-          onMouseEnter={() => setHovering(true)}
-          onMouseLeave={() => setHovering(false)}
           onPointerDown={handlePointerDown}
           onPointerMove={handlePointerMove}
           onPointerUp={finishPointerInteraction}
