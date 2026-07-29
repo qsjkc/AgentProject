@@ -274,3 +274,47 @@ async def test_reward_policy_caps_daily_action_and_levels_up(client: AsyncClient
         "pig_sleep_cap",
     ]
     assert final_result["level_up"] is True
+
+    third_day = first_day + timedelta(days=2)
+    async with async_session_maker() as session:
+        for action, count, spacing_minutes in (
+            ("reminder_completed", 5, 1),
+            ("meaningful_chat", 10, 5),
+            ("pat", 10, 5),
+            ("feed", 4, 30),
+        ):
+            for index in range(count):
+                result = await award_pet_relationship(
+                    session,
+                    user_id=user_id,
+                    pet_type="pig",
+                    action=action,
+                    idempotency_key=f"day-three-{action}-{index}",
+                    now=third_day + timedelta(minutes=index * spacing_minutes),
+                )
+                assert result["reason"] == "awarded"
+
+    assert result["relationship"]["intimacy_xp"] == 220
+    assert result["relationship"]["level"] == 2
+
+    fourth_day = first_day + timedelta(days=3)
+    async with async_session_maker() as session:
+        for index in range(4):
+            level_three_result = await award_pet_relationship(
+                session,
+                user_id=user_id,
+                pet_type="pig",
+                action="reminder_completed",
+                idempotency_key=f"day-four-{index}",
+                now=fourth_day + timedelta(seconds=index),
+            )
+
+    assert level_three_result["relationship"]["intimacy_xp"] == 260
+    assert level_three_result["relationship"]["level"] == 3
+    assert level_three_result["relationship"]["relationship_stage"] == "clingy"
+    assert level_three_result["relationship"]["outfit"]["unlocked_outfit_ids"] == [
+        "pig_basic_scarf",
+        "pig_sleep_cap",
+        "pig_bell",
+    ]
+    assert level_three_result["level_up"] is True
