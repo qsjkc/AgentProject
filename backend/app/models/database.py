@@ -4,7 +4,7 @@ from typing import AsyncGenerator
 
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, CheckConstraint, Column, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy import inspect
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import declarative_base, relationship
@@ -23,6 +23,7 @@ LEGACY_APP_TABLES = {
     "chat_messages",
     "documents",
     "reminders",
+    "pet_relationships",
 }
 
 engine = create_async_engine(
@@ -149,6 +150,7 @@ class User(Base):
     documents = relationship("Document", back_populates="user", cascade="all, delete-orphan")
     preferences = relationship("UserPreference", back_populates="user", uselist=False, cascade="all, delete-orphan")
     reminders = relationship("Reminder", back_populates="user", cascade="all, delete-orphan")
+    pet_relationships = relationship("PetRelationship", back_populates="user", cascade="all, delete-orphan")
 
 
 class UserPreference(Base):
@@ -237,3 +239,27 @@ class Reminder(Base):
     updated_at = Column(DateTime, default=utc_now, onupdate=utc_now, nullable=False)
 
     user = relationship("User", back_populates="reminders")
+
+
+class PetRelationship(Base):
+    __tablename__ = "pet_relationships"
+    __table_args__ = (
+        UniqueConstraint("user_id", "pet_type", name="uq_pet_relationships_user_pet"),
+        CheckConstraint("intimacy_xp >= 0", name="ck_pet_relationships_intimacy_xp_nonnegative"),
+        CheckConstraint("level >= 1 AND level <= 5", name="ck_pet_relationships_level_range"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    pet_type = Column(String(20), nullable=False, index=True)
+    intimacy_xp = Column(Integer, nullable=False, default=0)
+    level = Column(Integer, nullable=False, default=1)
+    relationship_stage = Column(String(32), nullable=False, default="new_friend")
+    current_mood = Column(String(20), nullable=False, default="idle")
+    last_active_at = Column(DateTime, nullable=True)
+    last_greeting_at = Column(DateTime, nullable=True)
+    last_level_up_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=utc_now, nullable=False)
+    updated_at = Column(DateTime, default=utc_now, onupdate=utc_now, nullable=False)
+
+    user = relationship("User", back_populates="pet_relationships")

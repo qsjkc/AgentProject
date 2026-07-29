@@ -1,4 +1,4 @@
-from app.models.database import Reminder, User, UserPreference, VerificationCode
+from app.models.database import PetRelationship, Reminder, User, UserPreference, VerificationCode
 
 
-__all__ = ["User", "UserPreference", "VerificationCode", "Reminder"]
+__all__ = ["User", "UserPreference", "VerificationCode", "Reminder", "PetRelationship"]
