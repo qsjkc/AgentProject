@@ -1,3 +1,5 @@
+import { normalizePetOutfitState } from './pet-outfits.js'
+
 export const RELATIONSHIP_STAGES = {
   new_friend: {
     'zh-CN': '刚认识',
@@ -37,16 +39,19 @@ export function normalizePetRelationship(value, fallbackPetType = 'cat') {
   const percent = required === 0
     ? 100
     : Math.min(100, toNonNegativeNumber(progress.percent, (current / required) * 100))
+  const level = Math.min(5, Math.max(1, Math.trunc(toNonNegativeNumber(value.level, 1))))
+  const petType = value.pet_type || value.petType || fallbackPetType
 
   return {
     ...value,
-    pet_type: value.pet_type || value.petType || fallbackPetType,
+    pet_type: petType,
     intimacy_xp: toNonNegativeNumber(value.intimacy_xp),
-    level: Math.min(5, Math.max(1, Math.trunc(toNonNegativeNumber(value.level, 1)))),
+    level,
     relationship_stage: RELATIONSHIP_STAGES[value.relationship_stage]
       ? value.relationship_stage
       : 'new_friend',
     current_mood: value.current_mood || 'idle',
+    outfit: normalizePetOutfitState(value.outfit, petType, level),
     progress: {
       current,
       required,

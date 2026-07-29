@@ -13,6 +13,11 @@ import {
   getRelationshipStageLabel,
   normalizePetRelationship,
 } from '../src/shared/pet-relationship.js'
+import {
+  getPetOutfitCatalog,
+  getPetOutfitSlotLabel,
+  normalizePetOutfitState,
+} from '../src/shared/pet-outfits.js'
 import { parseOneTimeReminder } from '../src/shared/reminder-parser.js'
 import {
   decodeRtsSubtitlePayload,
@@ -225,6 +230,41 @@ assert.deepEqual(normalizedRelationship.progress, {
 assert.equal(getRelationshipStageLabel('zh-CN', 'getting_familiar'), '有点熟')
 assert.equal(getRelationshipStageLabel('en', 'deep_bond'), 'Deeply bonded')
 assert.match(createRewardIdempotencyKey('pig', 'poke'), /^pet:pig:poke:/)
+assert.deepEqual(
+  getPetOutfitCatalog('pig', 'zh-CN').map(({ id, slot, unlockLevel, label }) => ({
+    id,
+    slot,
+    unlockLevel,
+    label,
+  })),
+  [
+    { id: 'pig_basic_scarf', slot: 'neck', unlockLevel: 1, label: '基础小围巾' },
+    { id: 'pig_sleep_cap', slot: 'head', unlockLevel: 2, label: '软绵睡帽' },
+    { id: 'pig_bell', slot: 'side', unlockLevel: 3, label: '提醒铃铛' },
+    { id: 'pig_work_badge', slot: 'side', unlockLevel: 4, label: '搭档工作牌' },
+    { id: 'pig_star_hat', slot: 'head', unlockLevel: 5, label: '星星小帽' },
+  ],
+)
+assert.equal(getPetOutfitSlotLabel('neck', 'en'), 'Neck')
+assert.deepEqual(
+  normalizePetOutfitState(
+    {
+      unlocked_outfit_ids: ['pig_basic_scarf', 'unknown'],
+      equipped_outfits: {
+        neck: 'pig_basic_scarf',
+        head: 'pig_star_hat',
+      },
+    },
+    'pig',
+    2,
+  ),
+  {
+    unlocked_outfit_ids: ['pig_basic_scarf', 'pig_sleep_cap'],
+    equipped_outfits: {
+      neck: 'pig_basic_scarf',
+    },
+  },
+)
 
 const levelUpAnimation = petAnimationReducer(initialPetAnimation, { type: 'LEVEL_UP' })
 assert.equal(levelUpAnimation.action, ANIMATION_ACTIONS.HAPPY)

@@ -28,3 +28,18 @@ export async function rewardPetRelationship(petType, action, idempotencyKey) {
     relationship: normalizePetRelationship(result.relationship, petType),
   }
 }
+
+export async function updatePetOutfit(petType, slot, itemId) {
+  const relationship = normalizePetRelationship(
+    await desktopApiRequest(`/pets/${petType}/relationship/outfit`, {
+      method: 'PUT',
+      body: JSON.stringify({
+        slot,
+        item_id: itemId || null,
+      }),
+    }),
+    petType,
+  )
+  await window.desktopBridge?.cachePetRelationship?.(relationship)
+  return relationship
+}
