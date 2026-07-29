@@ -6,6 +6,9 @@ export const ANIMATION_ACTIONS = {
   CONFUSED: 'confused',
   REMINDING: 'reminding',
   SLEEPING: 'sleeping',
+  PAT: 'pat',
+  EAT: 'eat',
+  CLEAN: 'clean',
 }
 
 const LOCKED_ACTIONS = new Set([ANIMATION_ACTIONS.REMINDING])
@@ -49,6 +52,12 @@ export function petAnimationReducer(state, event) {
       return transition(ANIMATION_ACTIONS.WALK)
     case 'PET_DRAG_RELEASE':
       return transition(ANIMATION_ACTIONS.HAPPY)
+    case 'PET_PAT':
+      return transition(ANIMATION_ACTIONS.PAT)
+    case 'PET_FEED':
+      return transition(ANIMATION_ACTIONS.EAT)
+    case 'PET_CLEAN':
+      return transition(ANIMATION_ACTIONS.CLEAN)
     case 'IDLE_TICK':
       return transition(Math.random() > 0.55 ? ANIMATION_ACTIONS.WALK : ANIMATION_ACTIONS.JUMP)
     case 'SLEEP':

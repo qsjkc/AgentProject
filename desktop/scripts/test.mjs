@@ -233,6 +233,19 @@ assert.equal(draggingAnimation.action, ANIMATION_ACTIONS.WALK)
 const dragReleasedAnimation = petAnimationReducer(draggingAnimation, { type: 'PET_DRAG_RELEASE' })
 assert.equal(dragReleasedAnimation.action, ANIMATION_ACTIONS.HAPPY)
 
+assert.equal(
+  petAnimationReducer(initialPetAnimation, { type: 'PET_PAT' }).action,
+  ANIMATION_ACTIONS.PAT,
+)
+assert.equal(
+  petAnimationReducer(initialPetAnimation, { type: 'PET_FEED' }).action,
+  ANIMATION_ACTIONS.EAT,
+)
+assert.equal(
+  petAnimationReducer(initialPetAnimation, { type: 'PET_CLEAN' }).action,
+  ANIMATION_ACTIONS.CLEAN,
+)
+
 const fixedNow = new Date('2026-07-06T10:00:00+08:00')
 
 const todayMeeting = parseOneTimeReminder('下午三点有一个会议', fixedNow)

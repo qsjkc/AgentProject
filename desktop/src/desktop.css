@@ -72,6 +72,10 @@ select {
   filter: drop-shadow(0 16px 24px rgba(15, 23, 42, 0.2));
 }
 
+.pet-sprite {
+  background-repeat: no-repeat;
+}
+
 .pet-bubble {
   position: absolute;
   top: 12px;
