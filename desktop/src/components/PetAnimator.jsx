@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { getPetAnimation } from '../shared/pet-animation-config'
+import { isLoopingPetAnimation } from '../shared/pet-animation-state'
 
 export function PetAnimator({ petType, action, alt, onCycleComplete }) {
   const animation = useMemo(() => getPetAnimation(petType, action), [petType, action])
@@ -17,7 +18,7 @@ export function PetAnimator({ petType, action, alt, onCycleComplete }) {
 
   useEffect(() => {
     if (frameCount <= 1) {
-      if (action === 'idle') {
+      if (isLoopingPetAnimation(action)) {
         return undefined
       }
       const timer = window.setTimeout(() => {
@@ -40,7 +41,7 @@ export function PetAnimator({ petType, action, alt, onCycleComplete }) {
       }
       return
     }
-    if (frameCount <= 1 || action === 'idle') {
+    if (frameCount <= 1 || isLoopingPetAnimation(action)) {
       previousIndexRef.current = index
       return
     }

@@ -65,6 +65,16 @@ export function getRelationshipStageLabel(language, stage) {
   return labels[language] || labels.en
 }
 
+export function didEquippedOutfitChange(previousRelationship, nextRelationship) {
+  if (!previousRelationship || !nextRelationship) {
+    return false
+  }
+  const previous = previousRelationship.outfit?.equipped_outfits || {}
+  const next = nextRelationship.outfit?.equipped_outfits || {}
+  const slots = [...new Set([...Object.keys(previous), ...Object.keys(next)])].sort()
+  return slots.some((slot) => (previous[slot] || '') !== (next[slot] || ''))
+}
+
 export function createRewardIdempotencyKey(petType, action) {
   const randomPart = globalThis.crypto?.randomUUID?.()
     || `${Date.now()}-${Math.random().toString(36).slice(2)}`

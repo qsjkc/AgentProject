@@ -5,11 +5,14 @@ import { getPetMessagePool, normalizeLanguage, t } from '../src/shared/i18n.js'
 import {
   ANIMATION_ACTIONS,
   createInitialPetAnimationState,
+  isLoopingPetAnimation,
   petAnimationReducer,
 } from '../src/shared/pet-animation-state.js'
 import { getPetCareActions, getPetCareToolbarLabel } from '../src/shared/pet-care-actions.js'
+import { getPetRelationshipEventCopy } from '../src/shared/pet-personality.js'
 import {
   createRewardIdempotencyKey,
+  didEquippedOutfitChange,
   getRelationshipStageLabel,
   normalizePetRelationship,
 } from '../src/shared/pet-relationship.js'
@@ -190,6 +193,29 @@ assert.equal(isVoiceAuthError(new Error('other error')), false)
 
 const initialPetAnimation = createInitialPetAnimationState()
 assert.equal(initialPetAnimation.action, ANIMATION_ACTIONS.IDLE)
+assert.deepEqual(
+  new Set(Object.values(ANIMATION_ACTIONS)),
+  new Set([
+    'idle',
+    'walk',
+    'jump',
+    'happy',
+    'confused',
+    'reminding',
+    'sleeping',
+    'wake',
+    'poke',
+    'drag',
+    'pat',
+    'eat',
+    'clean',
+    'dress_up',
+    'level_up',
+  ]),
+)
+assert.equal(isLoopingPetAnimation(ANIMATION_ACTIONS.IDLE), true)
+assert.equal(isLoopingPetAnimation(ANIMATION_ACTIONS.SLEEPING), true)
+assert.equal(isLoopingPetAnimation(ANIMATION_ACTIONS.WAKE), false)
 
 const remindingPetAnimation = petAnimationReducer(initialPetAnimation, {
   type: 'REMINDER_DUE',
@@ -267,12 +293,31 @@ assert.deepEqual(
 )
 
 const levelUpAnimation = petAnimationReducer(initialPetAnimation, { type: 'LEVEL_UP' })
-assert.equal(levelUpAnimation.action, ANIMATION_ACTIONS.HAPPY)
+assert.equal(levelUpAnimation.action, ANIMATION_ACTIONS.LEVEL_UP)
+assert.equal(levelUpAnimation.locked, true)
 
 const draggingAnimation = petAnimationReducer(initialPetAnimation, { type: 'PET_DRAG_START' })
-assert.equal(draggingAnimation.action, ANIMATION_ACTIONS.WALK)
+assert.equal(draggingAnimation.action, ANIMATION_ACTIONS.DRAG)
 const dragReleasedAnimation = petAnimationReducer(draggingAnimation, { type: 'PET_DRAG_RELEASE' })
 assert.equal(dragReleasedAnimation.action, ANIMATION_ACTIONS.HAPPY)
+
+assert.equal(
+  petAnimationReducer(initialPetAnimation, { type: 'PET_CLICK' }).action,
+  ANIMATION_ACTIONS.POKE,
+)
+assert.equal(
+  petAnimationReducer(initialPetAnimation, { type: 'PET_DRESS_UP' }).action,
+  ANIMATION_ACTIONS.DRESS_UP,
+)
+const sleepingAnimation = petAnimationReducer(initialPetAnimation, { type: 'SLEEP' })
+assert.equal(
+  petAnimationReducer(sleepingAnimation, { type: 'WAKE' }).action,
+  ANIMATION_ACTIONS.WAKE,
+)
+assert.equal(
+  petAnimationReducer(initialPetAnimation, { type: 'WAKE' }).action,
+  ANIMATION_ACTIONS.IDLE,
+)
 
 assert.equal(
   petAnimationReducer(initialPetAnimation, { type: 'PET_PAT' }).action,
@@ -304,6 +349,25 @@ assert.equal(pigCareActions[0].label, '摸摸')
 assert.match(pigCareActions[1].message, /小饼干/)
 assert.equal(getPetCareActions('zh-CN', 'cat').length, 0)
 assert.equal(getPetCareToolbarLabel('en'), 'Care for pig')
+assert.match(getPetRelationshipEventCopy('pig', 'zh-CN', 'wake'), /醒啦/)
+assert.match(
+  getPetRelationshipEventCopy('pig', 'zh-CN', 'level_up', { level: 4 }),
+  /Lv\.4/,
+)
+assert.equal(
+  didEquippedOutfitChange(
+    { outfit: { equipped_outfits: { neck: 'pig_basic_scarf' } } },
+    { outfit: { equipped_outfits: { neck: 'pig_basic_scarf' } } },
+  ),
+  false,
+)
+assert.equal(
+  didEquippedOutfitChange(
+    { outfit: { equipped_outfits: { neck: 'pig_basic_scarf' } } },
+    { outfit: { equipped_outfits: { head: 'pig_sleep_cap' } } },
+  ),
+  true,
+)
 
 const fixedNow = new Date('2026-07-06T10:00:00+08:00')
 

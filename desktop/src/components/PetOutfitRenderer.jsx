@@ -17,7 +17,7 @@ function getEffectiveOutfits(petType, action, outfit) {
   if (action === 'reminding') {
     return unlocked.has('pig_bell') ? ['pig_bell'] : []
   }
-  if (action !== 'idle') {
+  if (action !== 'idle' && action !== 'dress_up') {
     return []
   }
 

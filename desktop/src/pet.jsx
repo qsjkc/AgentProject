@@ -21,13 +21,18 @@ import {
 } from './shared/voice-state'
 import { getMessagePool, getPetMessagePool, normalizeLanguage, t } from './shared/i18n'
 import {
+  ANIMATION_ACTIONS,
   createInitialPetAnimationState,
   petAnimationReducer,
 } from './shared/pet-animation-state'
 import { getPetCareActions, getPetCareToolbarLabel } from './shared/pet-care-actions'
-import { getPetReminderCopy } from './shared/pet-personality'
+import {
+  getPetRelationshipEventCopy,
+  getPetReminderCopy,
+} from './shared/pet-personality'
 import {
   createRewardIdempotencyKey,
+  didEquippedOutfitChange,
   normalizePetRelationship,
 } from './shared/pet-relationship'
 import { rewardPetRelationship } from './shared/pet-relationships-api'
@@ -118,6 +123,7 @@ function PetApp() {
   const petTypeRef = useRef(petType)
   const voiceSettingsRef = useRef(voiceSettings)
   const hasSessionRef = useRef(hasSession)
+  const relationshipRef = useRef(null)
   const petPositionRef = useRef({ x: 90, y: 90 })
   const loggerRef = useRef(
     createVoiceDebugLogger((payload) => {
@@ -143,6 +149,7 @@ function PetApp() {
     baseWindowX: 0,
     baseWindowY: 0,
     moved: false,
+    wokeFromSleep: false,
   })
 
   const clearTransientBubbleTimer = useCallback(() => {
@@ -314,6 +321,8 @@ function PetApp() {
 
   useEffect(() => {
     let mounted = true
+    relationshipRef.current = null
+    setPetRelationship(null)
     const loadCachedRelationship = async () => {
       try {
         const cachedRelationship = normalizePetRelationship(
@@ -321,6 +330,7 @@ function PetApp() {
           petType,
         )
         if (mounted) {
+          relationshipRef.current = cachedRelationship
           setPetRelationship(cachedRelationship)
         }
       } catch (error) {
@@ -443,7 +453,33 @@ function PetApp() {
     const unsubscribeRelationship = window.desktopBridge?.onPetRelationshipChanged?.((payload) => {
       const relationship = normalizePetRelationship(payload, petTypeRef.current)
       if (relationship?.pet_type === petTypeRef.current) {
+        const previousRelationship = relationshipRef.current
+        relationshipRef.current = relationship
         setPetRelationship(relationship)
+        if (!previousRelationship) {
+          return
+        }
+        if (relationship.level > previousRelationship.level) {
+          const message = getPetRelationshipEventCopy(
+            relationship.pet_type,
+            languageRef.current,
+            'level_up',
+            relationship,
+          )
+          setTransientBubbleForDuration(message, 3600)
+          dispatchPetAnimation({ type: 'LEVEL_UP', message })
+          return
+        }
+        if (didEquippedOutfitChange(previousRelationship, relationship)) {
+          const message = getPetRelationshipEventCopy(
+            relationship.pet_type,
+            languageRef.current,
+            'dress_up',
+            relationship,
+          )
+          setTransientBubbleForDuration(message, 2800)
+          dispatchPetAnimation({ type: 'PET_DRESS_UP', message })
+        }
       }
     })
 
@@ -452,7 +488,7 @@ function PetApp() {
       unsubscribeVoice?.()
       unsubscribeRelationship?.()
     }
-  }, [])
+  }, [setTransientBubbleForDuration])
 
   useEffect(() => {
     const unsubscribe = window.desktopBridge?.onPetReminderEvent?.((payload) => {
@@ -906,9 +942,6 @@ function PetApp() {
           const label = languageRef.current === 'zh-CN' ? '亲密度' : 'Intimacy'
           showIntimacyFeedback(`+${result.awarded_xp} ${label}`)
         }
-        if (result.level_up) {
-          dispatchPetAnimation({ type: 'LEVEL_UP' })
-        }
         loggerRef.current.event('intimacy:reward', {
           action,
           reason: result.reason,
@@ -1062,8 +1095,18 @@ function PetApp() {
       return
     }
 
+    const wasSleeping = petAnimationState.action === ANIMATION_ACTIONS.SLEEPING
     resetPetActivityTimer()
-    dispatchPetAnimation({ type: 'WAKE' })
+    if (wasSleeping) {
+      const message = getPetRelationshipEventCopy(
+        petTypeRef.current,
+        languageRef.current,
+        'wake',
+        petRelationship,
+      )
+      setTransientBubbleForDuration(message, 2400)
+      dispatchPetAnimation({ type: 'WAKE', message })
+    }
     event.preventDefault()
     try {
       event.currentTarget.setPointerCapture?.(event.pointerId)
@@ -1082,6 +1125,7 @@ function PetApp() {
       baseWindowX: petPositionRef.current.x ?? 90,
       baseWindowY: petPositionRef.current.y ?? 90,
       moved: false,
+      wokeFromSleep: wasSleeping,
     }
   }
 
@@ -1122,6 +1166,7 @@ function PetApp() {
     dragRef.current.latestScreenY = event.screenY
 
     const didMove = dragRef.current.moved
+    const wokeFromSleep = dragRef.current.wokeFromSleep
     settlingPointerRef.current = true
 
     if (didMove) {
@@ -1139,14 +1184,18 @@ function PetApp() {
       baseWindowX: 0,
       baseWindowY: 0,
       moved: false,
+      wokeFromSleep: false,
     }
     settlingPointerRef.current = false
 
-    if (didMove) {
+    if (didMove || wokeFromSleep) {
       suppressClickRef.current = true
       window.setTimeout(() => {
         suppressClickRef.current = false
       }, 240)
+    }
+
+    if (didMove) {
       dispatchPetAnimation({ type: 'PET_DRAG_RELEASE' })
       void rewardInteraction('drag_release')
       setTransientBubbleForDuration(t(languageRef.current, 'dragSaved'), 1500)

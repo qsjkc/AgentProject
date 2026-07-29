@@ -56,6 +56,11 @@ const pigAnimations = {
   confused: [pigConfused01, pigConfused02, pigConfused03, pigConfused04, pigConfused05, pigConfused06],
   reminding: [pigReminding01, pigReminding02, pigReminding03, pigReminding04, pigReminding05, pigReminding06],
   sleeping: [pigSleeping01, pigSleeping02, pigSleeping03, pigSleeping04, pigSleeping05, pigSleeping06],
+  wake: [pigHappy01, pigHappy02, pigHappy03, pigHappy04, pigHappy05, pigHappy06],
+  poke: [pigJump01, pigJump02, pigJump03, pigJump04, pigJump05, pigJump06],
+  drag: [pigWalk01, pigWalk02, pigWalk03, pigWalk04, pigWalk05, pigWalk06],
+  dress_up: [pigIdle01, pigIdle02, pigIdle03, pigIdle04, pigIdle05, pigIdle06],
+  level_up: [pigJump01, pigJump02, pigJump03, pigJump04, pigJump05, pigJump06],
 }
 
 const pigSpriteAnimations = {
