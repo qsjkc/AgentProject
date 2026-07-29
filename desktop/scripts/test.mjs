@@ -228,6 +228,11 @@ assert.match(createRewardIdempotencyKey('pig', 'poke'), /^pet:pig:poke:/)
 const levelUpAnimation = petAnimationReducer(initialPetAnimation, { type: 'LEVEL_UP' })
 assert.equal(levelUpAnimation.action, ANIMATION_ACTIONS.HAPPY)
 
+const draggingAnimation = petAnimationReducer(initialPetAnimation, { type: 'PET_DRAG_START' })
+assert.equal(draggingAnimation.action, ANIMATION_ACTIONS.WALK)
+const dragReleasedAnimation = petAnimationReducer(draggingAnimation, { type: 'PET_DRAG_RELEASE' })
+assert.equal(dragReleasedAnimation.action, ANIMATION_ACTIONS.HAPPY)
+
 const fixedNow = new Date('2026-07-06T10:00:00+08:00')
 
 const todayMeeting = parseOneTimeReminder('下午三点有一个会议', fixedNow)

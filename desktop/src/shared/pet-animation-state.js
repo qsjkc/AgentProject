@@ -45,6 +45,10 @@ export function petAnimationReducer(state, event) {
       return transition(ANIMATION_ACTIONS.CONFUSED, { message: event.message })
     case 'PET_CLICK':
       return transition(ANIMATION_ACTIONS.JUMP)
+    case 'PET_DRAG_START':
+      return transition(ANIMATION_ACTIONS.WALK)
+    case 'PET_DRAG_RELEASE':
+      return transition(ANIMATION_ACTIONS.HAPPY)
     case 'IDLE_TICK':
       return transition(Math.random() > 0.55 ? ANIMATION_ACTIONS.WALK : ANIMATION_ACTIONS.JUMP)
     case 'SLEEP':

@@ -887,6 +887,12 @@ function PetApp() {
     [showIntimacyFeedback],
   )
 
+  useEffect(() => {
+    if (hasSession && preferences.pet_type === petType) {
+      void rewardInteraction('daily_first_wake')
+    }
+  }, [hasSession, petType, preferences.pet_type, rewardInteraction])
+
   const schedulePositionFlush = () => {
     if (rafRef.current) {
       return
@@ -1025,6 +1031,7 @@ function PetApp() {
     const deltaY = event.screenY - dragRef.current.thresholdScreenY
     if (!dragRef.current.moved && (Math.abs(deltaX) >= DRAG_THRESHOLD || Math.abs(deltaY) >= DRAG_THRESHOLD)) {
       dragRef.current.moved = true
+      dispatchPetAnimation({ type: 'PET_DRAG_START' })
     }
 
     if (dragRef.current.moved) {
@@ -1073,6 +1080,8 @@ function PetApp() {
       window.setTimeout(() => {
         suppressClickRef.current = false
       }, 240)
+      dispatchPetAnimation({ type: 'PET_DRAG_RELEASE' })
+      void rewardInteraction('drag_release')
       setTransientBubbleForDuration(t(languageRef.current, 'dragSaved'), 1500)
     }
   }
