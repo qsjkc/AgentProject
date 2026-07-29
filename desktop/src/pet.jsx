@@ -30,12 +30,9 @@ import {
   createRewardIdempotencyKey,
   normalizePetRelationship,
 } from './shared/pet-relationship'
-import {
-  refreshPetRelationship,
-  rewardPetRelationship,
-} from './shared/pet-relationships-api'
+import { rewardPetRelationship } from './shared/pet-relationships-api'
 import { getPetVisual } from './shared/pets'
-import { completeReminder, getPendingReminders } from './shared/reminders-api'
+import { getPendingReminders, markReminderTriggered } from './shared/reminders-api'
 
 const DEFAULT_PREFERENCES = {
   quick_chat_enabled: true,
@@ -617,7 +614,7 @@ function PetApp() {
       }
       inFlight = true
       try {
-        const due = await getPendingReminders(petTypeRef.current, new Date())
+        const due = await getPendingReminders(petTypeRef.current, new Date(), false)
         if (!mounted || !due.length) {
           return
         }
@@ -629,10 +626,7 @@ function PetApp() {
           title: 'Detachym',
           body: copy,
         })
-        await completeReminder(reminder.id)
-        void refreshPetRelationship(petTypeRef.current).catch((error) => {
-          loggerRef.current.error('reminder:relationship-refresh-failed', error)
-        })
+        await markReminderTriggered(reminder.id)
       } catch (error) {
         loggerRef.current.error('reminder:poll-failed', error)
       } finally {

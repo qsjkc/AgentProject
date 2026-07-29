@@ -88,6 +88,7 @@ async def list_reminders(
     pet_type: Optional[PetType] = Query(default=None),
     status: Optional[ReminderStatus] = Query(default=None),
     due_before: Optional[datetime] = Query(default=None),
+    triggered: Optional[bool] = Query(default=None),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -98,6 +99,12 @@ async def list_reminders(
         query = query.where(Reminder.status == status)
     if due_before:
         query = query.where(Reminder.remind_at <= normalize_reminder_datetime(due_before))
+    if triggered is not None:
+        query = query.where(
+            Reminder.triggered_at.is_not(None)
+            if triggered
+            else Reminder.triggered_at.is_(None)
+        )
     query = query.order_by(Reminder.remind_at.asc(), Reminder.id.asc())
     result = await db.execute(query)
     return result.scalars().all()
@@ -154,9 +161,14 @@ async def complete_reminder(
     db: AsyncSession = Depends(get_db),
 ):
     reminder = await get_owned_reminder(reminder_id, current_user, db)
+    if reminder.status == "completed":
+        return reminder
+    if reminder.status == "canceled":
+        raise HTTPException(status_code=409, detail="Canceled reminder cannot be completed")
+
     now = utc_now()
     reminder.status = "completed"
-    reminder.triggered_at = now
+    reminder.triggered_at = reminder.triggered_at or now
     reminder.completed_at = now
     await db.commit()
     await db.refresh(reminder)
@@ -166,4 +178,20 @@ async def complete_reminder(
         reminder=reminder,
         action="reminder_completed",
     )
+    return reminder
+
+
+@router.post("/{reminder_id}/trigger", response_model=ReminderResponse)
+async def trigger_reminder(
+    reminder_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    reminder = await get_owned_reminder(reminder_id, current_user, db)
+    if reminder.status != "pending":
+        raise HTTPException(status_code=409, detail="Only pending reminders can be triggered")
+    if reminder.triggered_at is None:
+        reminder.triggered_at = utc_now()
+        await db.commit()
+        await db.refresh(reminder)
     return reminder

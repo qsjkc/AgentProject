@@ -736,6 +736,86 @@ select {
   color: #e11d48;
 }
 
+.pending-reminder-panel {
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid #e2e8f0;
+}
+
+.pending-reminder-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.pending-reminder-icon-button,
+.pending-reminder-complete {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  padding: 0;
+  border: 1px solid #cbd5e1;
+  border-radius: 50%;
+  background: #fff;
+  color: #475569;
+  cursor: pointer;
+}
+
+.pending-reminder-icon-button:hover:not(:disabled),
+.pending-reminder-icon-button:focus-visible,
+.pending-reminder-complete:hover:not(:disabled),
+.pending-reminder-complete:focus-visible {
+  border-color: #e11d48;
+  color: #e11d48;
+  outline: none;
+}
+
+.pending-reminder-icon-button:disabled,
+.pending-reminder-complete:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.pending-reminder-list {
+  margin-top: 8px;
+  border-top: 1px solid #e2e8f0;
+}
+
+.pending-reminder-item {
+  min-height: 54px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 28px;
+  align-items: center;
+  gap: 8px;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.pending-reminder-copy {
+  min-width: 0;
+}
+
+.pending-reminder-title {
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.pending-reminder-time,
+.pending-reminder-empty,
+.pending-reminder-error {
+  margin-top: 4px;
+  color: #64748b;
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.pending-reminder-error {
+  color: #be123c;
+}
+
 .quick-chat-stage {
   position: relative;
   width: 100%;

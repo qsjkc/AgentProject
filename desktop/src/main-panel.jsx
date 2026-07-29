@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import ReactDOM from 'react-dom/client'
 
 import './desktop.css'
+import { PendingReminderPanel } from './components/PendingReminderPanel'
 import { PetOutfitPanel } from './components/PetOutfitPanel'
 import {
   checkApiConnection,
@@ -858,6 +859,27 @@ function MainPanelApp() {
     }
   }
 
+  const handleReminderCompleted = async () => {
+    try {
+      const nextRelationship = await refreshPetRelationship(currentPetType)
+      setPetRelationship(nextRelationship)
+      setStatusText(
+        language === 'zh-CN'
+          ? '提醒已完成，亲密度已更新。'
+          : 'Reminder completed. Intimacy updated.',
+      )
+    } catch (error) {
+      setStatusText(
+        formatError(
+          error,
+          language === 'zh-CN'
+            ? '提醒已完成，但亲密度同步失败。'
+            : 'Reminder completed, but intimacy sync failed.',
+        ),
+      )
+    }
+  }
+
   const handleVoiceEnabledChange = async (enabled) => {
     const nextEnabled = Boolean(enabled)
     if (savingVoiceSettings || nextEnabled === voiceSettings.desktop_voice_enabled) {
@@ -1076,6 +1098,12 @@ function MainPanelApp() {
                 onChange={(slot, itemId) => {
                   void handleOutfitChange(slot, itemId)
                 }}
+              />
+              <PendingReminderPanel
+                key={currentPetType}
+                language={language}
+                petType={currentPetType}
+                onCompleted={handleReminderCompleted}
               />
               <VoiceSettingsPanel
                 language={language}
