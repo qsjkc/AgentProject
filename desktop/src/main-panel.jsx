@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import ReactDOM from 'react-dom/client'
 
 import './desktop.css'
@@ -18,6 +18,11 @@ import {
 } from './shared/api'
 import { normalizeLanguage, SUPPORTED_LANGUAGES, t } from './shared/i18n'
 import { getPetReminderCopy } from './shared/pet-personality'
+import {
+  getRelationshipStageLabel,
+  normalizePetRelationship,
+} from './shared/pet-relationship'
+import { getPetRelationship } from './shared/pet-relationships-api'
 import { getPetVisual } from './shared/pets'
 import { parseOneTimeReminder } from './shared/reminder-parser'
 import { createReminder, getPendingReminderSummary } from './shared/reminders-api'
@@ -60,6 +65,58 @@ function LanguageSelector({ language, onChange }) {
         ))}
       </select>
     </label>
+  )
+}
+
+function PetRelationshipSummary({ language, petType, relationship, loading }) {
+  const stageLabel = relationship
+    ? getRelationshipStageLabel(language, relationship.relationship_stage)
+    : language === 'zh-CN'
+      ? '正在同步'
+      : 'Syncing'
+  const progress = relationship?.progress || { current: 0, required: 0, percent: 0 }
+  const progressText = progress.required > 0
+    ? `${progress.current} / ${progress.required}`
+    : relationship
+      ? language === 'zh-CN'
+        ? '已满级'
+        : 'Max level'
+      : '--'
+
+  return (
+    <section
+      className={`relationship-summary relationship-summary-${petType}`}
+      aria-busy={loading}
+      aria-label={language === 'zh-CN' ? '宠物亲密度' : 'Pet intimacy'}
+    >
+      <div className="relationship-heading">
+        <div>
+          <div className="relationship-label">
+            {language === 'zh-CN' ? '亲密度' : 'Intimacy'}
+          </div>
+          <div className="relationship-level">
+            Lv.{relationship?.level ?? '--'}
+          </div>
+        </div>
+        <div className="relationship-stage">{stageLabel}</div>
+      </div>
+      <div
+        className="relationship-progress"
+        role="progressbar"
+        aria-valuemin="0"
+        aria-valuemax="100"
+        aria-valuenow={Math.round(progress.percent)}
+      >
+        <div
+          className="relationship-progress-value"
+          style={{ width: `${Math.max(0, Math.min(100, progress.percent))}%` }}
+        />
+      </div>
+      <div className="relationship-progress-copy">
+        <span>{progressText}</span>
+        <span>{relationship ? `${relationship.intimacy_xp} XP` : ''}</span>
+      </div>
+    </section>
   )
 }
 
@@ -282,6 +339,9 @@ function MainPanelApp() {
   const [apiBaseUrl, setApiBaseUrlState] = useState('')
   const [language, setLanguageState] = useState('zh-CN')
   const [voiceSettings, setVoiceSettingsState] = useState(DEFAULT_VOICE_SETTINGS)
+  const [petRelationship, setPetRelationship] = useState(null)
+  const [petRelationshipLoading, setPetRelationshipLoading] = useState(false)
+  const relationshipRequestRef = useRef(0)
 
   const activeSession = useMemo(
     () => sessions.find((session) => session.id === activeSessionId) ?? null,
@@ -293,6 +353,43 @@ function MainPanelApp() {
   const updateLanguage = async (nextLanguage) => {
     const savedLanguage = await setLanguage(nextLanguage)
     setLanguageState(normalizeLanguage(savedLanguage))
+  }
+
+  const loadPetRelationship = async (petType) => {
+    const requestId = relationshipRequestRef.current + 1
+    relationshipRequestRef.current = requestId
+    setPetRelationshipLoading(true)
+
+    let cachedRelationship = null
+    try {
+      cachedRelationship = normalizePetRelationship(
+        await window.desktopBridge?.getCachedPetRelationship?.(petType),
+        petType,
+      )
+      if (cachedRelationship && relationshipRequestRef.current === requestId) {
+        setPetRelationship(cachedRelationship)
+      }
+
+      const remoteRelationship = await getPetRelationship(petType)
+      if (relationshipRequestRef.current !== requestId) {
+        return
+      }
+      setPetRelationship(remoteRelationship)
+      await window.desktopBridge?.cachePetRelationship?.(remoteRelationship)
+    } catch (error) {
+      if (!cachedRelationship && relationshipRequestRef.current === requestId) {
+        setPetRelationship(null)
+      }
+      await logDesktopDebug({
+        event: 'main-panel-relationship-load-failed',
+        petType,
+        reason: error instanceof Error ? error.message : String(error),
+      })
+    } finally {
+      if (relationshipRequestRef.current === requestId) {
+        setPetRelationshipLoading(false)
+      }
+    }
   }
 
   const loadDashboard = async () => {
@@ -313,6 +410,7 @@ function MainPanelApp() {
       setMessages([])
     }
     setAuthenticated(true)
+    void loadPetRelationship(me?.preferences?.pet_type || 'cat')
     await window.desktopBridge?.syncPetState?.({
       source: 'main-panel',
       hasSession: true,
@@ -392,6 +490,16 @@ function MainPanelApp() {
       active = false
     }
   }, [])
+
+  useEffect(() => {
+    const unsubscribe = window.desktopBridge?.onPetRelationshipChanged?.((payload) => {
+      const relationship = normalizePetRelationship(payload, currentPetType)
+      if (relationship?.pet_type === currentPetType) {
+        setPetRelationship(relationship)
+      }
+    })
+    return () => unsubscribe?.()
+  }, [currentPetType])
 
   useEffect(() => {
     const unsubscribe = window.desktopBridge?.onVoiceSettingsChanged?.((payload) => {
@@ -662,6 +770,7 @@ function MainPanelApp() {
         throw new Error(switchedResult?.reason || t(language, 'messageDeliveryFailed'))
       }
       setUser((current) => (current ? { ...current, preferences: nextPreferences } : current))
+      void loadPetRelationship(nextPetType)
       await logDesktopDebug({
         event: 'main-panel-switch-success',
         petType: switchedResult?.state?.petType || nextPetType,
@@ -740,6 +849,8 @@ function MainPanelApp() {
     setDocuments([])
     setKnowledgeStatusText('')
     setKnowledgeSources([])
+    relationshipRequestRef.current += 1
+    setPetRelationship(null)
     await window.desktopBridge?.syncPetState?.({
       source: 'main-panel',
       hasSession: false,
@@ -765,6 +876,8 @@ function MainPanelApp() {
     setDocuments([])
     setKnowledgeStatusText('')
     setKnowledgeSources([])
+    relationshipRequestRef.current += 1
+    setPetRelationship(null)
     await logDesktopDebug({ event: 'main-panel-change-server' })
     setStatusText(t(language, 'updateServerUrlHint'))
   }
@@ -878,6 +991,12 @@ function MainPanelApp() {
                   void handlePetSelect(nextPetType)
                 }}
                 saving={savingPet}
+              />
+              <PetRelationshipSummary
+                language={language}
+                petType={currentPetType}
+                relationship={petRelationship}
+                loading={petRelationshipLoading}
               />
               <VoiceSettingsPanel
                 language={language}

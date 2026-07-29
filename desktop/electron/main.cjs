@@ -197,6 +197,7 @@ async function createStore() {
           bubble_frequency: 120,
         },
       },
+      petRelationshipCache: {},
       quickBounds: { width: QUICK_CHAT_WIDTH, height: QUICK_CHAT_HEIGHT },
       mainBounds: { width: MAIN_PANEL_WIDTH, height: MAIN_PANEL_HEIGHT },
       voiceSettings: DEFAULT_VOICE_SETTINGS,
@@ -290,6 +291,50 @@ function getPetState() {
 
 function getVoiceSettings() {
   return normalizeVoiceSettings(getStore().get('voiceSettings') || DEFAULT_VOICE_SETTINGS)
+}
+
+function getCachedPetRelationship(petType) {
+  const normalizedPetType = normalizePetType(petType)
+  const cache = getStore().get('petRelationshipCache') || {}
+  return cache[normalizedPetType] || null
+}
+
+function sendPetRelationshipToWindow(windowInstance, relationship) {
+  if (!windowInstance || windowInstance.isDestroyed()) {
+    return
+  }
+
+  const emit = () => {
+    if (!windowInstance || windowInstance.isDestroyed()) {
+      return
+    }
+    windowInstance.webContents.send('desktop:pet-relationship-changed', relationship)
+  }
+
+  if (windowInstance.webContents.isLoading()) {
+    windowInstance.webContents.once('did-finish-load', emit)
+    return
+  }
+
+  emit()
+}
+
+function cachePetRelationship(payload = {}) {
+  const petType = normalizePetType(payload.pet_type || payload.petType)
+  const cache = getStore().get('petRelationshipCache') || {}
+  const nextRelationship = {
+    ...payload,
+    pet_type: petType,
+    cached_at: new Date().toISOString(),
+  }
+  getStore().set('petRelationshipCache', {
+    ...cache,
+    [petType]: nextRelationship,
+  })
+  sendPetRelationshipToWindow(petWindow, nextRelationship)
+  sendPetRelationshipToWindow(quickChatWindow, nextRelationship)
+  sendPetRelationshipToWindow(mainPanelWindow, nextRelationship)
+  return nextRelationship
 }
 
 function setVoiceSettings(patch = {}) {
@@ -881,6 +926,7 @@ function syncPetState(payload = {}) {
 function getRuntimeState() {
   return {
     petState: getPetState(),
+    petRelationshipCache: getStore().get('petRelationshipCache') || {},
     voiceSettings: getVoiceSettings(),
     voiceGlobalShortcut: {
       registered: registeredVoiceGlobalShortcut,
@@ -918,6 +964,8 @@ function registerIpc() {
   ipcMain.handle('desktop:sync-pet-state', async (_event, payload) => syncPetState(payload))
   ipcMain.handle('desktop:notify-pet-reminder-event', async (_event, payload) => sendReminderEventToPet(payload))
   ipcMain.handle('desktop:get-pet-state', async () => getPetState())
+  ipcMain.handle('desktop:get-cached-pet-relationship', async (_event, petType) => getCachedPetRelationship(petType))
+  ipcMain.handle('desktop:cache-pet-relationship', async (_event, payload) => cachePetRelationship(payload))
 
   ipcMain.handle('desktop:toggle-auto-launch', async (_event, enabled) => {
     getStore().set('autoLaunch', enabled)
@@ -975,6 +1023,7 @@ function registerIpc() {
   })
   ipcMain.handle('desktop:clear-session-token', async () => {
     getStore().set('sessionToken', null)
+    getStore().set('petRelationshipCache', {})
     syncPetState({
       hasSession: false,
       petType: 'cat',

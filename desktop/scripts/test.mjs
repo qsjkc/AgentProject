@@ -7,6 +7,10 @@ import {
   createInitialPetAnimationState,
   petAnimationReducer,
 } from '../src/shared/pet-animation-state.js'
+import {
+  getRelationshipStageLabel,
+  normalizePetRelationship,
+} from '../src/shared/pet-relationship.js'
 import { parseOneTimeReminder } from '../src/shared/reminder-parser.js'
 import {
   decodeRtsSubtitlePayload,
@@ -196,6 +200,28 @@ assert.equal(released.locked, false)
 
 const confused = petAnimationReducer(initialPetAnimation, { type: 'REMINDER_PARSE_FAILED' })
 assert.equal(confused.action, ANIMATION_ACTIONS.CONFUSED)
+
+const normalizedRelationship = normalizePetRelationship({
+  pet_type: 'pig',
+  intimacy_xp: 145,
+  level: 2,
+  relationship_stage: 'getting_familiar',
+  current_mood: 'idle',
+  progress: {
+    current: 45,
+    required: 160,
+    percent: 28.12,
+  },
+})
+assert.equal(normalizedRelationship.pet_type, 'pig')
+assert.equal(normalizedRelationship.level, 2)
+assert.deepEqual(normalizedRelationship.progress, {
+  current: 45,
+  required: 160,
+  percent: 28.12,
+})
+assert.equal(getRelationshipStageLabel('zh-CN', 'getting_familiar'), '有点熟')
+assert.equal(getRelationshipStageLabel('en', 'deep_bond'), 'Deeply bonded')
 
 const fixedNow = new Date('2026-07-06T10:00:00+08:00')
 
