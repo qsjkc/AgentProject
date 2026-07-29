@@ -10,6 +10,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.core.time import utc_now
 from app.models.database import PetIntimacyEvent, PetRelationship
+from app.services.pet_outfits import (
+    build_pet_outfit_state,
+    get_pet_outfit_item,
+    merge_unlocked_outfit_ids,
+    normalize_equipped_outfits,
+)
 
 
 RELATIONSHIP_LEVELS = (
@@ -95,6 +101,24 @@ async def get_or_create_pet_relationship(
     )
     relationship = result.scalar_one_or_none()
     if relationship is not None:
+        unlocked_outfits = merge_unlocked_outfit_ids(
+            pet_type,
+            relationship.level,
+            relationship.unlocked_outfits,
+        )
+        equipped_outfits = normalize_equipped_outfits(
+            pet_type,
+            unlocked_outfits,
+            relationship.equipped_outfits,
+        )
+        if (
+            unlocked_outfits != (relationship.unlocked_outfits or [])
+            or equipped_outfits != (relationship.equipped_outfits or {})
+        ):
+            relationship.unlocked_outfits = unlocked_outfits
+            relationship.equipped_outfits = equipped_outfits
+            await db.commit()
+            await db.refresh(relationship)
         return relationship
 
     relationship = PetRelationship(
@@ -104,6 +128,8 @@ async def get_or_create_pet_relationship(
         level=1,
         relationship_stage="new_friend",
         current_mood="idle",
+        unlocked_outfits=merge_unlocked_outfit_ids(pet_type, 1),
+        equipped_outfits={},
     )
     db.add(relationship)
     try:
@@ -134,6 +160,12 @@ def serialize_pet_relationship(relationship: PetRelationship) -> dict:
         "relationship_stage": stage,
         "current_mood": relationship.current_mood,
         "progress": get_relationship_progress(relationship.intimacy_xp),
+        "outfit": build_pet_outfit_state(
+            relationship.pet_type,
+            level,
+            relationship.unlocked_outfits,
+            relationship.equipped_outfits,
+        ),
         "last_active_at": relationship.last_active_at,
         "last_greeting_at": relationship.last_greeting_at,
         "last_level_up_at": relationship.last_level_up_at,
@@ -328,6 +360,11 @@ async def award_pet_relationship(
     relationship.level, relationship.relationship_stage = get_relationship_level(
         relationship.intimacy_xp
     )
+    relationship.unlocked_outfits = merge_unlocked_outfit_ids(
+        pet_type,
+        relationship.level,
+        relationship.unlocked_outfits,
+    )
     relationship.last_active_at = award_time
     level_up = relationship.level > previous_level
     if level_up:
@@ -389,3 +426,47 @@ async def award_pet_relationship(
         action_daily_awarded_xp=action_total + awarded_xp,
         level_up=level_up,
     )
+
+
+async def update_pet_outfit(
+    db: AsyncSession,
+    *,
+    user_id: int,
+    pet_type: str,
+    slot: str,
+    item_id: str | None,
+) -> dict:
+    relationship = await get_or_create_pet_relationship(
+        db,
+        user_id=user_id,
+        pet_type=pet_type,
+    )
+    unlocked_outfits = merge_unlocked_outfit_ids(
+        pet_type,
+        relationship.level,
+        relationship.unlocked_outfits,
+    )
+    equipped_outfits = normalize_equipped_outfits(
+        pet_type,
+        unlocked_outfits,
+        relationship.equipped_outfits,
+    )
+
+    if item_id is None:
+        equipped_outfits.pop(slot, None)
+    else:
+        item = get_pet_outfit_item(pet_type, item_id)
+        if item is None:
+            raise ValueError("unknown_outfit")
+        if item["slot"] != slot:
+            raise ValueError("outfit_slot_mismatch")
+        if item_id not in unlocked_outfits:
+            raise PermissionError("outfit_locked")
+        equipped_outfits[slot] = item_id
+
+    relationship.unlocked_outfits = unlocked_outfits
+    relationship.equipped_outfits = equipped_outfits
+    relationship.last_active_at = utc_now().replace(tzinfo=None)
+    await db.commit()
+    await db.refresh(relationship)
+    return serialize_pet_relationship(relationship)

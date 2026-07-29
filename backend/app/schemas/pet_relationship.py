@@ -32,12 +32,18 @@ RelationshipStage = Literal[
     "trusted_partner",
     "deep_bond",
 ]
+OutfitSlot = Literal["head", "neck", "side", "scene"]
 
 
 class PetRelationshipProgress(BaseModel):
     current: int = Field(ge=0)
     required: int = Field(ge=0)
     percent: float = Field(ge=0, le=100)
+
+
+class PetOutfitState(BaseModel):
+    unlocked_outfit_ids: list[str]
+    equipped_outfits: dict[OutfitSlot, str]
 
 
 class PetRelationshipResponse(BaseModel):
@@ -49,6 +55,7 @@ class PetRelationshipResponse(BaseModel):
     relationship_stage: RelationshipStage
     current_mood: str
     progress: PetRelationshipProgress
+    outfit: PetOutfitState
     last_active_at: Optional[datetime] = None
     last_greeting_at: Optional[datetime] = None
     last_level_up_at: Optional[datetime] = None
@@ -59,6 +66,11 @@ class PetRelationshipResponse(BaseModel):
 class PetRelationshipRewardRequest(BaseModel):
     action: PetRewardAction
     idempotency_key: str = Field(min_length=1, max_length=128)
+
+
+class PetOutfitUpdateRequest(BaseModel):
+    slot: OutfitSlot
+    item_id: Optional[str] = Field(default=None, max_length=64)
 
 
 class PetRelationshipRewardResponse(BaseModel):

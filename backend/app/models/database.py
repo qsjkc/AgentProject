@@ -4,7 +4,19 @@ from typing import AsyncGenerator
 
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import Boolean, CheckConstraint, Column, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    Column,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    JSON,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy import inspect
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import declarative_base, relationship
@@ -130,6 +142,16 @@ async def ensure_legacy_sqlite_schema(conn) -> None:
     if documents_columns:
         await conn.exec_driver_sql(
             "UPDATE documents SET updated_at = created_at WHERE updated_at IS NULL"
+        )
+
+    relationship_columns = await get_sqlite_table_columns(conn, "pet_relationships")
+    if relationship_columns and "unlocked_outfits" not in relationship_columns:
+        await conn.exec_driver_sql(
+            "ALTER TABLE pet_relationships ADD COLUMN unlocked_outfits JSON NOT NULL DEFAULT '[]'"
+        )
+    if relationship_columns and "equipped_outfits" not in relationship_columns:
+        await conn.exec_driver_sql(
+            "ALTER TABLE pet_relationships ADD COLUMN equipped_outfits JSON NOT NULL DEFAULT '{}'"
         )
 
 
@@ -258,6 +280,8 @@ class PetRelationship(Base):
     level = Column(Integer, nullable=False, default=1)
     relationship_stage = Column(String(32), nullable=False, default="new_friend")
     current_mood = Column(String(20), nullable=False, default="idle")
+    unlocked_outfits = Column(JSON, nullable=False, default=list)
+    equipped_outfits = Column(JSON, nullable=False, default=dict)
     last_active_at = Column(DateTime, nullable=True)
     last_greeting_at = Column(DateTime, nullable=True)
     last_level_up_at = Column(DateTime, nullable=True)

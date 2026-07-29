@@ -117,6 +117,10 @@ async def test_relationship_is_created_per_user_and_pet(client: AsyncClient):
         "required": 100,
         "percent": 0.0,
     }
+    assert pig.json()["outfit"] == {
+        "unlocked_outfit_ids": ["pig_basic_scarf"],
+        "equipped_outfits": {},
+    }
 
     same_pig = await client.get("/api/v1/pets/pig/relationship", headers=alice_headers)
     assert same_pig.status_code == 200
@@ -129,6 +133,45 @@ async def test_relationship_is_created_per_user_and_pet(client: AsyncClient):
     bob_pig = await client.get("/api/v1/pets/pig/relationship", headers=bob_headers)
     assert bob_pig.status_code == 200
     assert bob_pig.json()["id"] != pig.json()["id"]
+
+
+@pytest.mark.asyncio
+async def test_outfit_api_enforces_slot_and_unlock_level(client: AsyncClient):
+    headers = await register_and_login(client, "outfit-api", "outfit-api@example.com")
+
+    equipped = await client.put(
+        "/api/v1/pets/pig/relationship/outfit",
+        headers=headers,
+        json={"slot": "neck", "item_id": "pig_basic_scarf"},
+    )
+    assert equipped.status_code == 200
+    assert equipped.json()["outfit"]["equipped_outfits"] == {
+        "neck": "pig_basic_scarf",
+    }
+
+    locked = await client.put(
+        "/api/v1/pets/pig/relationship/outfit",
+        headers=headers,
+        json={"slot": "head", "item_id": "pig_sleep_cap"},
+    )
+    assert locked.status_code == 409
+    assert locked.json()["detail"] == "outfit_locked"
+
+    wrong_slot = await client.put(
+        "/api/v1/pets/pig/relationship/outfit",
+        headers=headers,
+        json={"slot": "head", "item_id": "pig_basic_scarf"},
+    )
+    assert wrong_slot.status_code == 422
+    assert wrong_slot.json()["detail"] == "outfit_slot_mismatch"
+
+    cleared = await client.put(
+        "/api/v1/pets/pig/relationship/outfit",
+        headers=headers,
+        json={"slot": "neck", "item_id": None},
+    )
+    assert cleared.status_code == 200
+    assert cleared.json()["outfit"]["equipped_outfits"] == {}
 
 
 @pytest.mark.asyncio
@@ -226,4 +269,8 @@ async def test_reward_policy_caps_daily_action_and_levels_up(client: AsyncClient
         "required": 160,
         "percent": 0.0,
     }
+    assert final_result["relationship"]["outfit"]["unlocked_outfit_ids"] == [
+        "pig_basic_scarf",
+        "pig_sleep_cap",
+    ]
     assert final_result["level_up"] is True
