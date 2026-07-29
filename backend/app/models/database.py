@@ -4,7 +4,7 @@ from typing import AsyncGenerator
 
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import Boolean, CheckConstraint, Column, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, CheckConstraint, Column, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy import inspect
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import declarative_base, relationship
@@ -24,6 +24,7 @@ LEGACY_APP_TABLES = {
     "documents",
     "reminders",
     "pet_relationships",
+    "pet_intimacy_events",
 }
 
 engine = create_async_engine(
@@ -151,6 +152,7 @@ class User(Base):
     preferences = relationship("UserPreference", back_populates="user", uselist=False, cascade="all, delete-orphan")
     reminders = relationship("Reminder", back_populates="user", cascade="all, delete-orphan")
     pet_relationships = relationship("PetRelationship", back_populates="user", cascade="all, delete-orphan")
+    pet_intimacy_events = relationship("PetIntimacyEvent", back_populates="user", cascade="all, delete-orphan")
 
 
 class UserPreference(Base):
@@ -263,3 +265,30 @@ class PetRelationship(Base):
     updated_at = Column(DateTime, default=utc_now, onupdate=utc_now, nullable=False)
 
     user = relationship("User", back_populates="pet_relationships")
+    intimacy_events = relationship("PetIntimacyEvent", back_populates="relationship", cascade="all, delete-orphan")
+
+
+class PetIntimacyEvent(Base):
+    __tablename__ = "pet_intimacy_events"
+    __table_args__ = (
+        UniqueConstraint("user_id", "idempotency_key", name="uq_pet_intimacy_events_user_key"),
+        CheckConstraint("xp_awarded > 0", name="ck_pet_intimacy_events_xp_positive"),
+        Index("ix_pet_intimacy_events_daily", "relationship_id", "awarded_at"),
+        Index("ix_pet_intimacy_events_action_daily", "relationship_id", "action", "awarded_at"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    relationship_id = Column(
+        Integer,
+        ForeignKey("pet_relationships.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    pet_type = Column(String(20), nullable=False)
+    action = Column(String(32), nullable=False)
+    xp_awarded = Column(Integer, nullable=False)
+    idempotency_key = Column(String(128), nullable=False)
+    awarded_at = Column(DateTime, default=utc_now, nullable=False)
+
+    user = relationship("User", back_populates="pet_intimacy_events")
+    relationship = relationship("PetRelationship", back_populates="intimacy_events")

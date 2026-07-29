@@ -1,5 +1,6 @@
 import os
 import shutil
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -21,6 +22,7 @@ os.environ["INITIAL_ADMIN_PASSWORD"] = "ChangeThisPassword123!"
 
 from app.main import app  # noqa: E402
 from app.services.pet_relationships import (  # noqa: E402
+    award_pet_relationship,
     get_relationship_level,
     get_relationship_progress,
 )
@@ -127,3 +129,101 @@ async def test_relationship_is_created_per_user_and_pet(client: AsyncClient):
     bob_pig = await client.get("/api/v1/pets/pig/relationship", headers=bob_headers)
     assert bob_pig.status_code == 200
     assert bob_pig.json()["id"] != pig.json()["id"]
+
+
+@pytest.mark.asyncio
+async def test_reward_api_enforces_idempotency_and_cooldown(client: AsyncClient):
+    headers = await register_and_login(client, "reward-api", "reward-api@example.com")
+
+    awarded = await client.post(
+        "/api/v1/pets/pig/relationship/rewards",
+        headers=headers,
+        json={"action": "poke", "idempotency_key": "poke-1"},
+    )
+    assert awarded.status_code == 200
+    assert awarded.json()["reason"] == "awarded"
+    assert awarded.json()["awarded_xp"] == 1
+    assert awarded.json()["relationship"]["intimacy_xp"] == 1
+
+    duplicate = await client.post(
+        "/api/v1/pets/pig/relationship/rewards",
+        headers=headers,
+        json={"action": "poke", "idempotency_key": "poke-1"},
+    )
+    assert duplicate.status_code == 200
+    assert duplicate.json()["reason"] == "duplicate"
+    assert duplicate.json()["awarded_xp"] == 0
+    assert duplicate.json()["relationship"]["intimacy_xp"] == 1
+
+    cooling_down = await client.post(
+        "/api/v1/pets/pig/relationship/rewards",
+        headers=headers,
+        json={"action": "poke", "idempotency_key": "poke-2"},
+    )
+    assert cooling_down.status_code == 200
+    assert cooling_down.json()["reason"] == "cooldown"
+    assert cooling_down.json()["cooldown_remaining_seconds"] > 0
+
+    invalid_action = await client.post(
+        "/api/v1/pets/pig/relationship/rewards",
+        headers=headers,
+        json={"action": "unknown", "idempotency_key": "bad-action"},
+    )
+    assert invalid_action.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_reward_policy_caps_daily_action_and_levels_up(client: AsyncClient):
+    headers = await register_and_login(client, "reward-policy", "reward-policy@example.com")
+    relationship_response = await client.get("/api/v1/pets/pig/relationship", headers=headers)
+    assert relationship_response.status_code == 200
+    user_id = relationship_response.json()["user_id"]
+
+    from app.models.database import async_session_maker  # noqa: E402
+
+    first_day = datetime(2026, 7, 28, 1, 0, 0)
+    async with async_session_maker() as session:
+        for index in range(5):
+            result = await award_pet_relationship(
+                session,
+                user_id=user_id,
+                pet_type="pig",
+                action="reminder_completed",
+                idempotency_key=f"day-one-{index}",
+                now=first_day + timedelta(seconds=index),
+            )
+            assert result["reason"] == "awarded"
+
+        capped = await award_pet_relationship(
+            session,
+            user_id=user_id,
+            pet_type="pig",
+            action="reminder_completed",
+            idempotency_key="day-one-capped",
+            now=first_day + timedelta(minutes=1),
+        )
+        assert capped["reason"] == "action_daily_cap"
+        assert capped["relationship"]["intimacy_xp"] == 50
+
+        second_day = first_day + timedelta(days=1)
+        final_result = None
+        for index in range(5):
+            final_result = await award_pet_relationship(
+                session,
+                user_id=user_id,
+                pet_type="pig",
+                action="reminder_completed",
+                idempotency_key=f"day-two-{index}",
+                now=second_day + timedelta(seconds=index),
+            )
+
+    assert final_result is not None
+    assert final_result["relationship"]["intimacy_xp"] == 100
+    assert final_result["relationship"]["level"] == 2
+    assert final_result["relationship"]["relationship_stage"] == "getting_familiar"
+    assert final_result["relationship"]["progress"] == {
+        "current": 0,
+        "required": 160,
+        "percent": 0.0,
+    }
+    assert final_result["level_up"] is True
