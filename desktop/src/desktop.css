@@ -259,6 +259,12 @@ select {
   padding: 18px;
 }
 
+.window-card-main {
+  height: 100vh;
+  min-height: 0;
+  overflow: hidden;
+}
+
 .window-titlebar {
   display: flex;
   align-items: center;
@@ -590,6 +596,144 @@ select {
   color: #64748b;
   font-size: 11px;
   font-variant-numeric: tabular-nums;
+}
+
+.outfit-panel {
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid #e2e8f0;
+}
+
+.outfit-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.outfit-clear-button {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid #cbd5e1;
+  border-radius: 50%;
+  background: #fff;
+  color: #475569;
+  cursor: pointer;
+}
+
+.outfit-clear-button:hover:not(:disabled),
+.outfit-clear-button:focus-visible {
+  border-color: #e11d48;
+  color: #e11d48;
+  outline: none;
+}
+
+.outfit-clear-button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.outfit-slot-tabs {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 2px;
+  margin-top: 12px;
+  padding: 3px;
+  border-radius: 8px;
+  background: #e2e8f0;
+}
+
+.outfit-slot-tab {
+  min-width: 0;
+  padding: 7px 4px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: #64748b;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.outfit-slot-tab.active {
+  background: #fff;
+  color: #0f172a;
+  font-weight: 700;
+}
+
+.outfit-slot-tab:focus-visible {
+  outline: 2px solid #e11d48;
+  outline-offset: 1px;
+}
+
+.outfit-options {
+  margin-top: 8px;
+  border-top: 1px solid #e2e8f0;
+}
+
+.outfit-option {
+  width: 100%;
+  min-height: 66px;
+  display: grid;
+  grid-template-columns: 52px minmax(0, 1fr) 20px;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 4px;
+  border: 0;
+  border-bottom: 1px solid #e2e8f0;
+  border-radius: 4px;
+  background: transparent;
+  color: #0f172a;
+  text-align: left;
+  cursor: pointer;
+}
+
+.outfit-option:hover:not(:disabled) {
+  background: #f8fafc;
+}
+
+.outfit-option.active {
+  background: #fff1f2;
+}
+
+.outfit-option:focus-visible {
+  outline: 2px solid #e11d48;
+  outline-offset: -2px;
+}
+
+.outfit-option:disabled:not(.active) {
+  color: #94a3b8;
+  cursor: default;
+}
+
+.outfit-option-preview {
+  width: 52px;
+  height: 52px;
+}
+
+.outfit-option-copy {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.outfit-option-name {
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.outfit-option-status {
+  color: #64748b;
+  font-size: 10px;
+}
+
+.outfit-option-state {
+  display: grid;
+  place-items: center;
+  color: #e11d48;
 }
 
 .quick-chat-stage {

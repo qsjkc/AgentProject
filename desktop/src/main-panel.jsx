@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import ReactDOM from 'react-dom/client'
 
 import './desktop.css'
+import { PetOutfitPanel } from './components/PetOutfitPanel'
 import {
   checkApiConnection,
   clearSessionToken,
@@ -19,12 +20,15 @@ import {
 import { normalizeLanguage, SUPPORTED_LANGUAGES, t } from './shared/i18n'
 import { getPetReminderCopy } from './shared/pet-personality'
 import {
+  createRewardIdempotencyKey,
   getRelationshipStageLabel,
   normalizePetRelationship,
 } from './shared/pet-relationship'
 import {
   getPetRelationship,
   refreshPetRelationship,
+  rewardPetRelationship,
+  updatePetOutfit,
 } from './shared/pet-relationships-api'
 import { getPetVisual } from './shared/pets'
 import { parseOneTimeReminder } from './shared/reminder-parser'
@@ -338,6 +342,7 @@ function MainPanelApp() {
   const [knowledgeSources, setKnowledgeSources] = useState([])
   const [loading, setLoading] = useState(false)
   const [savingPet, setSavingPet] = useState(false)
+  const [savingOutfit, setSavingOutfit] = useState(false)
   const [savingVoiceSettings, setSavingVoiceSettings] = useState(false)
   const [apiBaseUrl, setApiBaseUrlState] = useState('')
   const [language, setLanguageState] = useState('zh-CN')
@@ -531,6 +536,7 @@ function MainPanelApp() {
         sessionCount: sessions.length,
         messageCount: messages.length,
         savingPet,
+        savingOutfit,
         loading,
         useRag,
       })
@@ -554,6 +560,7 @@ function MainPanelApp() {
     sessions.length,
     messages.length,
     savingPet,
+    savingOutfit,
     loading,
     useRag,
   ])
@@ -798,6 +805,59 @@ function MainPanelApp() {
     }
   }
 
+  const handleOutfitChange = async (slot, itemId) => {
+    if (
+      currentPetType !== 'pig'
+      || !petRelationship
+      || savingOutfit
+    ) {
+      return
+    }
+
+    setSavingOutfit(true)
+    try {
+      let nextRelationship = await updatePetOutfit(currentPetType, slot, itemId)
+      setPetRelationship(nextRelationship)
+
+      try {
+        const reward = await rewardPetRelationship(
+          currentPetType,
+          'dress_up',
+          createRewardIdempotencyKey(currentPetType, 'dress_up'),
+        )
+        if (reward.relationship) {
+          nextRelationship = reward.relationship
+          setPetRelationship(nextRelationship)
+          await window.desktopBridge?.cachePetRelationship?.(nextRelationship)
+        }
+        setStatusText(
+          language === 'zh-CN'
+            ? reward.awarded_xp > 0
+              ? `装扮已保存，亲密度 +${reward.awarded_xp}。`
+              : '装扮已保存。'
+            : reward.awarded_xp > 0
+              ? `Outfit saved. Intimacy +${reward.awarded_xp}.`
+              : 'Outfit saved.',
+        )
+      } catch (rewardError) {
+        setStatusText(language === 'zh-CN' ? '装扮已保存。' : 'Outfit saved.')
+        await logDesktopDebug({
+          event: 'main-panel-outfit-reward-failed',
+          reason: rewardError instanceof Error ? rewardError.message : String(rewardError),
+        })
+      }
+    } catch (error) {
+      setStatusText(
+        formatError(
+          error,
+          language === 'zh-CN' ? '保存装扮失败。' : 'Failed to save outfit.',
+        ),
+      )
+    } finally {
+      setSavingOutfit(false)
+    }
+  }
+
   const handleVoiceEnabledChange = async (enabled) => {
     const nextEnabled = Boolean(enabled)
     if (savingVoiceSettings || nextEnabled === voiceSettings.desktop_voice_enabled) {
@@ -935,7 +995,7 @@ function MainPanelApp() {
 
   return (
     <div className="window-shell">
-      <div className="window-card" style={{ gap: 18 }}>
+      <div className="window-card window-card-main" style={{ gap: 18 }}>
         <div className="panel" style={{ padding: 18 }}>
           <div className="toolbar" style={{ alignItems: 'flex-start' }}>
             <div>
@@ -1007,6 +1067,15 @@ function MainPanelApp() {
                 petType={currentPetType}
                 relationship={petRelationship}
                 loading={petRelationshipLoading}
+              />
+              <PetOutfitPanel
+                language={language}
+                petType={currentPetType}
+                relationship={petRelationship}
+                saving={savingOutfit}
+                onChange={(slot, itemId) => {
+                  void handleOutfitChange(slot, itemId)
+                }}
               />
               <VoiceSettingsPanel
                 language={language}
