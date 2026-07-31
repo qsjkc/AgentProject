@@ -44,7 +44,7 @@ import {
   didEquippedOutfitChange,
   normalizePetRelationship,
 } from './shared/pet-relationship'
-import { rewardPetRelationship } from './shared/pet-relationships-api'
+import { getPetDailySummary, rewardPetRelationship } from './shared/pet-relationships-api'
 import { getPetVisual } from './shared/pets'
 import { getPendingReminders, markReminderTriggered } from './shared/reminders-api'
 
@@ -766,12 +766,22 @@ function PetApp() {
         let nextState = result.state
 
         if (result.event) {
+          let dailySummary = null
+          try {
+            dailySummary = await getPetDailySummary('pig')
+          } catch (error) {
+            loggerRef.current.error('companion:daily-summary-failed', error)
+          }
+          if (!mounted || petTypeRef.current !== 'pig') {
+            return
+          }
           const copy = getPetCompanionCopy(
             'pig',
             languageRef.current,
             result.event,
             relationshipRef.current,
             nextState.recentCopyIds,
+            dailySummary,
           )
           if (copy) {
             nextState = recordCompanionCopy(nextState, copy.id)

@@ -172,6 +172,61 @@ const pigCompanionCopy = {
   },
 }
 
+function formatCount(count, noun) {
+  return `${count} ${noun}${count === 1 ? '' : 's'}`
+}
+
+function getPigDailyMemoryCopy(language, event, summary, recentCopyIds) {
+  if (
+    !summary
+    || !event?.type
+    || (
+      summary.interaction_count <= 0
+      && summary.reminders_created_count <= 0
+      && summary.reminders_completed_count <= 0
+    )
+  ) {
+    return null
+  }
+
+  const locale = language === 'zh-CN' ? 'zh-CN' : 'en'
+  const dateKey = summary.local_date || 'today'
+  const candidates = []
+  if (summary.reminders_completed_count > 0) {
+    candidates.push({
+      id: `pig-memory-reminders-${locale}-${dateKey}`,
+      text: locale === 'zh-CN'
+        ? `今天已经一起完成 ${summary.reminders_completed_count} 个提醒啦，我都记得。`
+        : `We finished ${formatCount(summary.reminders_completed_count, 'reminder')} today. I remember.`,
+    })
+  }
+  if (summary.care_count > 0) {
+    candidates.push({
+      id: `pig-memory-care-${locale}-${dateKey}`,
+      text: locale === 'zh-CN'
+        ? `今天你照顾了我 ${summary.care_count} 次，我有认真记着。`
+        : `You cared for me ${summary.care_count} time${summary.care_count === 1 ? '' : 's'} today. I remember.`,
+    })
+  }
+  if (summary.meaningful_chat_count > 0) {
+    candidates.push({
+      id: `pig-memory-chat-${locale}-${dateKey}`,
+      text: locale === 'zh-CN'
+        ? `今天我们认真聊了 ${summary.meaningful_chat_count} 次，我还记得。`
+        : `We had ${formatCount(summary.meaningful_chat_count, 'real chat')} today. I remember.`,
+    })
+  }
+  candidates.push({
+    id: `pig-memory-together-${locale}-${dateKey}`,
+    text: locale === 'zh-CN'
+      ? `今天已经有 ${summary.interaction_count} 次认真相处啦。`
+      : `We have shared ${formatCount(summary.interaction_count, 'meaningful moment')} today.`,
+  })
+
+  const recent = new Set(recentCopyIds)
+  return candidates.find((item) => !recent.has(item.id)) || null
+}
+
 export function getPetReminderCopy(petType) {
   return personality[petType] || personality.cat
 }
@@ -197,12 +252,17 @@ export function getPetCompanionCopy(
   event,
   relationship = null,
   recentCopyIds = [],
+  dailySummary = null,
 ) {
   if (petType !== 'pig' || !event?.type) {
     return null
   }
 
   const locale = language === 'zh-CN' ? 'zh-CN' : 'en'
+  const memoryCopy = getPigDailyMemoryCopy(locale, event, dailySummary, recentCopyIds)
+  if (memoryCopy) {
+    return memoryCopy
+  }
   const eventCopy = pigCompanionCopy[locale]?.[event.type]
   const pool = eventCopy?.[event.timeContext] || eventCopy?.default || []
   const level = Math.max(1, Number(relationship?.level) || 1)

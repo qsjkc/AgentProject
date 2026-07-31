@@ -20,6 +20,11 @@ import {
   normalizeCompanionState,
   recordCompanionCopy,
 } from '../src/shared/pet-companion.js'
+import {
+  getPetDailySummaryHighlights,
+  getPetDailySummaryMessage,
+  normalizePetDailySummary,
+} from '../src/shared/pet-daily-summary.js'
 import { getPetCompanionCopy, getPetRelationshipEventCopy } from '../src/shared/pet-personality.js'
 import {
   createRewardIdempotencyKey,
@@ -433,6 +438,55 @@ const secondCompanionCopy = getPetCompanionCopy(
 )
 assert.notEqual(secondCompanionCopy.id, firstCompanionCopy.id)
 assert.equal(getPetCompanionCopy('cat', 'zh-CN', firstCompanionMoment.event), null)
+
+const normalizedDailySummary = normalizePetDailySummary({
+  pet_type: 'pig',
+  local_date: '2026-07-31',
+  timezone: 'Asia/Shanghai',
+  interaction_count: 7.8,
+  xp_gained: 26,
+  action_counts: {
+    pat: 2,
+    meaningful_chat: 1,
+    unknown_action: 99,
+  },
+  care_count: 2,
+  meaningful_chat_count: 1,
+  reminders_created_count: 1,
+  reminders_completed_count: 1,
+})
+assert.equal(normalizedDailySummary.interaction_count, 7)
+assert.deepEqual(normalizedDailySummary.action_counts, {
+  pat: 2,
+  meaningful_chat: 1,
+})
+assert.deepEqual(getPetDailySummaryHighlights('zh-CN', normalizedDailySummary), [
+  '照料 2',
+  '聊天 1',
+  '记下提醒 1',
+])
+assert.match(getPetDailySummaryMessage('zh-CN', normalizedDailySummary), /完成 1 个提醒/)
+assert.equal(normalizePetDailySummary(null), null)
+
+const firstMemoryCopy = getPetCompanionCopy(
+  'pig',
+  'zh-CN',
+  firstCompanionMoment.event,
+  { level: 3 },
+  [],
+  normalizedDailySummary,
+)
+assert.match(firstMemoryCopy.id, /^pig-memory-reminders/)
+assert.match(firstMemoryCopy.text, /我都记得/)
+const secondMemoryCopy = getPetCompanionCopy(
+  'pig',
+  'zh-CN',
+  firstCompanionMoment.event,
+  { level: 3 },
+  [firstMemoryCopy.id],
+  normalizedDailySummary,
+)
+assert.match(secondMemoryCopy.id, /^pig-memory-care/)
 
 const remindingPetAnimation = petAnimationReducer(initialPetAnimation, {
   type: 'REMINDER_DUE',

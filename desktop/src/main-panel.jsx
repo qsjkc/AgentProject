@@ -36,6 +36,11 @@ import {
   normalizePetRelationship,
 } from './shared/pet-relationship'
 import {
+  getPetDailySummaryHighlights,
+  getPetDailySummaryMessage,
+} from './shared/pet-daily-summary'
+import {
+  getPetDailySummary,
   getPetRelationship,
   refreshPetRelationship,
   rewardPetRelationship,
@@ -134,6 +139,59 @@ function PetRelationshipSummary({ language, petType, relationship, loading }) {
         <span>{progressText}</span>
         <span>{relationship ? `${relationship.intimacy_xp} XP` : ''}</span>
       </div>
+    </section>
+  )
+}
+
+function PetDailySummaryPanel({ language, petType, summary, loading }) {
+  if (petType !== 'pig') {
+    return null
+  }
+
+  const highlights = getPetDailySummaryHighlights(language, summary)
+  const metrics = [
+    {
+      label: language === 'zh-CN' ? '相处' : 'Moments',
+      value: summary?.interaction_count,
+    },
+    {
+      label: language === 'zh-CN' ? '完成提醒' : 'Done',
+      value: summary?.reminders_completed_count,
+    },
+    {
+      label: language === 'zh-CN' ? '经验' : 'XP',
+      value: summary?.xp_gained,
+    },
+  ]
+
+  return (
+    <section
+      className="daily-summary-panel"
+      aria-busy={loading}
+      aria-label={language === 'zh-CN' ? '今日相处' : 'Today together'}
+    >
+      <div className="daily-summary-heading">
+        <div className="relationship-label">
+          {language === 'zh-CN' ? '今日相处' : 'Today together'}
+        </div>
+        <span className="daily-summary-date">{summary?.local_date || ''}</span>
+      </div>
+      <p className="daily-summary-message">
+        {loading && !summary
+          ? language === 'zh-CN' ? '正在整理今天的记录…' : 'Gathering today’s moments…'
+          : getPetDailySummaryMessage(language, summary)}
+      </p>
+      <div className="daily-summary-metrics">
+        {metrics.map((metric) => (
+          <div className="daily-summary-metric" key={metric.label}>
+            <strong>{metric.value ?? '--'}</strong>
+            <span>{metric.label}</span>
+          </div>
+        ))}
+      </div>
+      {highlights.length > 0 && (
+        <div className="daily-summary-highlights">{highlights.join(' · ')}</div>
+      )}
     </section>
   )
 }
@@ -483,7 +541,10 @@ function MainPanelApp() {
   const [companionState, setCompanionState] = useState(DEFAULT_COMPANION_STATE)
   const [petRelationship, setPetRelationship] = useState(null)
   const [petRelationshipLoading, setPetRelationshipLoading] = useState(false)
+  const [petDailySummary, setPetDailySummary] = useState(null)
+  const [petDailySummaryLoading, setPetDailySummaryLoading] = useState(false)
   const relationshipRequestRef = useRef(0)
+  const dailySummaryRequestRef = useRef(0)
 
   const activeSession = useMemo(
     () => sessions.find((session) => session.id === activeSessionId) ?? null,
@@ -534,6 +595,31 @@ function MainPanelApp() {
     }
   }
 
+  const loadPetDailySummary = async (petType) => {
+    const requestId = dailySummaryRequestRef.current + 1
+    dailySummaryRequestRef.current = requestId
+    setPetDailySummaryLoading(true)
+    try {
+      const summary = await getPetDailySummary(petType)
+      if (dailySummaryRequestRef.current === requestId) {
+        setPetDailySummary(summary)
+      }
+    } catch (error) {
+      if (dailySummaryRequestRef.current === requestId) {
+        setPetDailySummary(null)
+      }
+      await logDesktopDebug({
+        event: 'main-panel-daily-summary-load-failed',
+        petType,
+        reason: error instanceof Error ? error.message : String(error),
+      })
+    } finally {
+      if (dailySummaryRequestRef.current === requestId) {
+        setPetDailySummaryLoading(false)
+      }
+    }
+  }
+
   const loadDashboard = async () => {
     const [me, sessionList, documentList] = await Promise.all([
       desktopApi.me(),
@@ -553,6 +639,7 @@ function MainPanelApp() {
     }
     setAuthenticated(true)
     void loadPetRelationship(me?.preferences?.pet_type || 'cat')
+    void loadPetDailySummary(me?.preferences?.pet_type || 'cat')
     await window.desktopBridge?.syncPetState?.({
       source: 'main-panel',
       hasSession: true,
@@ -642,6 +729,7 @@ function MainPanelApp() {
       const relationship = normalizePetRelationship(payload, currentPetType)
       if (relationship?.pet_type === currentPetType) {
         setPetRelationship(relationship)
+        void loadPetDailySummary(currentPetType)
       }
     })
     return () => unsubscribe?.()
@@ -775,6 +863,7 @@ function MainPanelApp() {
             reason: error instanceof Error ? error.message : String(error),
           })
         })
+        void loadPetDailySummary(currentPetType)
         const timeText = parsedReminder.remindAt.toLocaleString(language === 'zh-CN' ? 'zh-CN' : 'en-US', {
           month: 'numeric',
           day: 'numeric',
@@ -834,6 +923,8 @@ function MainPanelApp() {
         compact_response: false,
       })
       const nextSessionId = response.session_id
+      void loadPetRelationship(currentPetType)
+      void loadPetDailySummary(currentPetType)
       setActiveSessionId(nextSessionId)
       setMessages((current) => [...current, { role: 'assistant', content: response.content }])
       const nextSessions = await desktopApi.getSessions()
@@ -971,6 +1062,7 @@ function MainPanelApp() {
       }
       setUser((current) => (current ? { ...current, preferences: nextPreferences } : current))
       void loadPetRelationship(nextPetType)
+      void loadPetDailySummary(nextPetType)
       await logDesktopDebug({
         event: 'main-panel-switch-success',
         petType: switchedResult?.state?.petType || nextPetType,
@@ -1013,6 +1105,7 @@ function MainPanelApp() {
           setPetRelationship(nextRelationship)
           await window.desktopBridge?.cachePetRelationship?.(nextRelationship)
         }
+        void loadPetDailySummary(currentPetType)
         setStatusText(
           language === 'zh-CN'
             ? reward.awarded_xp > 0
@@ -1045,6 +1138,7 @@ function MainPanelApp() {
     try {
       const nextRelationship = await refreshPetRelationship(currentPetType)
       setPetRelationship(nextRelationship)
+      void loadPetDailySummary(currentPetType)
       setStatusText(
         language === 'zh-CN'
           ? '提醒已完成，亲密度已更新。'
@@ -1156,7 +1250,9 @@ function MainPanelApp() {
     setKnowledgeStatusText('')
     setKnowledgeSources([])
     relationshipRequestRef.current += 1
+    dailySummaryRequestRef.current += 1
     setPetRelationship(null)
+    setPetDailySummary(null)
     await window.desktopBridge?.syncPetState?.({
       source: 'main-panel',
       hasSession: false,
@@ -1183,7 +1279,9 @@ function MainPanelApp() {
     setKnowledgeStatusText('')
     setKnowledgeSources([])
     relationshipRequestRef.current += 1
+    dailySummaryRequestRef.current += 1
     setPetRelationship(null)
+    setPetDailySummary(null)
     await logDesktopDebug({ event: 'main-panel-change-server' })
     setStatusText(t(language, 'updateServerUrlHint'))
   }
@@ -1303,6 +1401,12 @@ function MainPanelApp() {
                 petType={currentPetType}
                 relationship={petRelationship}
                 loading={petRelationshipLoading}
+              />
+              <PetDailySummaryPanel
+                language={language}
+                petType={currentPetType}
+                summary={petDailySummary}
+                loading={petDailySummaryLoading}
               />
               <PetOutfitPanel
                 language={language}

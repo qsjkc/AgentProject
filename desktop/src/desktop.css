@@ -650,6 +650,85 @@ select {
   font-variant-numeric: tabular-nums;
 }
 
+.daily-summary-panel {
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid #e2e8f0;
+}
+
+.daily-summary-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.daily-summary-date {
+  color: #94a3b8;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.daily-summary-message {
+  min-height: 38px;
+  margin: 8px 0 0;
+  color: #475569;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.daily-summary-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-top: 12px;
+}
+
+.daily-summary-metric {
+  min-width: 0;
+  padding: 0 8px;
+  text-align: center;
+}
+
+.daily-summary-metric:first-child {
+  padding-left: 0;
+}
+
+.daily-summary-metric:last-child {
+  padding-right: 0;
+}
+
+.daily-summary-metric + .daily-summary-metric {
+  border-left: 1px solid #e2e8f0;
+}
+
+.daily-summary-metric strong,
+.daily-summary-metric span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.daily-summary-metric strong {
+  color: #0f172a;
+  font-size: 18px;
+  font-variant-numeric: tabular-nums;
+}
+
+.daily-summary-metric span {
+  margin-top: 3px;
+  color: #64748b;
+  font-size: 10px;
+}
+
+.daily-summary-highlights {
+  margin-top: 10px;
+  color: #64748b;
+  font-size: 10px;
+  line-height: 1.5;
+  text-align: center;
+}
+
 .companion-panel {
   margin-top: 18px;
   padding-top: 16px;

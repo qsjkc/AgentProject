@@ -1,10 +1,17 @@
 import { desktopApiRequest } from './api'
+import { normalizePetDailySummary } from './pet-daily-summary'
 import { normalizePetRelationship } from './pet-relationship'
 
 
 export async function getPetRelationship(petType) {
   const relationship = await desktopApiRequest(`/pets/${petType}/relationship`)
   return normalizePetRelationship(relationship, petType)
+}
+
+
+export async function getPetDailySummary(petType) {
+  const summary = await desktopApiRequest(`/pets/${petType}/daily-summary`)
+  return normalizePetDailySummary(summary, petType)
 }
 
 
