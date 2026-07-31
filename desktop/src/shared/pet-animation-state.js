@@ -14,6 +14,11 @@ export const ANIMATION_ACTIONS = {
   CLEAN: 'clean',
   DRESS_UP: 'dress_up',
   LEVEL_UP: 'level_up',
+  RUN: 'run',
+  STRETCH: 'stretch',
+  LOOK_AROUND: 'look_around',
+  YAWN: 'yawn',
+  WELCOME_BACK: 'welcome_back',
 }
 
 const LOCKED_ACTIONS = new Set([
@@ -23,6 +28,13 @@ const LOCKED_ACTIONS = new Set([
 const LOOPING_ACTIONS = new Set([
   ANIMATION_ACTIONS.IDLE,
   ANIMATION_ACTIONS.SLEEPING,
+])
+const COMPANION_ACTIONS = new Set([
+  ANIMATION_ACTIONS.RUN,
+  ANIMATION_ACTIONS.STRETCH,
+  ANIMATION_ACTIONS.LOOK_AROUND,
+  ANIMATION_ACTIONS.YAWN,
+  ANIMATION_ACTIONS.WELCOME_BACK,
 ])
 
 export function isLoopingPetAnimation(action) {
@@ -77,8 +89,18 @@ export function petAnimationReducer(state, event) {
       return transition(ANIMATION_ACTIONS.CLEAN)
     case 'PET_DRESS_UP':
       return transition(ANIMATION_ACTIONS.DRESS_UP, { message: event.message })
+    case 'COMPANION_ACTION':
+      return COMPANION_ACTIONS.has(event.action)
+        ? transition(event.action, { message: event.message })
+        : state
     case 'IDLE_TICK':
-      return transition(Math.random() > 0.55 ? ANIMATION_ACTIONS.WALK : ANIMATION_ACTIONS.JUMP)
+      return transition(
+        Object.values(ANIMATION_ACTIONS).includes(event.action)
+          ? event.action
+          : Math.random() > 0.55
+            ? ANIMATION_ACTIONS.WALK
+            : ANIMATION_ACTIONS.JUMP,
+      )
     case 'SLEEP':
       return transition(ANIMATION_ACTIONS.SLEEPING)
     case 'WAKE':

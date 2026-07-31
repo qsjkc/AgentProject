@@ -60,6 +60,14 @@ export async function updateVoiceSettings(patch) {
   return getDesktopBridge()?.updateVoiceSettings?.(patch)
 }
 
+export async function getCompanionSettings() {
+  return getDesktopBridge()?.getCompanionSettings?.()
+}
+
+export async function updateCompanionSettings(patch) {
+  return getDesktopBridge()?.updateCompanionSettings?.(patch)
+}
+
 export async function openQuickChat() {
   return getDesktopBridge()?.openQuickChat?.()
 }

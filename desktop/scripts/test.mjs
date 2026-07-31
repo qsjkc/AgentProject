@@ -9,7 +9,18 @@ import {
   petAnimationReducer,
 } from '../src/shared/pet-animation-state.js'
 import { getPetCareActions, getPetCareToolbarLabel } from '../src/shared/pet-care-actions.js'
-import { getPetRelationshipEventCopy } from '../src/shared/pet-personality.js'
+import {
+  COMPANION_EVENT_TYPES,
+  COMPANION_MODES,
+  DEFAULT_COMPANION_SETTINGS,
+  evaluateCompanionOpportunity,
+  getCompanionStatusKey,
+  isCompanionQuietTime,
+  normalizeCompanionSettings,
+  normalizeCompanionState,
+  recordCompanionCopy,
+} from '../src/shared/pet-companion.js'
+import { getPetCompanionCopy, getPetRelationshipEventCopy } from '../src/shared/pet-personality.js'
 import {
   createRewardIdempotencyKey,
   didEquippedOutfitChange,
@@ -211,11 +222,217 @@ assert.deepEqual(
     'clean',
     'dress_up',
     'level_up',
+    'run',
+    'stretch',
+    'look_around',
+    'yawn',
+    'welcome_back',
   ]),
 )
 assert.equal(isLoopingPetAnimation(ANIMATION_ACTIONS.IDLE), true)
 assert.equal(isLoopingPetAnimation(ANIMATION_ACTIONS.SLEEPING), true)
 assert.equal(isLoopingPetAnimation(ANIMATION_ACTIONS.WAKE), false)
+
+assert.equal(
+  petAnimationReducer(initialPetAnimation, {
+    type: 'COMPANION_ACTION',
+    action: ANIMATION_ACTIONS.WELCOME_BACK,
+  }).action,
+  ANIMATION_ACTIONS.WELCOME_BACK,
+)
+assert.equal(
+  petAnimationReducer(initialPetAnimation, {
+    type: 'COMPANION_ACTION',
+    action: 'not-an-action',
+  }).action,
+  ANIMATION_ACTIONS.IDLE,
+)
+
+const companionMorning = new Date(2026, 6, 31, 9, 0, 0)
+assert.deepEqual(normalizeCompanionState(null), {
+  dayKey: '',
+  proactiveCount: 0,
+  lastEventAt: null,
+  lastEventType: null,
+  lastDailyGreetingDay: '',
+  recentCopyIds: [],
+  wasAway: false,
+  awaySince: null,
+  currentMood: 'relaxed',
+})
+const firstCompanionMoment = evaluateCompanionOpportunity({
+  now: companionMorning,
+  idleSeconds: 4,
+  settings: DEFAULT_COMPANION_SETTINGS,
+})
+assert.equal(firstCompanionMoment.event.type, COMPANION_EVENT_TYPES.DAILY_GREETING)
+assert.equal(firstCompanionMoment.event.action, ANIMATION_ACTIONS.STRETCH)
+assert.equal(firstCompanionMoment.state.proactiveCount, 1)
+assert.equal(firstCompanionMoment.state.currentMood, 'relaxed')
+
+const companionTooSoon = evaluateCompanionOpportunity({
+  now: new Date(2026, 6, 31, 9, 30, 0),
+  idleSeconds: 5,
+  settings: DEFAULT_COMPANION_SETTINGS,
+  state: firstCompanionMoment.state,
+})
+assert.equal(companionTooSoon.event, null)
+
+const companionNextMoment = evaluateCompanionOpportunity({
+  now: new Date(2026, 6, 31, 10, 0, 0),
+  idleSeconds: 5,
+  settings: DEFAULT_COMPANION_SETTINGS,
+  state: firstCompanionMoment.state,
+})
+assert.equal(companionNextMoment.event.type, COMPANION_EVENT_TYPES.PROACTIVE_MOMENT)
+assert.equal(companionNextMoment.state.proactiveCount, 2)
+
+const standardDailyLimit = evaluateCompanionOpportunity({
+  now: new Date(2026, 6, 31, 17, 0, 0),
+  idleSeconds: 0,
+  settings: DEFAULT_COMPANION_SETTINGS,
+  state: {
+    ...companionNextMoment.state,
+    proactiveCount: 4,
+    lastEventAt: new Date(2026, 6, 31, 15, 0, 0).toISOString(),
+  },
+})
+assert.equal(standardDailyLimit.event, null)
+
+const lowFrequencyState = {
+  ...firstCompanionMoment.state,
+  lastEventAt: new Date(2026, 6, 31, 9, 0, 0).toISOString(),
+}
+const lowFrequencySettings = normalizeCompanionSettings({ mode: COMPANION_MODES.LOW })
+assert.equal(
+  evaluateCompanionOpportunity({
+    now: new Date(2026, 6, 31, 11, 29, 0),
+    idleSeconds: 0,
+    settings: lowFrequencySettings,
+    state: lowFrequencyState,
+  }).event,
+  null,
+)
+assert.equal(
+  evaluateCompanionOpportunity({
+    now: new Date(2026, 6, 31, 11, 30, 0),
+    idleSeconds: 0,
+    settings: lowFrequencySettings,
+    state: lowFrequencyState,
+  }).event.type,
+  COMPANION_EVENT_TYPES.PROACTIVE_MOMENT,
+)
+assert.equal(
+  evaluateCompanionOpportunity({
+    now: new Date(2026, 6, 31, 11, 30, 0),
+    idleSeconds: 0,
+    settings: lowFrequencySettings,
+    state: lowFrequencyState,
+  }).event.action,
+  ANIMATION_ACTIONS.LOOK_AROUND,
+)
+
+const afternoonRun = evaluateCompanionOpportunity({
+  now: new Date(2026, 6, 31, 16, 0, 0),
+  idleSeconds: 0,
+  state: {
+    ...companionNextMoment.state,
+    proactiveCount: 2,
+    lastEventAt: new Date(2026, 6, 31, 15, 0, 0).toISOString(),
+  },
+})
+assert.equal(afternoonRun.event.action, ANIMATION_ACTIONS.RUN)
+
+const lateNightYawn = evaluateCompanionOpportunity({
+  now: new Date(2026, 6, 31, 22, 30, 0),
+  idleSeconds: 0,
+  state: {
+    ...companionNextMoment.state,
+    lastEventAt: new Date(2026, 6, 31, 21, 0, 0).toISOString(),
+  },
+})
+assert.equal(lateNightYawn.event.action, ANIMATION_ACTIONS.YAWN)
+assert.equal(lateNightYawn.event.mood, 'sleepy')
+
+const awayCompanion = evaluateCompanionOpportunity({
+  now: new Date(2026, 6, 31, 15, 0, 0),
+  idleSeconds: 31 * 60,
+  state: firstCompanionMoment.state,
+})
+assert.equal(awayCompanion.event, null)
+assert.equal(awayCompanion.state.wasAway, true)
+assert.equal(awayCompanion.state.currentMood, 'expectant')
+
+const returnedCompanion = evaluateCompanionOpportunity({
+  now: new Date(2026, 6, 31, 15, 1, 0),
+  idleSeconds: 3,
+  state: awayCompanion.state,
+})
+assert.equal(returnedCompanion.event.type, COMPANION_EVENT_TYPES.WELCOME_BACK)
+assert.equal(returnedCompanion.event.action, ANIMATION_ACTIONS.WELCOME_BACK)
+assert.equal(returnedCompanion.state.wasAway, false)
+
+const recentAwayCompanion = evaluateCompanionOpportunity({
+  now: new Date(2026, 6, 31, 15, 10, 0),
+  idleSeconds: 31 * 60,
+  state: {
+    ...firstCompanionMoment.state,
+    lastEventAt: new Date(2026, 6, 31, 15, 0, 0).toISOString(),
+  },
+})
+const suppressedReturn = evaluateCompanionOpportunity({
+  now: new Date(2026, 6, 31, 15, 11, 0),
+  idleSeconds: 2,
+  state: recentAwayCompanion.state,
+})
+assert.equal(suppressedReturn.event, null)
+assert.equal(suppressedReturn.state.wasAway, false)
+
+const quietCompanionTime = new Date(2026, 6, 31, 23, 30, 0)
+assert.equal(isCompanionQuietTime(quietCompanionTime), true)
+const quietCompanion = evaluateCompanionOpportunity({
+  now: quietCompanionTime,
+  idleSeconds: 0,
+})
+assert.equal(quietCompanion.event, null)
+assert.equal(quietCompanion.state.currentMood, 'sleepy')
+assert.equal(getCompanionStatusKey({ now: quietCompanionTime }), 'quiet')
+
+const disabledCompanionSettings = normalizeCompanionSettings({ mode: COMPANION_MODES.OFF })
+assert.equal(
+  evaluateCompanionOpportunity({
+    now: companionMorning,
+    idleSeconds: 0,
+    settings: disabledCompanionSettings,
+  }).event,
+  null,
+)
+assert.equal(
+  getCompanionStatusKey({
+    now: companionMorning,
+    settings: disabledCompanionSettings,
+  }),
+  'off',
+)
+
+const firstCompanionCopy = getPetCompanionCopy(
+  'pig',
+  'zh-CN',
+  firstCompanionMoment.event,
+  { level: 3 },
+)
+assert.ok(firstCompanionCopy?.id)
+assert.ok(firstCompanionCopy?.text)
+const copyState = recordCompanionCopy(firstCompanionMoment.state, firstCompanionCopy.id)
+const secondCompanionCopy = getPetCompanionCopy(
+  'pig',
+  'zh-CN',
+  firstCompanionMoment.event,
+  { level: 3 },
+  copyState.recentCopyIds,
+)
+assert.notEqual(secondCompanionCopy.id, firstCompanionCopy.id)
+assert.equal(getPetCompanionCopy('cat', 'zh-CN', firstCompanionMoment.event), null)
 
 const remindingPetAnimation = petAnimationReducer(initialPetAnimation, {
   type: 'REMINDER_DUE',

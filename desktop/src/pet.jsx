@@ -27,6 +27,15 @@ import {
 } from './shared/pet-animation-state'
 import { getPetCareActions, getPetCareToolbarLabel } from './shared/pet-care-actions'
 import {
+  DEFAULT_COMPANION_SETTINGS,
+  DEFAULT_COMPANION_STATE,
+  evaluateCompanionOpportunity,
+  normalizeCompanionSettings,
+  normalizeCompanionState,
+  recordCompanionCopy,
+} from './shared/pet-companion'
+import {
+  getPetCompanionCopy,
   getPetRelationshipEventCopy,
   getPetReminderCopy,
 } from './shared/pet-personality'
@@ -51,6 +60,7 @@ const AUTH_EXPIRED_BUBBLE_MS = 4200
 const REMINDER_POLL_INTERVAL_MS = 30000
 const PET_IDLE_ANIMATION_INTERVAL_MS = 45000
 const PET_SLEEP_TIMEOUT_MS = 10 * 60 * 1000
+const COMPANION_POLL_INTERVAL_MS = 30000
 
 const CARE_ACTION_ICONS = {
   pat: Hand,
@@ -94,6 +104,7 @@ function PetApp() {
   const [hasSession, setHasSession] = useState(false)
   const [preferences, setPreferences] = useState(DEFAULT_PREFERENCES)
   const [voiceSettings, setVoiceSettings] = useState(DEFAULT_VOICE_SETTINGS)
+  const [companionSettings, setCompanionSettings] = useState(DEFAULT_COMPANION_SETTINGS)
   const [transientBubble, setTransientBubble] = useState('')
   const [intimacyFeedback, setIntimacyFeedback] = useState('')
   const [activeCareAction, setActiveCareAction] = useState('')
@@ -124,6 +135,11 @@ function PetApp() {
   const voiceSettingsRef = useRef(voiceSettings)
   const hasSessionRef = useRef(hasSession)
   const relationshipRef = useRef(null)
+  const companionSettingsRef = useRef(DEFAULT_COMPANION_SETTINGS)
+  const companionStateRef = useRef(DEFAULT_COMPANION_STATE)
+  const companionStateReadyRef = useRef(false)
+  const petAnimationStateRef = useRef(petAnimationState)
+  const activeCareActionRef = useRef('')
   const petPositionRef = useRef({ x: 90, y: 90 })
   const loggerRef = useRef(
     createVoiceDebugLogger((payload) => {
@@ -320,6 +336,18 @@ function PetApp() {
   }, [voiceSettings])
 
   useEffect(() => {
+    companionSettingsRef.current = companionSettings
+  }, [companionSettings])
+
+  useEffect(() => {
+    petAnimationStateRef.current = petAnimationState
+  }, [petAnimationState])
+
+  useEffect(() => {
+    activeCareActionRef.current = activeCareAction
+  }, [activeCareAction])
+
+  useEffect(() => {
     let mounted = true
     relationshipRef.current = null
     setPetRelationship(null)
@@ -338,6 +366,38 @@ function PetApp() {
       }
     }
     void loadCachedRelationship()
+    return () => {
+      mounted = false
+    }
+  }, [petType])
+
+  useEffect(() => {
+    let mounted = true
+    companionStateRef.current = DEFAULT_COMPANION_STATE
+    companionStateReadyRef.current = false
+
+    const loadCompanionState = async () => {
+      try {
+        const [savedSettings, savedState] = await Promise.all([
+          window.desktopBridge?.getCompanionSettings?.(),
+          window.desktopBridge?.getCompanionState?.(petType),
+        ])
+        if (!mounted) {
+          return
+        }
+        const nextSettings = normalizeCompanionSettings(savedSettings)
+        const nextState = normalizeCompanionState(savedState)
+        companionSettingsRef.current = nextSettings
+        companionStateRef.current = nextState
+        companionStateReadyRef.current = true
+        setCompanionSettings(nextSettings)
+      } catch (error) {
+        companionStateReadyRef.current = true
+        loggerRef.current.error('companion:state-load-failed', error, { petType })
+      }
+    }
+
+    void loadCompanionState()
     return () => {
       mounted = false
     }
@@ -450,6 +510,24 @@ function PetApp() {
       managerRef.current?.updateSettings?.(nextSettings)
     })
 
+    const unsubscribeCompanionSettings = window.desktopBridge?.onCompanionSettingsChanged?.((payload) => {
+      const nextSettings = normalizeCompanionSettings(payload)
+      companionSettingsRef.current = nextSettings
+      setCompanionSettings(nextSettings)
+    })
+
+    const unsubscribeCompanionState = window.desktopBridge?.onCompanionStateChanged?.((payload) => {
+      if (payload?.cleared) {
+        companionStateRef.current = DEFAULT_COMPANION_STATE
+        companionStateReadyRef.current = false
+        return
+      }
+      if (payload?.pet_type === petTypeRef.current) {
+        companionStateRef.current = normalizeCompanionState(payload.state)
+        companionStateReadyRef.current = true
+      }
+    })
+
     const unsubscribeRelationship = window.desktopBridge?.onPetRelationshipChanged?.((payload) => {
       const relationship = normalizePetRelationship(payload, petTypeRef.current)
       if (relationship?.pet_type === petTypeRef.current) {
@@ -486,6 +564,8 @@ function PetApp() {
     return () => {
       unsubscribePet?.()
       unsubscribeVoice?.()
+      unsubscribeCompanionSettings?.()
+      unsubscribeCompanionState?.()
       unsubscribeRelationship?.()
     }
   }, [setTransientBubbleForDuration])
@@ -615,6 +695,10 @@ function PetApp() {
       idleBubbleTimerRef.current = null
     }
 
+    if (petType === 'pig') {
+      return undefined
+    }
+
     const frequencySeconds = Math.max(30, Number(preferences.bubble_frequency) || DEFAULT_PREFERENCES.bubble_frequency)
     idleBubbleTimerRef.current = window.setInterval(() => {
       if (
@@ -638,7 +722,99 @@ function PetApp() {
         idleBubbleTimerRef.current = null
       }
     }
-  }, [preferences.bubble_frequency, setTransientBubbleForDuration, transientBubble])
+  }, [petType, preferences.bubble_frequency, setTransientBubbleForDuration, transientBubble])
+
+  useEffect(() => {
+    if (petType !== 'pig' || !hasSession) {
+      return undefined
+    }
+
+    let mounted = true
+    let inFlight = false
+
+    const pollCompanion = async () => {
+      if (
+        !mounted ||
+        inFlight ||
+        petTypeRef.current !== 'pig' ||
+        !hasSessionRef.current ||
+        !companionStateReadyRef.current ||
+        phaseRef.current !== VOICE_PHASES.IDLE ||
+        dragRef.current.pointerId !== null ||
+        transientBubbleRef.current ||
+        settlingPointerRef.current ||
+        activeCareActionRef.current ||
+        petAnimationStateRef.current.locked
+      ) {
+        return
+      }
+
+      inFlight = true
+      try {
+        const idleSeconds = await window.desktopBridge?.getSystemIdleSeconds?.()
+        if (!mounted || petTypeRef.current !== 'pig') {
+          return
+        }
+
+        const previousState = companionStateRef.current
+        const result = evaluateCompanionOpportunity({
+          now: new Date(),
+          idleSeconds,
+          settings: companionSettingsRef.current,
+          state: previousState,
+        })
+        let nextState = result.state
+
+        if (result.event) {
+          const copy = getPetCompanionCopy(
+            'pig',
+            languageRef.current,
+            result.event,
+            relationshipRef.current,
+            nextState.recentCopyIds,
+          )
+          if (copy) {
+            nextState = recordCompanionCopy(nextState, copy.id)
+            setTransientBubbleForDuration(copy.text, 3600)
+            dispatchPetAnimation({
+              type: 'COMPANION_ACTION',
+              action: result.event.action,
+              message: copy.text,
+            })
+            loggerRef.current.event('companion:event', {
+              type: result.event.type,
+              action: result.event.action,
+              mood: result.event.mood,
+              timeContext: result.event.timeContext,
+              copyId: copy.id,
+            })
+          }
+        }
+
+        if (JSON.stringify(nextState) !== JSON.stringify(previousState)) {
+          companionStateRef.current = nextState
+          await window.desktopBridge?.setCompanionState?.('pig', nextState)
+        }
+      } catch (error) {
+        loggerRef.current.error('companion:poll-failed', error)
+      } finally {
+        inFlight = false
+      }
+    }
+
+    const initialTimer = window.setTimeout(() => {
+      void pollCompanion()
+    }, 4200)
+    const timer = window.setInterval(() => {
+      void pollCompanion()
+    }, COMPANION_POLL_INTERVAL_MS)
+
+    return () => {
+      mounted = false
+      window.clearTimeout(initialTimer)
+      window.clearInterval(timer)
+    }
+  }, [hasSession, petType, setTransientBubbleForDuration])
 
   useEffect(() => {
     let mounted = true
@@ -688,7 +864,16 @@ function PetApp() {
       ) {
         return
       }
-      dispatchPetAnimation({ type: 'IDLE_TICK' })
+      const idleActions =
+        petTypeRef.current === 'pig'
+          ? [
+              ANIMATION_ACTIONS.WALK,
+              ANIMATION_ACTIONS.JUMP,
+              ANIMATION_ACTIONS.LOOK_AROUND,
+              ANIMATION_ACTIONS.STRETCH,
+            ]
+          : [ANIMATION_ACTIONS.WALK, ANIMATION_ACTIONS.JUMP]
+      dispatchPetAnimation({ type: 'IDLE_TICK', action: pickRandom(idleActions) })
     }, PET_IDLE_ANIMATION_INTERVAL_MS)
 
     return () => window.clearInterval(timer)
@@ -1322,7 +1507,7 @@ function PetApp() {
           aria-label={t(language, 'desktopPetAlt', { pet: petLabel })}
         >
           <div className="pet-button-inner">
-            <div className="pet-visual-stack">
+            <div className={`pet-visual-stack pet-action-${petAnimationState.action}`}>
               <PetAnimator
                 petType={petType}
                 action={petAnimationState.action}

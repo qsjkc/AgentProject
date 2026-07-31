@@ -9,6 +9,7 @@ import {
   clearSessionToken,
   desktopApi,
   getApiBaseUrl,
+  getCompanionSettings,
   getLanguage,
   getSessionToken,
   getVoiceSettings,
@@ -17,7 +18,16 @@ import {
   setApiBaseUrl,
   setLanguage,
   updateVoiceSettings,
+  updateCompanionSettings,
 } from './shared/api'
+import {
+  COMPANION_MODES,
+  DEFAULT_COMPANION_SETTINGS,
+  DEFAULT_COMPANION_STATE,
+  getCompanionStatusKey,
+  normalizeCompanionSettings,
+  normalizeCompanionState,
+} from './shared/pet-companion'
 import { normalizeLanguage, SUPPORTED_LANGUAGES, t } from './shared/i18n'
 import { getPetReminderCopy } from './shared/pet-personality'
 import {
@@ -327,6 +337,126 @@ function VoiceSettingsPanel({ language, voiceSettings, onEnabledChange, onOutput
   )
 }
 
+const COMPANION_MODE_OPTIONS = [
+  COMPANION_MODES.OFF,
+  COMPANION_MODES.LOW,
+  COMPANION_MODES.STANDARD,
+]
+
+function getCompanionModeLabel(language, mode) {
+  const labels = {
+    'zh-CN': {
+      [COMPANION_MODES.OFF]: '关闭',
+      [COMPANION_MODES.LOW]: '低频',
+      [COMPANION_MODES.STANDARD]: '标准',
+    },
+    en: {
+      [COMPANION_MODES.OFF]: 'Off',
+      [COMPANION_MODES.LOW]: 'Low',
+      [COMPANION_MODES.STANDARD]: 'Standard',
+    },
+  }
+  return labels[language === 'zh-CN' ? 'zh-CN' : 'en'][mode]
+}
+
+function getCompanionStatusLabel(language, statusKey, mood) {
+  const labels = {
+    'zh-CN': {
+      off: '主动陪伴已关闭',
+      quiet: '安静陪伴中',
+      waiting_return: '在等你回来',
+      low_frequency: '低频陪伴中',
+      standard: '按日常节律陪伴',
+    },
+    en: {
+      off: 'Proactive moments are off',
+      quiet: 'Quiet companionship',
+      waiting_return: 'Waiting for you',
+      low_frequency: 'Low-frequency companionship',
+      standard: 'Following the daily rhythm',
+    },
+  }
+  const moodLabels = {
+    'zh-CN': {
+      relaxed: '放松',
+      expectant: '期待',
+      happy: '开心',
+      sleepy: '困倦',
+      focused: '专注',
+    },
+    en: {
+      relaxed: 'Relaxed',
+      expectant: 'Expectant',
+      happy: 'Happy',
+      sleepy: 'Sleepy',
+      focused: 'Focused',
+    },
+  }
+  const locale = language === 'zh-CN' ? 'zh-CN' : 'en'
+  const status = labels[locale][statusKey] || labels[locale].standard
+  const moodLabel = moodLabels[locale][mood]
+  return moodLabel ? `${status} · ${moodLabel}` : status
+}
+
+function CompanionSettingsPanel({
+  language,
+  petType,
+  settings,
+  state,
+  onModeChange,
+  saving,
+}) {
+  const [now, setNow] = useState(() => new Date())
+
+  useEffect(() => {
+    if (petType !== 'pig') {
+      return undefined
+    }
+    setNow(new Date())
+    const timer = window.setInterval(() => setNow(new Date()), 60000)
+    return () => window.clearInterval(timer)
+  }, [petType])
+
+  if (petType !== 'pig') {
+    return null
+  }
+
+  const normalizedSettings = normalizeCompanionSettings(settings)
+  const normalizedState = normalizeCompanionState(state)
+  const statusKey = getCompanionStatusKey({
+    now,
+    settings: normalizedSettings,
+    state: normalizedState,
+  })
+  const title = language === 'zh-CN' ? '主动陪伴' : 'Proactive Companion'
+
+  return (
+    <section className="companion-panel" aria-labelledby="companion-panel-title">
+      <div className="companion-panel-header">
+        <div id="companion-panel-title" className="sidebar-title">{title}</div>
+        <span className="companion-status-dot" data-status={statusKey} aria-hidden="true" />
+      </div>
+      <div className="companion-status" role="status">
+        {getCompanionStatusLabel(language, statusKey, normalizedState.currentMood)}
+      </div>
+      <div className="companion-mode-switch" role="group" aria-label={title}>
+        {COMPANION_MODE_OPTIONS.map((mode) => (
+          <button
+            key={mode}
+            type="button"
+            className={`companion-mode-option ${normalizedSettings.mode === mode ? 'active' : ''}`}
+            aria-pressed={normalizedSettings.mode === mode}
+            disabled={saving}
+            onClick={() => onModeChange(mode)}
+          >
+            {getCompanionModeLabel(language, mode)}
+          </button>
+        ))}
+      </div>
+    </section>
+  )
+}
+
 function MainPanelApp() {
   const [initialized, setInitialized] = useState(false)
   const [authenticated, setAuthenticated] = useState(false)
@@ -345,9 +475,12 @@ function MainPanelApp() {
   const [savingPet, setSavingPet] = useState(false)
   const [savingOutfit, setSavingOutfit] = useState(false)
   const [savingVoiceSettings, setSavingVoiceSettings] = useState(false)
+  const [savingCompanionSettings, setSavingCompanionSettings] = useState(false)
   const [apiBaseUrl, setApiBaseUrlState] = useState('')
   const [language, setLanguageState] = useState('zh-CN')
   const [voiceSettings, setVoiceSettingsState] = useState(DEFAULT_VOICE_SETTINGS)
+  const [companionSettings, setCompanionSettingsState] = useState(DEFAULT_COMPANION_SETTINGS)
+  const [companionState, setCompanionState] = useState(DEFAULT_COMPANION_STATE)
   const [petRelationship, setPetRelationship] = useState(null)
   const [petRelationshipLoading, setPetRelationshipLoading] = useState(false)
   const relationshipRequestRef = useRef(0)
@@ -464,12 +597,16 @@ function MainPanelApp() {
           getSessionToken(),
           getLanguage(),
         ])
-        const savedVoiceSettings = normalizeVoiceSettings(await getVoiceSettings())
+        const [savedVoiceSettings, savedCompanionSettings] = await Promise.all([
+          getVoiceSettings(),
+          getCompanionSettings(),
+        ])
 
         if (active) {
           setApiBaseUrlState(savedApiBaseUrl || '')
           setLanguageState(normalizeLanguage(savedLanguage))
-          setVoiceSettingsState(savedVoiceSettings)
+          setVoiceSettingsState(normalizeVoiceSettings(savedVoiceSettings))
+          setCompanionSettingsState(normalizeCompanionSettings(savedCompanionSettings))
         }
 
         if (!token || !savedApiBaseUrl) {
@@ -522,6 +659,49 @@ function MainPanelApp() {
 
   useEffect(() => {
     let mounted = true
+    const loadCompanionState = async () => {
+      try {
+        const savedState = await window.desktopBridge?.getCompanionState?.(currentPetType)
+        if (mounted) {
+          setCompanionState(normalizeCompanionState(savedState))
+        }
+      } catch (error) {
+        await logDesktopDebug({
+          event: 'main-panel-companion-state-load-failed',
+          petType: currentPetType,
+          reason: error instanceof Error ? error.message : String(error),
+        })
+      }
+    }
+
+    void loadCompanionState()
+    return () => {
+      mounted = false
+    }
+  }, [currentPetType])
+
+  useEffect(() => {
+    const unsubscribeSettings = window.desktopBridge?.onCompanionSettingsChanged?.((payload) => {
+      setCompanionSettingsState(normalizeCompanionSettings(payload))
+    })
+    const unsubscribeState = window.desktopBridge?.onCompanionStateChanged?.((payload) => {
+      if (payload?.cleared) {
+        setCompanionState(DEFAULT_COMPANION_STATE)
+        return
+      }
+      if (payload?.pet_type === currentPetType) {
+        setCompanionState(normalizeCompanionState(payload.state))
+      }
+    })
+
+    return () => {
+      unsubscribeSettings?.()
+      unsubscribeState?.()
+    }
+  }, [currentPetType])
+
+  useEffect(() => {
+    let mounted = true
     const emitHeartbeat = async (kind) => {
       if (!mounted) {
         return
@@ -538,6 +718,7 @@ function MainPanelApp() {
         messageCount: messages.length,
         savingPet,
         savingOutfit,
+        savingCompanionSettings,
         loading,
         useRag,
       })
@@ -562,6 +743,7 @@ function MainPanelApp() {
     messages.length,
     savingPet,
     savingOutfit,
+    savingCompanionSettings,
     loading,
     useRag,
   ])
@@ -931,6 +1113,38 @@ function MainPanelApp() {
     }
   }
 
+  const handleCompanionModeChange = async (nextMode) => {
+    if (
+      savingCompanionSettings ||
+      nextMode === companionSettings.mode ||
+      !Object.values(COMPANION_MODES).includes(nextMode)
+    ) {
+      return
+    }
+
+    setSavingCompanionSettings(true)
+    try {
+      const nextSettings = await updateCompanionSettings({ mode: nextMode })
+      setCompanionSettingsState(normalizeCompanionSettings(nextSettings))
+      setStatusText(
+        language === 'zh-CN'
+          ? `主动陪伴已切换为${getCompanionModeLabel(language, nextMode)}。`
+          : `Proactive companion switched to ${getCompanionModeLabel(language, nextMode)}.`,
+      )
+    } catch (error) {
+      setStatusText(
+        formatError(
+          error,
+          language === 'zh-CN'
+            ? '更新主动陪伴设置失败。'
+            : 'Failed to update proactive companion settings.',
+        ),
+      )
+    } finally {
+      setSavingCompanionSettings(false)
+    }
+  }
+
   const handleLogout = async () => {
     await clearSessionToken()
     setAuthenticated(false)
@@ -1097,6 +1311,16 @@ function MainPanelApp() {
                 saving={savingOutfit}
                 onChange={(slot, itemId) => {
                   void handleOutfitChange(slot, itemId)
+                }}
+              />
+              <CompanionSettingsPanel
+                language={language}
+                petType={currentPetType}
+                settings={companionSettings}
+                state={companionState}
+                saving={savingCompanionSettings}
+                onModeChange={(nextMode) => {
+                  void handleCompanionModeChange(nextMode)
                 }}
               />
               <PendingReminderPanel

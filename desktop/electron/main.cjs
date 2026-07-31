@@ -1,7 +1,18 @@
 const fs = require('node:fs')
 const path = require('node:path')
 
-const { app, BrowserWindow, ipcMain, Menu, Notification, Tray, globalShortcut, nativeImage, screen } = require('electron')
+const {
+  app,
+  BrowserWindow,
+  ipcMain,
+  Menu,
+  Notification,
+  Tray,
+  globalShortcut,
+  nativeImage,
+  powerMonitor,
+  screen,
+} = require('electron')
 
 let store
 let petWindow
@@ -29,6 +40,12 @@ const DEFAULT_VOICE_SETTINGS = {
   desktop_voice_global_shortcut: 'CommandOrControl+Alt+D',
   desktop_voice_idle_timeout_seconds: 8,
   desktop_voice_output_mode: 'voice_and_text',
+}
+const COMPANION_MODES = ['off', 'low', 'standard']
+const DEFAULT_COMPANION_SETTINGS = {
+  mode: 'standard',
+  quietHoursStart: 23,
+  quietHoursEnd: 8,
 }
 const VOICE_SETTINGS_OUTPUT_MIGRATION_KEY = 'voiceSettingsOutputModeMigratedAt'
 const PET_WINDOW_WIDTH = 220
@@ -106,6 +123,31 @@ function normalizeVoiceSettings(value = {}) {
       Number(value.desktop_voice_idle_timeout_seconds) || DEFAULT_VOICE_SETTINGS.desktop_voice_idle_timeout_seconds,
     ),
     desktop_voice_output_mode: outputMode,
+  }
+}
+
+function normalizeCompanionHour(value, fallback) {
+  const number = Number(value)
+  if (!Number.isFinite(number)) {
+    return fallback
+  }
+  return Math.min(23, Math.max(0, Math.round(number)))
+}
+
+function normalizeCompanionSettings(value = {}) {
+  const source = value && typeof value === 'object' ? value : {}
+  return {
+    mode: COMPANION_MODES.includes(source.mode)
+      ? source.mode
+      : DEFAULT_COMPANION_SETTINGS.mode,
+    quietHoursStart: normalizeCompanionHour(
+      source.quietHoursStart,
+      DEFAULT_COMPANION_SETTINGS.quietHoursStart,
+    ),
+    quietHoursEnd: normalizeCompanionHour(
+      source.quietHoursEnd,
+      DEFAULT_COMPANION_SETTINGS.quietHoursEnd,
+    ),
   }
 }
 
@@ -198,6 +240,8 @@ async function createStore() {
         },
       },
       petRelationshipCache: {},
+      petCompanionSettings: DEFAULT_COMPANION_SETTINGS,
+      petCompanionState: {},
       quickBounds: { width: QUICK_CHAT_WIDTH, height: QUICK_CHAT_HEIGHT },
       mainBounds: { width: MAIN_PANEL_WIDTH, height: MAIN_PANEL_HEIGHT },
       voiceSettings: DEFAULT_VOICE_SETTINGS,
@@ -291,6 +335,18 @@ function getPetState() {
 
 function getVoiceSettings() {
   return normalizeVoiceSettings(getStore().get('voiceSettings') || DEFAULT_VOICE_SETTINGS)
+}
+
+function getCompanionSettings() {
+  return normalizeCompanionSettings(
+    getStore().get('petCompanionSettings') || DEFAULT_COMPANION_SETTINGS,
+  )
+}
+
+function getPetCompanionState(petType) {
+  const normalizedPetType = normalizePetType(petType)
+  const stateByPet = getStore().get('petCompanionState') || {}
+  return stateByPet[normalizedPetType] || null
 }
 
 function getCachedPetRelationship(petType) {
@@ -425,6 +481,46 @@ function sendVoiceSettingsToWindow(windowInstance, settings) {
   emit()
 }
 
+function sendCompanionSettingsToWindow(windowInstance, settings) {
+  if (!windowInstance || windowInstance.isDestroyed()) {
+    return
+  }
+
+  const emit = () => {
+    if (!windowInstance || windowInstance.isDestroyed()) {
+      return
+    }
+    windowInstance.webContents.send('desktop:companion-settings-changed', settings)
+  }
+
+  if (windowInstance.webContents.isLoading()) {
+    windowInstance.webContents.once('did-finish-load', emit)
+    return
+  }
+
+  emit()
+}
+
+function sendCompanionStateToWindow(windowInstance, payload) {
+  if (!windowInstance || windowInstance.isDestroyed()) {
+    return
+  }
+
+  const emit = () => {
+    if (!windowInstance || windowInstance.isDestroyed()) {
+      return
+    }
+    windowInstance.webContents.send('desktop:companion-state-changed', payload)
+  }
+
+  if (windowInstance.webContents.isLoading()) {
+    windowInstance.webContents.once('did-finish-load', emit)
+    return
+  }
+
+  emit()
+}
+
 function sendVoiceGlobalShortcutToPet(payload = {}) {
   if (!petWindow || petWindow.isDestroyed()) {
     return false
@@ -474,6 +570,37 @@ function broadcastVoiceSettings(patch = {}) {
   sendVoiceSettingsToWindow(mainPanelWindow, nextSettings)
   registerVoiceGlobalShortcut()
   return nextSettings
+}
+
+function broadcastCompanionSettings(patch = {}) {
+  const nextSettings = normalizeCompanionSettings({
+    ...getCompanionSettings(),
+    ...(patch || {}),
+  })
+  getStore().set('petCompanionSettings', nextSettings)
+  sendCompanionSettingsToWindow(petWindow, nextSettings)
+  sendCompanionSettingsToWindow(quickChatWindow, nextSettings)
+  sendCompanionSettingsToWindow(mainPanelWindow, nextSettings)
+  return nextSettings
+}
+
+function setPetCompanionState(petType, state = {}) {
+  const normalizedPetType = normalizePetType(petType)
+  const stateByPet = getStore().get('petCompanionState') || {}
+  const nextState = state && typeof state === 'object' ? { ...state } : {}
+  getStore().set('petCompanionState', {
+    ...stateByPet,
+    [normalizedPetType]: nextState,
+  })
+
+  const payload = {
+    pet_type: normalizedPetType,
+    state: nextState,
+  }
+  sendCompanionStateToWindow(petWindow, payload)
+  sendCompanionStateToWindow(quickChatWindow, payload)
+  sendCompanionStateToWindow(mainPanelWindow, payload)
+  return nextState
 }
 
 function broadcastPetState(payload = {}) {
@@ -928,6 +1055,8 @@ function getRuntimeState() {
     petState: getPetState(),
     petRelationshipCache: getStore().get('petRelationshipCache') || {},
     voiceSettings: getVoiceSettings(),
+    companionSettings: getCompanionSettings(),
+    companionState: getStore().get('petCompanionState') || {},
     voiceGlobalShortcut: {
       registered: registeredVoiceGlobalShortcut,
     },
@@ -995,6 +1124,23 @@ function registerIpc() {
   })
   ipcMain.handle('desktop:get-voice-settings', async () => getVoiceSettings())
   ipcMain.handle('desktop:update-voice-settings', async (_event, patch) => broadcastVoiceSettings(patch))
+  ipcMain.handle('desktop:get-companion-settings', async () => getCompanionSettings())
+  ipcMain.handle('desktop:update-companion-settings', async (_event, patch) =>
+    broadcastCompanionSettings(patch),
+  )
+  ipcMain.handle('desktop:get-companion-state', async (_event, petType) =>
+    getPetCompanionState(petType),
+  )
+  ipcMain.handle('desktop:set-companion-state', async (_event, petType, state) =>
+    setPetCompanionState(petType, state),
+  )
+  ipcMain.handle('desktop:get-system-idle-seconds', async () => {
+    try {
+      return powerMonitor.getSystemIdleTime()
+    } catch {
+      return 0
+    }
+  })
   ipcMain.handle('desktop:set-pet-position', async (_event, position) => {
     if (!position || typeof position !== 'object') {
       return null
@@ -1024,6 +1170,7 @@ function registerIpc() {
   ipcMain.handle('desktop:clear-session-token', async () => {
     getStore().set('sessionToken', null)
     getStore().set('petRelationshipCache', {})
+    getStore().set('petCompanionState', {})
     syncPetState({
       hasSession: false,
       petType: 'cat',
@@ -1033,6 +1180,13 @@ function registerIpc() {
         bubble_frequency: 120,
       },
     })
+    for (const windowInstance of [petWindow, quickChatWindow, mainPanelWindow]) {
+      sendCompanionStateToWindow(windowInstance, {
+        pet_type: null,
+        state: null,
+        cleared: true,
+      })
+    }
     return true
   })
 

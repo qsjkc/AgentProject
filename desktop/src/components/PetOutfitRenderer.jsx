@@ -4,6 +4,16 @@ import {
   getPetOutfitVisual,
 } from '../shared/pet-outfit-visuals'
 
+const OUTFIT_COMPATIBLE_ACTIONS = new Set([
+  'idle',
+  'dress_up',
+  'run',
+  'stretch',
+  'look_around',
+  'yawn',
+  'welcome_back',
+])
+
 function getEffectiveOutfits(petType, action, outfit) {
   const unlocked = new Set(outfit?.unlocked_outfit_ids || [])
 
@@ -17,7 +27,7 @@ function getEffectiveOutfits(petType, action, outfit) {
   if (action === 'reminding') {
     return unlocked.has('pig_bell') ? ['pig_bell'] : []
   }
-  if (action !== 'idle' && action !== 'dress_up') {
+  if (!OUTFIT_COMPATIBLE_ACTIONS.has(action)) {
     return []
   }
 

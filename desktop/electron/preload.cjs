@@ -40,6 +40,21 @@ contextBridge.exposeInMainWorld('desktopBridge', {
   setLanguage: (value) => ipcRenderer.invoke('desktop:set-language', value),
   getVoiceSettings: () => ipcRenderer.invoke('desktop:get-voice-settings'),
   updateVoiceSettings: (patch) => ipcRenderer.invoke('desktop:update-voice-settings', patch),
+  getCompanionSettings: () => ipcRenderer.invoke('desktop:get-companion-settings'),
+  updateCompanionSettings: (patch) => ipcRenderer.invoke('desktop:update-companion-settings', patch),
+  getCompanionState: (petType) => ipcRenderer.invoke('desktop:get-companion-state', petType),
+  setCompanionState: (petType, state) => ipcRenderer.invoke('desktop:set-companion-state', petType, state),
+  getSystemIdleSeconds: () => ipcRenderer.invoke('desktop:get-system-idle-seconds'),
+  onCompanionSettingsChanged: (callback) => {
+    const listener = (_event, payload) => callback(payload)
+    ipcRenderer.on('desktop:companion-settings-changed', listener)
+    return () => ipcRenderer.removeListener('desktop:companion-settings-changed', listener)
+  },
+  onCompanionStateChanged: (callback) => {
+    const listener = (_event, payload) => callback(payload)
+    ipcRenderer.on('desktop:companion-state-changed', listener)
+    return () => ipcRenderer.removeListener('desktop:companion-state-changed', listener)
+  },
   onVoiceSettingsChanged: (callback) => {
     const listener = (_event, payload) => callback(payload)
     ipcRenderer.on('desktop:voice-settings-changed', listener)

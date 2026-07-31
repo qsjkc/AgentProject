@@ -61,6 +61,19 @@ const pigAnimations = {
   drag: [pigWalk01, pigWalk02, pigWalk03, pigWalk04, pigWalk05, pigWalk06],
   dress_up: [pigIdle01, pigIdle02, pigIdle03, pigIdle04, pigIdle05, pigIdle06],
   level_up: [pigJump01, pigJump02, pigJump03, pigJump04, pigJump05, pigJump06],
+  run: [pigWalk01, pigWalk02, pigWalk03, pigWalk04, pigWalk05, pigWalk06, pigWalk05, pigWalk04],
+  stretch: [pigIdle01, pigIdle02, pigIdle03, pigIdle04, pigIdle05, pigIdle06, pigIdle05, pigIdle04],
+  look_around: [pigIdle02, pigIdle03, pigIdle04, pigIdle05, pigIdle04, pigIdle03],
+  yawn: [pigSleeping01, pigSleeping02, pigSleeping03, pigSleeping04, pigSleeping05, pigSleeping06],
+  welcome_back: [pigHappy01, pigHappy02, pigJump01, pigJump02, pigJump03, pigHappy05, pigHappy06],
+}
+
+const pigAnimationDurations = {
+  run: 72,
+  stretch: 145,
+  look_around: 165,
+  yawn: 175,
+  welcome_back: 92,
 }
 
 const pigSpriteAnimations = {
@@ -108,6 +121,9 @@ export function getPetAnimation(petType, action) {
     type: 'frames',
     frames,
     frameCount: frames.length,
-    frameDuration: DEFAULT_FRAME_DURATION_MS,
+    frameDuration:
+      petType === 'pig'
+        ? pigAnimationDurations[action] || DEFAULT_FRAME_DURATION_MS
+        : DEFAULT_FRAME_DURATION_MS,
   }
 }
