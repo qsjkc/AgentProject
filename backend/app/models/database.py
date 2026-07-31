@@ -196,6 +196,41 @@ async def ensure_legacy_sqlite_schema(conn) -> None:
             "ON chat_messages (pet_type, role, created_at)"
         )
 
+    reminder_columns = await get_sqlite_table_columns(conn, "reminders")
+    if reminder_columns and "email_enabled" not in reminder_columns:
+        await conn.exec_driver_sql(
+            "ALTER TABLE reminders ADD COLUMN email_enabled BOOLEAN NOT NULL DEFAULT 0"
+        )
+    if reminder_columns and "email_status" not in reminder_columns:
+        await conn.exec_driver_sql(
+            "ALTER TABLE reminders ADD COLUMN email_status VARCHAR(20) NOT NULL DEFAULT 'disabled'"
+        )
+    if reminder_columns and "email_sent_at" not in reminder_columns:
+        await conn.exec_driver_sql("ALTER TABLE reminders ADD COLUMN email_sent_at DATETIME")
+    if reminder_columns and "email_claimed_at" not in reminder_columns:
+        await conn.exec_driver_sql("ALTER TABLE reminders ADD COLUMN email_claimed_at DATETIME")
+    if reminder_columns and "email_claim_token" not in reminder_columns:
+        await conn.exec_driver_sql(
+            "ALTER TABLE reminders ADD COLUMN email_claim_token VARCHAR(36)"
+        )
+    if reminder_columns and "email_attempt_count" not in reminder_columns:
+        await conn.exec_driver_sql(
+            "ALTER TABLE reminders ADD COLUMN email_attempt_count INTEGER NOT NULL DEFAULT 0"
+        )
+    if reminder_columns and "email_next_attempt_at" not in reminder_columns:
+        await conn.exec_driver_sql(
+            "ALTER TABLE reminders ADD COLUMN email_next_attempt_at DATETIME"
+        )
+    if reminder_columns and "email_last_error" not in reminder_columns:
+        await conn.exec_driver_sql(
+            "ALTER TABLE reminders ADD COLUMN email_last_error VARCHAR(500)"
+        )
+    if reminder_columns:
+        await conn.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_reminders_email_delivery "
+            "ON reminders (status, email_enabled, email_status, remind_at, email_next_attempt_at)"
+        )
+
     await backfill_pet_activity_events(conn)
 
 
@@ -298,6 +333,16 @@ class Document(Base):
 
 class Reminder(Base):
     __tablename__ = "reminders"
+    __table_args__ = (
+        Index(
+            "ix_reminders_email_delivery",
+            "status",
+            "email_enabled",
+            "email_status",
+            "remind_at",
+            "email_next_attempt_at",
+        ),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
@@ -308,6 +353,14 @@ class Reminder(Base):
     status = Column(String(20), nullable=False, default="pending", index=True)
     triggered_at = Column(DateTime, nullable=True)
     completed_at = Column(DateTime, nullable=True)
+    email_enabled = Column(Boolean, nullable=False, default=True)
+    email_status = Column(String(20), nullable=False, default="pending")
+    email_sent_at = Column(DateTime, nullable=True)
+    email_claimed_at = Column(DateTime, nullable=True)
+    email_claim_token = Column(String(36), nullable=True)
+    email_attempt_count = Column(Integer, nullable=False, default=0)
+    email_next_attempt_at = Column(DateTime, nullable=True)
+    email_last_error = Column(String(500), nullable=True)
     created_at = Column(DateTime, default=utc_now, nullable=False)
     updated_at = Column(DateTime, default=utc_now, onupdate=utc_now, nullable=False)
 

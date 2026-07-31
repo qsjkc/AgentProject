@@ -29,6 +29,13 @@ export function completeReminder(reminderId) {
   })
 }
 
+export function retryReminderEmail(reminderId) {
+  return desktopApiRequest(`/reminders/${reminderId}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ email_enabled: true }),
+  })
+}
+
 export function markReminderTriggered(reminderId) {
   return desktopApiRequest(`/reminders/${reminderId}/trigger`, {
     method: 'POST',

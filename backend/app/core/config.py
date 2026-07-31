@@ -55,6 +55,12 @@ class Settings(BaseSettings):
     DESKTOP_RELEASE_FILE: str = "DetachymAgentPet1.0.exe"
     DESKTOP_DOWNLOAD_BASE: str = "/download"
     PET_REWARD_TIMEZONE: str = "Asia/Shanghai"
+    REMINDER_EMAIL_WORKER_ENABLED: bool = True
+    REMINDER_EMAIL_POLL_INTERVAL_SECONDS: int = 30
+    REMINDER_EMAIL_LEASE_SECONDS: int = 300
+    REMINDER_EMAIL_MAX_ATTEMPTS: int = 3
+    REMINDER_EMAIL_RETRY_BASE_SECONDS: int = 60
+    REMINDER_EMAIL_BATCH_SIZE: int = 20
 
     VOLC_AI_RTC_APP_ID: Optional[str] = None
     VOLC_AI_RTC_APP_KEY: Optional[str] = None

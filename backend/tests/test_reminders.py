@@ -89,6 +89,10 @@ async def test_reminders_are_scoped_by_user_pet_and_status(client: AsyncClient):
     reminder_id = created.json()["id"]
     assert created.json()["pet_type"] == "pig"
     assert created.json()["status"] == "pending"
+    assert created.json()["email_enabled"] is True
+    assert created.json()["email_status"] == "pending"
+    assert created.json()["email_sent_at"] is None
+    assert created.json()["email_attempt_count"] == 0
 
     relationship_after_create = await client.get(
         "/api/v1/pets/pig/relationship",
@@ -139,6 +143,7 @@ async def test_reminders_are_scoped_by_user_pet_and_status(client: AsyncClient):
     assert completed.status_code == 200
     assert completed.json()["status"] == "completed"
     assert completed.json()["triggered_at"] is not None
+    assert completed.json()["email_status"] == "canceled"
 
     relationship_after_complete = await client.get(
         "/api/v1/pets/pig/relationship",
@@ -175,6 +180,31 @@ def test_reminder_schema_normalizes_aware_datetime_to_naive_utc():
     assert payload.remind_at.tzinfo is None
 
 
+def test_reminder_email_escapes_html_and_removes_subject_newlines():
+    from app.services.reminder_delivery import (  # noqa: E402
+        ClaimedReminder,
+        build_reminder_email,
+    )
+
+    claimed = ClaimedReminder(
+        id=1,
+        claim_token="test-claim",
+        recipient="safe@example.com",
+        username="<用户>",
+        pet_type="pig",
+        title="开会 <确认>\n下一行",
+        remind_at=datetime(2026, 7, 31, 7, 0, 0),
+        attempt_count=1,
+    )
+
+    subject, html_content = build_reminder_email(claimed)
+
+    assert subject == "小猪提醒你：开会 <确认> 下一行"
+    assert "\n" not in subject
+    assert "&lt;用户&gt;" in html_content
+    assert "开会 &lt;确认&gt;\n下一行" in html_content
+
+
 @pytest.mark.asyncio
 async def test_reminders_require_auth_and_can_be_canceled(client: AsyncClient):
     unauthenticated = await client.get("/api/v1/reminders?pet_type=pig&status=pending")
@@ -201,6 +231,7 @@ async def test_reminders_require_auth_and_can_be_canceled(client: AsyncClient):
     assert canceled.status_code == 200
     assert canceled.json()["status"] == "canceled"
     assert canceled.json()["completed_at"] is not None
+    assert canceled.json()["email_status"] == "canceled"
 
     relationship = await client.get(
         "/api/v1/pets/cat/relationship",
@@ -262,3 +293,196 @@ async def test_reminders_are_owned_by_current_user(client: AsyncClient):
 
     bob_complete = await client.post(f"/api/v1/reminders/{reminder_id}/complete", headers=bob_headers)
     assert bob_complete.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_due_reminder_email_is_sent_without_marking_desktop_triggered(
+    client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    headers = await register_and_login(
+        client,
+        "email-delivery",
+        "email-delivery@example.com",
+    )
+    created = await client.post(
+        "/api/v1/reminders",
+        headers=headers,
+        json={
+            "pet_type": "pig",
+            "title": "下午三点开会",
+            "source_text": "下午三点有一个会议",
+            "remind_at": (utc_now() - timedelta(minutes=1)).isoformat(),
+        },
+    )
+    reminder_id = created.json()["id"]
+    deliveries = []
+
+    async def capture_email(recipient: str, subject: str, html_content: str) -> bool:
+        deliveries.append((recipient, subject, html_content))
+        return True
+
+    from app.services import reminder_delivery as reminder_delivery_module  # noqa: E402
+
+    monkeypatch.setattr(reminder_delivery_module, "send_email", capture_email)
+    processed = await reminder_delivery_module.reminder_delivery_service.process_due_once()
+
+    assert processed >= 1
+    assert any(
+        recipient == "email-delivery@example.com"
+        and subject == "小猪提醒你：下午三点开会"
+        and "桌面端继续等你回来处理" in content
+        for recipient, subject, content in deliveries
+    )
+
+    reminders = await client.get(
+        "/api/v1/reminders?pet_type=pig&status=pending",
+        headers=headers,
+    )
+    delivered = next(item for item in reminders.json() if item["id"] == reminder_id)
+    assert delivered["email_status"] == "sent"
+    assert delivered["email_sent_at"] is not None
+    assert delivered["email_attempt_count"] == 1
+    assert delivered["triggered_at"] is None
+
+    rescheduled = await client.patch(
+        f"/api/v1/reminders/{reminder_id}",
+        headers=headers,
+        json={"remind_at": (utc_now() + timedelta(hours=1)).isoformat()},
+    )
+    assert rescheduled.status_code == 200
+    assert rescheduled.json()["email_status"] == "pending"
+    assert rescheduled.json()["email_sent_at"] is None
+    assert rescheduled.json()["email_attempt_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_reminder_email_retries_then_stops_at_attempt_limit(
+    client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    headers = await register_and_login(
+        client,
+        "email-retry",
+        "email-retry@example.com",
+    )
+    created = await client.post(
+        "/api/v1/reminders",
+        headers=headers,
+        json={
+            "pet_type": "pig",
+            "title": "重试发送",
+            "remind_at": (utc_now() - timedelta(minutes=1)).isoformat(),
+        },
+    )
+    reminder_id = created.json()["id"]
+
+    from app.core.config import settings  # noqa: E402
+    from app.models.database import Reminder, async_session_maker  # noqa: E402
+    from app.services import reminder_delivery as reminder_delivery_module  # noqa: E402
+    from app.services.email import EmailDeliveryError  # noqa: E402
+
+    async def fail_email(*_args) -> bool:
+        raise EmailDeliveryError("SMTP delivery failed: test")
+
+    monkeypatch.setattr(settings, "REMINDER_EMAIL_MAX_ATTEMPTS", 2)
+    monkeypatch.setattr(settings, "REMINDER_EMAIL_RETRY_BASE_SECONDS", 60)
+    monkeypatch.setattr(reminder_delivery_module, "send_email", fail_email)
+
+    await reminder_delivery_module.reminder_delivery_service.process_due_once()
+    first = await client.get(
+        "/api/v1/reminders?pet_type=pig&status=pending",
+        headers=headers,
+    )
+    retrying = next(item for item in first.json() if item["id"] == reminder_id)
+    assert retrying["email_status"] == "retrying"
+    assert retrying["email_attempt_count"] == 1
+
+    async with async_session_maker.begin() as session:
+        reminder = await session.get(Reminder, reminder_id)
+        reminder.email_next_attempt_at = utc_now() - timedelta(seconds=1)
+
+    await reminder_delivery_module.reminder_delivery_service.process_due_once()
+    second = await client.get(
+        "/api/v1/reminders?pet_type=pig&status=pending",
+        headers=headers,
+    )
+    failed = next(item for item in second.json() if item["id"] == reminder_id)
+    assert failed["email_status"] == "failed"
+    assert failed["email_attempt_count"] == 2
+
+    retry = await client.patch(
+        f"/api/v1/reminders/{reminder_id}",
+        headers=headers,
+        json={"email_enabled": True},
+    )
+    assert retry.status_code == 200
+    assert retry.json()["email_status"] == "pending"
+    assert retry.json()["email_attempt_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_reminder_can_disable_email_delivery(client: AsyncClient):
+    headers = await register_and_login(
+        client,
+        "email-disabled",
+        "email-disabled@example.com",
+    )
+    created = await client.post(
+        "/api/v1/reminders",
+        headers=headers,
+        json={
+            "pet_type": "pig",
+            "title": "只在桌面提醒",
+            "remind_at": (utc_now() + timedelta(hours=1)).isoformat(),
+            "email_enabled": False,
+        },
+    )
+
+    assert created.status_code == 200
+    assert created.json()["email_enabled"] is False
+    assert created.json()["email_status"] == "disabled"
+
+
+@pytest.mark.asyncio
+async def test_exhausted_stale_email_claim_becomes_failed(
+    client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    headers = await register_and_login(
+        client,
+        "email-stale-claim",
+        "email-stale-claim@example.com",
+    )
+    created = await client.post(
+        "/api/v1/reminders",
+        headers=headers,
+        json={
+            "pet_type": "pig",
+            "title": "恢复悬挂发送",
+            "remind_at": (utc_now() - timedelta(minutes=10)).isoformat(),
+        },
+    )
+    reminder_id = created.json()["id"]
+
+    from app.core.config import settings  # noqa: E402
+    from app.models.database import Reminder, async_session_maker  # noqa: E402
+    from app.services.reminder_delivery import reminder_delivery_service  # noqa: E402
+
+    monkeypatch.setattr(settings, "REMINDER_EMAIL_MAX_ATTEMPTS", 3)
+    monkeypatch.setattr(settings, "REMINDER_EMAIL_LEASE_SECONDS", 300)
+    async with async_session_maker.begin() as session:
+        reminder = await session.get(Reminder, reminder_id)
+        reminder.email_status = "sending"
+        reminder.email_attempt_count = 3
+        reminder.email_claimed_at = utc_now() - timedelta(minutes=6)
+        reminder.email_claim_token = "stale-final-claim"
+
+    await reminder_delivery_service.process_due_once()
+    reminders = await client.get(
+        "/api/v1/reminders?pet_type=pig&status=pending",
+        headers=headers,
+    )
+    recovered = next(item for item in reminders.json() if item["id"] == reminder_id)
+    assert recovered["email_status"] == "failed"
+    assert recovered["email_attempt_count"] == 3

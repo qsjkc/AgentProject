@@ -236,7 +236,11 @@ function QuickChatApp() {
           hour: '2-digit',
           minute: '2-digit',
         })
-        const copy = getPetReminderCopy(petType).createdReminder(reminder.title, timeText)
+        const copy = getPetReminderCopy(petType).createdReminder(
+          reminder.title,
+          timeText,
+          reminder.email_enabled,
+        )
         setMessages((current) => [...current, { role: 'assistant', content: copy }])
         await window.desktopBridge?.notifyPetReminderEvent?.({
           type: 'created',

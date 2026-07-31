@@ -1,10 +1,6 @@
 import random
-import smtplib
 import string
 from datetime import timedelta
-from email.header import Header
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm
@@ -12,8 +8,6 @@ from sqlalchemy import delete, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.core.config import settings
-from app.core.logging import logger
 from app.core.security import (
     create_access_token,
     get_current_user,
@@ -33,6 +27,7 @@ from app.schemas.user import (
     UserResponse,
     VerificationCodeRequest,
 )
+from app.services.email import EmailDeliveryError, send_email
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -41,30 +36,14 @@ def generate_verification_code() -> str:
     return "".join(random.choices(string.digits, k=6))
 
 
-async def send_email(email: str, subject: str, html_content: str) -> bool:
-    if not settings.SMTP_USER or not settings.SMTP_PASSWORD:
-        logger.info("[dev-email] %s -> %s", subject, email)
-        logger.info("%s", html_content)
-        return True
-
-    msg = MIMEMultipart()
-    msg["From"] = str(Header(f"{settings.SMTP_SENDER_NAME} <{settings.SMTP_USER}>", "utf-8"))
-    msg["To"] = email
-    msg["Subject"] = Header(subject, "utf-8")
-    msg.attach(MIMEText(html_content, "html", "utf-8"))
-
+async def send_auth_email(email: str, subject: str, html_content: str) -> bool:
     try:
-        with smtplib.SMTP(settings.SMTP_SERVER, settings.SMTP_PORT, timeout=15) as server:
-            server.starttls()
-            server.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
-            server.send_message(msg)
-    except (TimeoutError, OSError, smtplib.SMTPException) as exc:
-        logger.exception("Failed to send email to %s", email)
+        return await send_email(email, subject, html_content)
+    except EmailDeliveryError as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="Failed to send verification email",
         ) from exc
-    return True
 
 
 async def issue_code(
@@ -149,7 +128,7 @@ async def send_verification_code(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email already registered")
 
     code = await issue_code(db, email=payload.email, purpose="register")
-    await send_email(
+    await send_auth_email(
         payload.email,
         "Detachym 注册验证码",
         (
@@ -170,7 +149,7 @@ async def forgot_password(
     user = result.scalar_one_or_none()
     if user:
         code = await issue_code(db, email=payload.email, purpose="reset_password", user_id=user.id)
-        await send_email(
+        await send_auth_email(
             payload.email,
             "Detachym 重置密码验证码",
             (

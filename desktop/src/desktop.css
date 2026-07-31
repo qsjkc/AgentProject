@@ -965,6 +965,7 @@ select {
 }
 
 .pending-reminder-icon-button,
+.pending-reminder-retry,
 .pending-reminder-complete {
   width: 28px;
   height: 28px;
@@ -981,6 +982,8 @@ select {
 
 .pending-reminder-icon-button:hover:not(:disabled),
 .pending-reminder-icon-button:focus-visible,
+.pending-reminder-retry:hover:not(:disabled),
+.pending-reminder-retry:focus-visible,
 .pending-reminder-complete:hover:not(:disabled),
 .pending-reminder-complete:focus-visible {
   border-color: #e11d48;
@@ -989,6 +992,7 @@ select {
 }
 
 .pending-reminder-icon-button:disabled,
+.pending-reminder-retry:disabled,
 .pending-reminder-complete:disabled {
   opacity: 0.45;
   cursor: default;
@@ -1002,7 +1006,7 @@ select {
 .pending-reminder-item {
   min-height: 54px;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 28px;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 8px;
   border-bottom: 1px solid #e2e8f0;
@@ -1010,6 +1014,12 @@ select {
 
 .pending-reminder-copy {
   min-width: 0;
+}
+
+.pending-reminder-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .pending-reminder-title {
@@ -1029,6 +1039,49 @@ select {
 
 .pending-reminder-error {
   color: #be123c;
+}
+
+.pending-reminder-email {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 2px;
+  color: #475569;
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.pending-reminder-email span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pending-reminder-email.is-success {
+  color: #15803d;
+}
+
+.pending-reminder-email.is-warning {
+  color: #a16207;
+}
+
+.pending-reminder-email.is-error {
+  color: #be123c;
+}
+
+.pending-reminder-email.is-muted {
+  color: #94a3b8;
+}
+
+.pending-reminder-email .lucide-loader-circle {
+  animation: reminder-email-spin 1s linear infinite;
+}
+
+@keyframes reminder-email-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .quick-chat-stage {

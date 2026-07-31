@@ -870,7 +870,11 @@ function MainPanelApp() {
           hour: '2-digit',
           minute: '2-digit',
         })
-        const copy = getPetReminderCopy(currentPetType).createdReminder(reminder.title, timeText)
+        const copy = getPetReminderCopy(currentPetType).createdReminder(
+          reminder.title,
+          timeText,
+          reminder.email_enabled,
+        )
         setMessages((current) => [
           ...current,
           { role: 'user', content: outgoingMessage },

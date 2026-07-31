@@ -25,6 +25,35 @@ from app.services.pet_relationships import award_pet_relationship
 router = APIRouter(prefix="/reminders", tags=["reminders"])
 
 
+def clear_email_claim(reminder: Reminder) -> None:
+    reminder.email_claimed_at = None
+    reminder.email_claim_token = None
+    reminder.email_next_attempt_at = None
+
+
+def reset_email_delivery(reminder: Reminder, *, force_resend: bool = False) -> None:
+    if reminder.email_sent_at is not None and not force_resend:
+        return
+    if force_resend:
+        reminder.email_sent_at = None
+    clear_email_claim(reminder)
+    reminder.email_attempt_count = 0
+    reminder.email_last_error = None
+    if reminder.status != "pending":
+        reminder.email_status = "canceled"
+    elif reminder.email_enabled:
+        reminder.email_status = "pending"
+    else:
+        reminder.email_status = "disabled"
+
+
+def stop_email_delivery(reminder: Reminder) -> None:
+    if reminder.email_sent_at is not None:
+        return
+    clear_email_claim(reminder)
+    reminder.email_status = "canceled"
+
+
 async def reward_reminder_action(
     db: AsyncSession,
     *,
@@ -70,6 +99,8 @@ async def create_reminder(
         source_text=payload.source_text,
         remind_at=payload.remind_at,
         status="pending",
+        email_enabled=payload.email_enabled,
+        email_status="pending" if payload.email_enabled else "disabled",
     )
     db.add(reminder)
     await db.commit()
@@ -134,14 +165,27 @@ async def update_reminder(
     db: AsyncSession = Depends(get_db),
 ):
     reminder = await get_owned_reminder(reminder_id, current_user, db)
+    delivery_changed = False
+    remind_at_changed = False
     if payload.title is not None:
         reminder.title = payload.title
     if payload.remind_at is not None:
         reminder.remind_at = payload.remind_at
+        delivery_changed = True
+        remind_at_changed = True
+    if payload.email_enabled is not None:
+        reminder.email_enabled = payload.email_enabled
+        delivery_changed = True
     if payload.status is not None:
         reminder.status = payload.status
         if payload.status in {"completed", "canceled"}:
             reminder.completed_at = utc_now()
+            stop_email_delivery(reminder)
+        elif payload.status == "pending":
+            reminder.completed_at = None
+            delivery_changed = True
+    if reminder.status == "pending" and delivery_changed:
+        reset_email_delivery(reminder, force_resend=remind_at_changed)
     await db.commit()
     await db.refresh(reminder)
     if payload.status == "completed":
@@ -170,6 +214,7 @@ async def complete_reminder(
     reminder.status = "completed"
     reminder.triggered_at = reminder.triggered_at or now
     reminder.completed_at = now
+    stop_email_delivery(reminder)
     await db.commit()
     await db.refresh(reminder)
     await reward_reminder_action(
