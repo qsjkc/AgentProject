@@ -204,6 +204,12 @@ async def test_register_rejects_existing_email_and_chat_accepts_pet_type(client:
     assert chat_response.json()["knowledge_used"] is False
     assert chat_response.json()["sources"] == []
 
+    daily_summary = await client.get("/api/v1/pets/dog/daily-summary", headers=headers)
+    assert daily_summary.status_code == 200
+    assert daily_summary.json()["interaction_count"] == 1
+    assert daily_summary.json()["meaningful_chat_count"] == 1
+    assert daily_summary.json()["xp_gained"] == 2
+
 
 @pytest.mark.asyncio
 async def test_public_release_endpoint_reflects_download_file(client: AsyncClient):

@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
@@ -83,3 +83,18 @@ class PetRelationshipRewardResponse(BaseModel):
     daily_awarded_xp: int = Field(ge=0)
     level_up: bool = False
     relationship: PetRelationshipResponse
+
+
+class PetDailySummaryResponse(BaseModel):
+    pet_type: PetType
+    local_date: date
+    timezone: str
+    interaction_count: int = Field(ge=0)
+    xp_gained: int = Field(ge=0)
+    action_counts: dict[str, int]
+    care_count: int = Field(ge=0)
+    meaningful_chat_count: int = Field(ge=0)
+    reminders_created_count: int = Field(ge=0)
+    reminders_completed_count: int = Field(ge=0)
+    first_interaction_at: Optional[datetime] = None
+    last_interaction_at: Optional[datetime] = None

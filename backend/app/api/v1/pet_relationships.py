@@ -5,6 +5,7 @@ from app.core.security import get_current_user
 from app.models.database import get_db
 from app.models.user import User
 from app.schemas.pet_relationship import (
+    PetDailySummaryResponse,
     PetRelationshipResponse,
     PetOutfitUpdateRequest,
     PetRelationshipRewardRequest,
@@ -14,12 +15,26 @@ from app.schemas.pet_relationship import (
 from app.services.pet_relationships import (
     award_pet_relationship,
     get_or_create_pet_relationship,
+    get_pet_daily_summary,
     serialize_pet_relationship,
     update_pet_outfit,
 )
 
 
 router = APIRouter(prefix="/pets", tags=["pet-relationships"])
+
+
+@router.get("/{pet_type}/daily-summary", response_model=PetDailySummaryResponse)
+async def get_daily_summary(
+    pet_type: PetType,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    return await get_pet_daily_summary(
+        db,
+        user_id=current_user.id,
+        pet_type=pet_type,
+    )
 
 
 @router.get("/{pet_type}/relationship", response_model=PetRelationshipResponse)

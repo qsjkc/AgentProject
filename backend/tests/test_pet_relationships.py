@@ -23,6 +23,7 @@ os.environ["INITIAL_ADMIN_PASSWORD"] = "ChangeThisPassword123!"
 from app.main import app  # noqa: E402
 from app.services.pet_relationships import (  # noqa: E402
     award_pet_relationship,
+    get_pet_daily_summary,
     get_relationship_level,
     get_relationship_progress,
 )
@@ -133,6 +134,146 @@ async def test_relationship_is_created_per_user_and_pet(client: AsyncClient):
     bob_pig = await client.get("/api/v1/pets/pig/relationship", headers=bob_headers)
     assert bob_pig.status_code == 200
     assert bob_pig.json()["id"] != pig.json()["id"]
+
+    daily_summary = await client.get("/api/v1/pets/pig/daily-summary", headers=bob_headers)
+    assert daily_summary.status_code == 200
+    assert daily_summary.json()["pet_type"] == "pig"
+    assert daily_summary.json()["interaction_count"] == 0
+    assert daily_summary.json()["xp_gained"] == 0
+    assert daily_summary.json()["reminders_created_count"] == 0
+    assert daily_summary.json()["reminders_completed_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_daily_summary_uses_local_day_and_isolates_user_and_pet(client: AsyncClient):
+    alice_headers = await register_and_login(client, "daily-alice", "daily-alice@example.com")
+    bob_headers = await register_and_login(client, "daily-bob", "daily-bob@example.com")
+
+    alice_relationship = await client.get("/api/v1/pets/pig/relationship", headers=alice_headers)
+    bob_relationship = await client.get("/api/v1/pets/pig/relationship", headers=bob_headers)
+    alice_user_id = alice_relationship.json()["user_id"]
+    bob_user_id = bob_relationship.json()["user_id"]
+
+    from app.models.database import (  # noqa: E402
+        ChatMessage,
+        ChatSession,
+        Reminder,
+        async_session_maker,
+    )
+
+    summary_time = datetime(2026, 7, 31, 7, 0, 0)
+    async with async_session_maker() as session:
+        for index, action in enumerate(
+            ("pat", "meaningful_chat", "reminder_created", "reminder_completed")
+        ):
+            result = await award_pet_relationship(
+                session,
+                user_id=alice_user_id,
+                pet_type="pig",
+                action=action,
+                idempotency_key=f"daily-summary-{action}",
+                now=summary_time + timedelta(minutes=index),
+            )
+            assert result["reason"] == "awarded"
+
+        alice_chat_session = ChatSession(user_id=alice_user_id, title="Alice daily chat")
+        bob_chat_session = ChatSession(user_id=bob_user_id, title="Bob daily chat")
+        session.add_all([alice_chat_session, bob_chat_session])
+        await session.flush()
+
+        session.add_all(
+            [
+                Reminder(
+                    user_id=alice_user_id,
+                    pet_type="pig",
+                    title="Today reminder",
+                    remind_at=summary_time + timedelta(hours=2),
+                    status="completed",
+                    completed_at=summary_time + timedelta(minutes=5),
+                    created_at=summary_time,
+                ),
+                Reminder(
+                    user_id=alice_user_id,
+                    pet_type="pig",
+                    title="Older reminder",
+                    remind_at=summary_time,
+                    status="completed",
+                    completed_at=summary_time + timedelta(minutes=6),
+                    created_at=summary_time - timedelta(days=1),
+                ),
+                Reminder(
+                    user_id=alice_user_id,
+                    pet_type="cat",
+                    title="Other pet reminder",
+                    remind_at=summary_time,
+                    status="completed",
+                    completed_at=summary_time,
+                    created_at=summary_time,
+                ),
+                Reminder(
+                    user_id=bob_user_id,
+                    pet_type="pig",
+                    title="Other user reminder",
+                    remind_at=summary_time,
+                    status="completed",
+                    completed_at=summary_time,
+                    created_at=summary_time,
+                ),
+                ChatMessage(
+                    session_id=alice_chat_session.id,
+                    role="user",
+                    pet_type="pig",
+                    content="First pig chat",
+                    created_at=summary_time + timedelta(minutes=1),
+                ),
+                ChatMessage(
+                    session_id=alice_chat_session.id,
+                    role="user",
+                    pet_type="pig",
+                    content="Second pig chat",
+                    created_at=summary_time + timedelta(minutes=4),
+                ),
+                ChatMessage(
+                    session_id=alice_chat_session.id,
+                    role="user",
+                    pet_type="cat",
+                    content="Other pet chat",
+                    created_at=summary_time,
+                ),
+                ChatMessage(
+                    session_id=bob_chat_session.id,
+                    role="user",
+                    pet_type="pig",
+                    content="Other user chat",
+                    created_at=summary_time,
+                ),
+            ]
+        )
+        await session.commit()
+
+        summary = await get_pet_daily_summary(
+            session,
+            user_id=alice_user_id,
+            pet_type="pig",
+            now=summary_time,
+        )
+
+    assert summary["local_date"].isoformat() == "2026-07-31"
+    assert summary["timezone"] == "Asia/Shanghai"
+    assert summary["interaction_count"] == 6
+    assert summary["xp_gained"] == 19
+    assert summary["action_counts"] == {
+        "meaningful_chat": 1,
+        "pat": 1,
+        "reminder_completed": 1,
+        "reminder_created": 1,
+    }
+    assert summary["care_count"] == 1
+    assert summary["meaningful_chat_count"] == 2
+    assert summary["reminders_created_count"] == 1
+    assert summary["reminders_completed_count"] == 2
+    assert summary["first_interaction_at"] == summary_time
+    assert summary["last_interaction_at"] == summary_time + timedelta(minutes=6)
 
 
 @pytest.mark.asyncio

@@ -41,6 +41,7 @@ PET_PERSONA_PROMPTS = {
 @dataclass
 class PreparedChatTurn:
     session: ChatSession
+    user_message_id: int
     messages: list[Message]
     rag_sources: list
 
@@ -132,15 +133,16 @@ async def prepare_chat_turn(
 ) -> PreparedChatTurn:
     session = await get_or_create_session(db, current_user, request.session_id, request.message)
 
-    db.add(
-        ChatMessage(
-            session_id=session.id,
-            role="user",
-            content=request.message,
-        )
+    user_message = ChatMessage(
+        session_id=session.id,
+        role="user",
+        pet_type=request.pet_type,
+        content=request.message,
     )
+    db.add(user_message)
     session.updated_at = utc_now()
     await db.commit()
+    await db.refresh(user_message)
 
     messages, rag_sources = await build_history(
         db,
@@ -151,7 +153,12 @@ async def prepare_chat_turn(
         pet_type=request.pet_type,
         compact_response=request.compact_response,
     )
-    return PreparedChatTurn(session=session, messages=messages, rag_sources=rag_sources)
+    return PreparedChatTurn(
+        session=session,
+        user_message_id=user_message.id,
+        messages=messages,
+        rag_sources=rag_sources,
+    )
 
 
 async def save_assistant_message(db: AsyncSession, session: ChatSession, content: str) -> None:

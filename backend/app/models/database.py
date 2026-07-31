@@ -154,6 +154,15 @@ async def ensure_legacy_sqlite_schema(conn) -> None:
             "ALTER TABLE pet_relationships ADD COLUMN equipped_outfits JSON NOT NULL DEFAULT '{}'"
         )
 
+    chat_message_columns = await get_sqlite_table_columns(conn, "chat_messages")
+    if chat_message_columns and "pet_type" not in chat_message_columns:
+        await conn.exec_driver_sql("ALTER TABLE chat_messages ADD COLUMN pet_type VARCHAR(20)")
+    if chat_message_columns:
+        await conn.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_chat_messages_pet_daily "
+            "ON chat_messages (pet_type, role, created_at)"
+        )
+
 
 class User(Base):
     __tablename__ = "users"
@@ -220,10 +229,14 @@ class ChatSession(Base):
 
 class ChatMessage(Base):
     __tablename__ = "chat_messages"
+    __table_args__ = (
+        Index("ix_chat_messages_pet_daily", "pet_type", "role", "created_at"),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     session_id = Column(Integer, ForeignKey("chat_sessions.id", ondelete="CASCADE"), nullable=False)
     role = Column(String(20), nullable=False)
+    pet_type = Column(String(20), nullable=True)
     content = Column(Text, nullable=False)
     created_at = Column(DateTime, default=utc_now, nullable=False)
 

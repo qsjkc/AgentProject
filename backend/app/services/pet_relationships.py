@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from math import ceil
 from zoneinfo import ZoneInfo
 
@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.time import utc_now
-from app.models.database import PetIntimacyEvent, PetRelationship
+from app.models.database import ChatMessage, ChatSession, PetIntimacyEvent, PetRelationship, Reminder
 from app.services.pet_outfits import (
     build_pet_outfit_state,
     get_pet_outfit_item,
@@ -27,6 +27,11 @@ RELATIONSHIP_LEVELS = (
 )
 MAX_INTIMACY_XP = RELATIONSHIP_LEVELS[-1][1]
 DAILY_XP_CAP = 120
+EXTERNAL_ACTIVITY_ACTIONS = (
+    "reminder_created",
+    "reminder_completed",
+    "meaningful_chat",
+)
 
 
 @dataclass(frozen=True)
@@ -85,6 +90,153 @@ def get_reward_day_bounds(now: datetime) -> tuple[datetime, datetime]:
         local_start.astimezone(UTC).replace(tzinfo=None),
         local_end.astimezone(UTC).replace(tzinfo=None),
     )
+
+
+def get_reward_local_date(now: datetime) -> date:
+    aware_utc = now.replace(tzinfo=UTC) if now.tzinfo is None else now.astimezone(UTC)
+    return aware_utc.astimezone(ZoneInfo(settings.PET_REWARD_TIMEZONE)).date()
+
+
+async def get_pet_daily_summary(
+    db: AsyncSession,
+    *,
+    user_id: int,
+    pet_type: str,
+    now: datetime | None = None,
+) -> dict:
+    summary_time = now or utc_now()
+    day_start, day_end = get_reward_day_bounds(summary_time)
+
+    xp_result = await db.execute(
+        select(func.coalesce(func.sum(PetIntimacyEvent.xp_awarded), 0)).where(
+            PetIntimacyEvent.user_id == user_id,
+            PetIntimacyEvent.pet_type == pet_type,
+            PetIntimacyEvent.awarded_at >= day_start,
+            PetIntimacyEvent.awarded_at < day_end,
+        )
+    )
+    xp_gained = xp_result.scalar_one()
+
+    activity_event_result = await db.execute(
+        select(
+            func.count(PetIntimacyEvent.id),
+            func.min(PetIntimacyEvent.awarded_at),
+            func.max(PetIntimacyEvent.awarded_at),
+        ).where(
+            PetIntimacyEvent.user_id == user_id,
+            PetIntimacyEvent.pet_type == pet_type,
+            ~PetIntimacyEvent.action.in_(EXTERNAL_ACTIVITY_ACTIONS),
+            PetIntimacyEvent.awarded_at >= day_start,
+            PetIntimacyEvent.awarded_at < day_end,
+        )
+    )
+    activity_event_count, event_first_at, event_last_at = activity_event_result.one()
+
+    action_result = await db.execute(
+        select(PetIntimacyEvent.action, func.count(PetIntimacyEvent.id))
+        .where(
+            PetIntimacyEvent.user_id == user_id,
+            PetIntimacyEvent.pet_type == pet_type,
+            PetIntimacyEvent.awarded_at >= day_start,
+            PetIntimacyEvent.awarded_at < day_end,
+        )
+        .group_by(PetIntimacyEvent.action)
+    )
+    action_counts = {
+        action: int(count)
+        for action, count in action_result.all()
+    }
+
+    reminders_created_result = await db.execute(
+        select(
+            func.count(Reminder.id),
+            func.min(Reminder.created_at),
+            func.max(Reminder.created_at),
+        ).where(
+            Reminder.user_id == user_id,
+            Reminder.pet_type == pet_type,
+            Reminder.created_at >= day_start,
+            Reminder.created_at < day_end,
+        )
+    )
+    reminders_completed_result = await db.execute(
+        select(
+            func.count(Reminder.id),
+            func.min(Reminder.completed_at),
+            func.max(Reminder.completed_at),
+        ).where(
+            Reminder.user_id == user_id,
+            Reminder.pet_type == pet_type,
+            Reminder.status == "completed",
+            Reminder.completed_at >= day_start,
+            Reminder.completed_at < day_end,
+        )
+    )
+    meaningful_chats_result = await db.execute(
+        select(
+            func.count(ChatMessage.id),
+            func.min(ChatMessage.created_at),
+            func.max(ChatMessage.created_at),
+        )
+        .join(ChatSession, ChatSession.id == ChatMessage.session_id)
+        .where(
+            ChatSession.user_id == user_id,
+            ChatMessage.role == "user",
+            ChatMessage.pet_type == pet_type,
+            ChatMessage.created_at >= day_start,
+            ChatMessage.created_at < day_end,
+        )
+    )
+    reminders_created_count, reminder_created_first_at, reminder_created_last_at = (
+        reminders_created_result.one()
+    )
+    reminders_completed_count, reminder_completed_first_at, reminder_completed_last_at = (
+        reminders_completed_result.one()
+    )
+    meaningful_chat_count, meaningful_chat_first_at, meaningful_chat_last_at = (
+        meaningful_chats_result.one()
+    )
+    interaction_count = (
+        int(activity_event_count)
+        + int(reminders_created_count)
+        + int(reminders_completed_count)
+        + int(meaningful_chat_count)
+    )
+    first_candidates = [
+        value
+        for value in (
+            event_first_at,
+            reminder_created_first_at,
+            reminder_completed_first_at,
+            meaningful_chat_first_at,
+        )
+        if value is not None
+    ]
+    last_candidates = [
+        value
+        for value in (
+            event_last_at,
+            reminder_created_last_at,
+            reminder_completed_last_at,
+            meaningful_chat_last_at,
+        )
+        if value is not None
+    ]
+
+    return {
+        "pet_type": pet_type,
+        "local_date": get_reward_local_date(summary_time),
+        "timezone": settings.PET_REWARD_TIMEZONE,
+        "interaction_count": interaction_count,
+        "xp_gained": int(xp_gained),
+        "action_counts": action_counts,
+        "care_count": sum(action_counts.get(action, 0) for action in ("pat", "feed", "clean")),
+        "meaningful_chat_count": int(meaningful_chat_count),
+        "reminders_created_count": int(reminders_created_count),
+        "reminders_completed_count": int(reminders_completed_count),
+        "first_interaction_at": min(first_candidates) if first_candidates else None,
+        "last_interaction_at": max(last_candidates) if last_candidates else None,
+    }
 
 
 async def get_or_create_pet_relationship(
