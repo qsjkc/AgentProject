@@ -36,6 +36,36 @@ export function retryReminderEmail(reminderId) {
   })
 }
 
+export function skipReminderOccurrence(reminderId) {
+  return desktopApiRequest(`/reminders/${reminderId}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ status: 'canceled' }),
+  })
+}
+
+export function getReminderSeries(petType) {
+  const params = new URLSearchParams({ pet_type: petType })
+  return desktopApiRequest(`/reminder-series?${params.toString()}`)
+}
+
+export function pauseReminderSeries(seriesId) {
+  return desktopApiRequest(`/reminder-series/${seriesId}/pause`, {
+    method: 'POST',
+  })
+}
+
+export function resumeReminderSeries(seriesId) {
+  return desktopApiRequest(`/reminder-series/${seriesId}/resume`, {
+    method: 'POST',
+  })
+}
+
+export function cancelReminderSeries(seriesId) {
+  return desktopApiRequest(`/reminder-series/${seriesId}/cancel`, {
+    method: 'POST',
+  })
+}
+
 export function markReminderTriggered(reminderId) {
   return desktopApiRequest(`/reminders/${reminderId}/trigger`, {
     method: 'POST',

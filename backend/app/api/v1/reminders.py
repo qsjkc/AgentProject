@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.logging import logger
 from app.core.security import get_current_user
 from app.core.time import utc_now
@@ -20,38 +21,11 @@ from app.schemas.reminder import (
     normalize_reminder_datetime,
 )
 from app.services.pet_relationships import award_pet_relationship
+from app.services.reminder_recurrence import create_recurring_reminder
+from app.services.reminder_state import reset_email_delivery, stop_email_delivery
 
 
 router = APIRouter(prefix="/reminders", tags=["reminders"])
-
-
-def clear_email_claim(reminder: Reminder) -> None:
-    reminder.email_claimed_at = None
-    reminder.email_claim_token = None
-    reminder.email_next_attempt_at = None
-
-
-def reset_email_delivery(reminder: Reminder, *, force_resend: bool = False) -> None:
-    if reminder.email_sent_at is not None and not force_resend:
-        return
-    if force_resend:
-        reminder.email_sent_at = None
-    clear_email_claim(reminder)
-    reminder.email_attempt_count = 0
-    reminder.email_last_error = None
-    if reminder.status != "pending":
-        reminder.email_status = "canceled"
-    elif reminder.email_enabled:
-        reminder.email_status = "pending"
-    else:
-        reminder.email_status = "disabled"
-
-
-def stop_email_delivery(reminder: Reminder) -> None:
-    if reminder.email_sent_at is not None:
-        return
-    clear_email_claim(reminder)
-    reminder.email_status = "canceled"
 
 
 async def reward_reminder_action(
@@ -92,17 +66,32 @@ async def create_reminder(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    reminder = Reminder(
-        user_id=current_user.id,
-        pet_type=payload.pet_type,
-        title=payload.title,
-        source_text=payload.source_text,
-        remind_at=payload.remind_at,
-        status="pending",
-        email_enabled=payload.email_enabled,
-        email_status="pending" if payload.email_enabled else "disabled",
-    )
-    db.add(reminder)
+    if payload.recurrence_type == "once":
+        reminder = Reminder(
+            user_id=current_user.id,
+            pet_type=payload.pet_type,
+            title=payload.title,
+            source_text=payload.source_text,
+            remind_at=payload.remind_at,
+            status="pending",
+            recurrence_type="once",
+            creation_source="user",
+            email_enabled=payload.email_enabled,
+            email_status="pending" if payload.email_enabled else "disabled",
+        )
+        db.add(reminder)
+    else:
+        reminder = await create_recurring_reminder(
+            db,
+            user_id=current_user.id,
+            pet_type=payload.pet_type,
+            title=payload.title,
+            source_text=payload.source_text,
+            remind_at=payload.remind_at,
+            recurrence_type=payload.recurrence_type,
+            timezone_name=payload.recurrence_timezone or settings.PET_REWARD_TIMEZONE,
+            email_enabled=payload.email_enabled,
+        )
     await db.commit()
     await db.refresh(reminder)
     await reward_reminder_action(
@@ -180,9 +169,13 @@ async def update_reminder(
         reminder.status = payload.status
         if payload.status in {"completed", "canceled"}:
             reminder.completed_at = utc_now()
+            reminder.cancellation_source = (
+                "user" if payload.status == "canceled" else None
+            )
             stop_email_delivery(reminder)
         elif payload.status == "pending":
             reminder.completed_at = None
+            reminder.cancellation_source = None
             delivery_changed = True
     if reminder.status == "pending" and delivery_changed:
         reset_email_delivery(reminder, force_resend=remind_at_changed)
@@ -214,6 +207,7 @@ async def complete_reminder(
     reminder.status = "completed"
     reminder.triggered_at = reminder.triggered_at or now
     reminder.completed_at = now
+    reminder.cancellation_source = None
     stop_email_delivery(reminder)
     await db.commit()
     await db.refresh(reminder)

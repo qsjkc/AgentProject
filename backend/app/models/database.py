@@ -35,6 +35,7 @@ LEGACY_APP_TABLES = {
     "chat_messages",
     "documents",
     "reminders",
+    "reminder_series",
     "pet_relationships",
     "pet_intimacy_events",
     "pet_activity_events",
@@ -230,6 +231,34 @@ async def ensure_legacy_sqlite_schema(conn) -> None:
             "CREATE INDEX IF NOT EXISTS ix_reminders_email_delivery "
             "ON reminders (status, email_enabled, email_status, remind_at, email_next_attempt_at)"
         )
+    if reminder_columns and "series_id" not in reminder_columns:
+        await conn.exec_driver_sql("ALTER TABLE reminders ADD COLUMN series_id INTEGER")
+    if reminder_columns and "recurrence_type" not in reminder_columns:
+        await conn.exec_driver_sql(
+            "ALTER TABLE reminders ADD COLUMN recurrence_type VARCHAR(20) "
+            "NOT NULL DEFAULT 'once'"
+        )
+    if reminder_columns and "occurrence_sequence" not in reminder_columns:
+        await conn.exec_driver_sql(
+            "ALTER TABLE reminders ADD COLUMN occurrence_sequence INTEGER"
+        )
+    if reminder_columns and "creation_source" not in reminder_columns:
+        await conn.exec_driver_sql(
+            "ALTER TABLE reminders ADD COLUMN creation_source VARCHAR(20) "
+            "NOT NULL DEFAULT 'user'"
+        )
+    if reminder_columns and "cancellation_source" not in reminder_columns:
+        await conn.exec_driver_sql(
+            "ALTER TABLE reminders ADD COLUMN cancellation_source VARCHAR(20)"
+        )
+    if reminder_columns:
+        await conn.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_reminders_series_id ON reminders (series_id)"
+        )
+        await conn.exec_driver_sql(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_reminders_series_sequence "
+            "ON reminders (series_id, occurrence_sequence)"
+        )
 
     await backfill_pet_activity_events(conn)
 
@@ -252,6 +281,11 @@ class User(Base):
     documents = relationship("Document", back_populates="user", cascade="all, delete-orphan")
     preferences = relationship("UserPreference", back_populates="user", uselist=False, cascade="all, delete-orphan")
     reminders = relationship("Reminder", back_populates="user", cascade="all, delete-orphan")
+    reminder_series = relationship(
+        "ReminderSeries",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
     pet_relationships = relationship("PetRelationship", back_populates="user", cascade="all, delete-orphan")
     pet_intimacy_events = relationship("PetIntimacyEvent", back_populates="user", cascade="all, delete-orphan")
     pet_activity_events = relationship("PetActivityEvent", back_populates="user", cascade="all, delete-orphan")
@@ -331,9 +365,47 @@ class Document(Base):
     user = relationship("User", back_populates="documents")
 
 
+class ReminderSeries(Base):
+    __tablename__ = "reminder_series"
+    __table_args__ = (
+        Index(
+            "ix_reminder_series_materialization",
+            "status",
+            "next_occurrence_at",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    pet_type = Column(String(20), nullable=False, index=True)
+    title = Column(String(200), nullable=False)
+    source_text = Column(Text, nullable=True)
+    recurrence_type = Column(String(20), nullable=False)
+    timezone = Column(String(64), nullable=False)
+    local_hour = Column(Integer, nullable=False)
+    local_minute = Column(Integer, nullable=False)
+    weekdays = Column(JSON, nullable=False, default=list)
+    status = Column(String(20), nullable=False, default="active", index=True)
+    email_enabled = Column(Boolean, nullable=False, default=True)
+    next_occurrence_at = Column(DateTime, nullable=False, index=True)
+    next_sequence = Column(Integer, nullable=False, default=2)
+    last_materialized_at = Column(DateTime, nullable=True)
+    skipped_occurrence_count = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime, default=utc_now, nullable=False)
+    updated_at = Column(DateTime, default=utc_now, onupdate=utc_now, nullable=False)
+
+    user = relationship("User", back_populates="reminder_series")
+    reminders = relationship("Reminder", back_populates="series", passive_deletes=True)
+
+
 class Reminder(Base):
     __tablename__ = "reminders"
     __table_args__ = (
+        UniqueConstraint(
+            "series_id",
+            "occurrence_sequence",
+            name="uq_reminders_series_sequence",
+        ),
         Index(
             "ix_reminders_email_delivery",
             "status",
@@ -346,6 +418,12 @@ class Reminder(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    series_id = Column(
+        Integer,
+        ForeignKey("reminder_series.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     pet_type = Column(String(20), nullable=False, index=True)
     title = Column(String(200), nullable=False)
     source_text = Column(Text, nullable=True)
@@ -353,6 +431,10 @@ class Reminder(Base):
     status = Column(String(20), nullable=False, default="pending", index=True)
     triggered_at = Column(DateTime, nullable=True)
     completed_at = Column(DateTime, nullable=True)
+    cancellation_source = Column(String(20), nullable=True)
+    recurrence_type = Column(String(20), nullable=False, default="once")
+    occurrence_sequence = Column(Integer, nullable=True)
+    creation_source = Column(String(20), nullable=False, default="user")
     email_enabled = Column(Boolean, nullable=False, default=True)
     email_status = Column(String(20), nullable=False, default="pending")
     email_sent_at = Column(DateTime, nullable=True)
@@ -365,6 +447,7 @@ class Reminder(Base):
     updated_at = Column(DateTime, default=utc_now, onupdate=utc_now, nullable=False)
 
     user = relationship("User", back_populates="reminders")
+    series = relationship("ReminderSeries", back_populates="reminders")
 
 
 class PetRelationship(Base):

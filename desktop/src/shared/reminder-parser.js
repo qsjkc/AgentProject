@@ -12,6 +12,17 @@ const CHINESE_HOURS = {
   十: 10,
 }
 
+const CHINESE_WEEKDAYS = {
+  一: 1,
+  二: 2,
+  三: 3,
+  四: 4,
+  五: 5,
+  六: 6,
+  日: 0,
+  天: 0,
+}
+
 function parseHour(rawHour) {
   if (/^\d+$/.test(rawHour)) {
     return Number(rawHour)
@@ -23,13 +34,35 @@ function parseHour(rawHour) {
 
 function stripReminderWords(text) {
   return text
-    .replace(/提醒我|帮我|记得|到时候|今天|明天|明早|明晚|后天|上午|下午|晚上|早上|中午/g, '')
+    .replace(/每(?:周|星期|礼拜)[一二三四五六日天]/g, '')
+    .replace(/每天|每日|天天|每个?工作日|工作日/g, '')
+    .replace(/提醒我|通知我|叫我|帮我|记得|到时候|今天|明天|明早|明晚|后天|上午|下午|晚上|早上|中午/g, '')
     .replace(/\d{1,2}[:：]\d{2}/g, '')
     .replace(/[一二两三四五六七八九十]{1,2}点半?/g, '')
     .replace(/\d{1,2}点半?/g, '')
     .replace(/有一个|有个/g, '')
     .replace(/[，。,.?？]/g, '')
     .trim()
+}
+
+function parseRecurrence(text) {
+  const weeklyMatch = text.match(/每(?:周|星期|礼拜)([一二三四五六日天])/)
+  if (weeklyMatch) {
+    return {
+      type: 'weekly',
+      weekday: CHINESE_WEEKDAYS[weeklyMatch[1]],
+    }
+  }
+  if (/每(?:周|星期|礼拜)/.test(text)) {
+    return { type: null, reason: 'missing_recurrence_day' }
+  }
+  if (/每个?工作日|工作日/.test(text)) {
+    return { type: 'weekdays', weekday: null }
+  }
+  if (/每天|每日|天天/.test(text)) {
+    return { type: 'daily', weekday: null }
+  }
+  return { type: 'once', weekday: null }
 }
 
 function normalizeTitle(text) {
@@ -40,13 +73,17 @@ function normalizeTitle(text) {
   return stripped.slice(0, 80)
 }
 
-export function parseOneTimeReminder(input, now = new Date()) {
+export function parseReminder(input, now = new Date()) {
   const text = String(input || '').trim()
   if (!text) {
     return { ok: false, reason: 'empty' }
   }
 
   const date = new Date(now)
+  const recurrence = parseRecurrence(text)
+  if (recurrence.reason) {
+    return { ok: false, reason: recurrence.reason }
+  }
   if (/后天/.test(text)) {
     date.setDate(date.getDate() + 2)
   } else if (/明天|明早|明晚/.test(text)) {
@@ -61,8 +98,13 @@ export function parseOneTimeReminder(input, now = new Date()) {
   const hasExplicitReminderIntent = /提醒|记得|帮我|叫我|通知我/.test(text)
   const hasTaskIntent = /会议|开会|提交|交|有一个|有个/.test(text)
   const hasTimeExpression = Boolean(clockMatch || hourMatch)
+  const hasRecurringIntent = recurrence.type !== 'once'
 
-  if (!hasExplicitReminderIntent && !(hasTimeExpression && hasTaskIntent)) {
+  if (
+    !hasExplicitReminderIntent
+    && !hasRecurringIntent
+    && !(hasTimeExpression && hasTaskIntent)
+  ) {
     return { ok: false, reason: 'not_reminder' }
   }
 
@@ -86,7 +128,21 @@ export function parseOneTimeReminder(input, now = new Date()) {
   }
 
   date.setHours(hour, minute, 0, 0)
-  if (!/明天|明早|明晚|后天|今天/.test(text) && date.getTime() <= now.getTime()) {
+  const hasExplicitDate = /明天|明早|明晚|后天|今天/.test(text)
+  if (recurrence.type === 'weekly') {
+    let daysUntilTarget = (recurrence.weekday - date.getDay() + 7) % 7
+    if (daysUntilTarget === 0 && date.getTime() <= now.getTime()) {
+      daysUntilTarget = 7
+    }
+    date.setDate(date.getDate() + daysUntilTarget)
+  } else if (recurrence.type === 'weekdays') {
+    if (!hasExplicitDate && date.getTime() <= now.getTime()) {
+      date.setDate(date.getDate() + 1)
+    }
+    while (date.getDay() === 0 || date.getDay() === 6 || date.getTime() <= now.getTime()) {
+      date.setDate(date.getDate() + 1)
+    }
+  } else if (!hasExplicitDate && date.getTime() <= now.getTime()) {
     date.setDate(date.getDate() + 1)
   }
 
@@ -95,5 +151,8 @@ export function parseOneTimeReminder(input, now = new Date()) {
     title: normalizeTitle(text),
     sourceText: text,
     remindAt: date,
+    recurrenceType: recurrence.type,
   }
 }
+
+export const parseOneTimeReminder = parseReminder

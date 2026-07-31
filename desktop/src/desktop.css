@@ -1084,6 +1084,52 @@ select {
   }
 }
 
+.recurring-reminder-panel {
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid #e2e8f0;
+}
+
+.recurring-reminder-heading {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.recurring-reminder-list {
+  margin-top: 8px;
+  border-top: 1px solid #e2e8f0;
+}
+
+.recurring-reminder-item {
+  min-height: 58px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.recurring-reminder-schedule {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+  color: #64748b;
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.recurring-reminder-schedule span {
+  color: #15803d;
+  font-weight: 700;
+}
+
+.recurring-reminder-schedule span.is-paused {
+  color: #a16207;
+}
+
 .quick-chat-stage {
   position: relative;
   width: 100%;

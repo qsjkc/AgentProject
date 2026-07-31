@@ -3,6 +3,7 @@ import ReactDOM from 'react-dom/client'
 
 import './desktop.css'
 import { PendingReminderPanel } from './components/PendingReminderPanel'
+import { RecurringReminderPanel } from './components/RecurringReminderPanel'
 import { PetOutfitPanel } from './components/PetOutfitPanel'
 import {
   checkApiConnection,
@@ -47,7 +48,11 @@ import {
   updatePetOutfit,
 } from './shared/pet-relationships-api'
 import { getPetVisual } from './shared/pets'
-import { parseOneTimeReminder } from './shared/reminder-parser'
+import { parseReminder } from './shared/reminder-parser'
+import {
+  getBrowserTimeZone,
+  getReminderRecurrenceLabel,
+} from './shared/reminder-recurrence'
 import { createReminder, getPendingReminderSummary } from './shared/reminders-api'
 import { DEFAULT_VOICE_SETTINGS, normalizeVoiceSettings, VOICE_OUTPUT_MODES } from './shared/voice-state'
 
@@ -842,7 +847,7 @@ function MainPanelApp() {
     }
 
     const outgoingMessage = prompt.trim()
-    const parsedReminder = parseOneTimeReminder(outgoingMessage)
+    const parsedReminder = parseReminder(outgoingMessage)
     if (parsedReminder.ok) {
       setPrompt('')
       setLoading(true)
@@ -855,7 +860,14 @@ function MainPanelApp() {
           title: parsedReminder.title,
           source_text: parsedReminder.sourceText,
           remind_at: parsedReminder.remindAt.toISOString(),
+          recurrence_type: parsedReminder.recurrenceType,
+          recurrence_timezone: parsedReminder.recurrenceType === 'once'
+            ? null
+            : getBrowserTimeZone(),
         })
+        if (reminder.series_id) {
+          window.dispatchEvent(new Event('detachym:reminder-series-changed'))
+        }
         void refreshPetRelationship(currentPetType).catch((error) => {
           void logDesktopDebug({
             event: 'main-panel-relationship-refresh-failed',
@@ -864,7 +876,8 @@ function MainPanelApp() {
           })
         })
         void loadPetDailySummary(currentPetType)
-        const timeText = parsedReminder.remindAt.toLocaleString(language === 'zh-CN' ? 'zh-CN' : 'en-US', {
+        const confirmedRemindAt = new Date(reminder.remind_at)
+        const timeText = confirmedRemindAt.toLocaleString(language === 'zh-CN' ? 'zh-CN' : 'en-US', {
           month: 'numeric',
           day: 'numeric',
           hour: '2-digit',
@@ -874,6 +887,11 @@ function MainPanelApp() {
           reminder.title,
           timeText,
           reminder.email_enabled,
+          getReminderRecurrenceLabel(
+            reminder.recurrence_type,
+            reminder.remind_at,
+            language,
+          ),
         )
         setMessages((current) => [
           ...current,
@@ -1436,6 +1454,11 @@ function MainPanelApp() {
                 language={language}
                 petType={currentPetType}
                 onCompleted={handleReminderCompleted}
+              />
+              <RecurringReminderPanel
+                key={`recurring-${currentPetType}`}
+                language={language}
+                petType={currentPetType}
               />
               <VoiceSettingsPanel
                 language={language}

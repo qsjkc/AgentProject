@@ -8,13 +8,16 @@ import {
   MailX,
   RefreshCw,
   RotateCcw,
+  SkipForward,
 } from 'lucide-react'
 
 import {
   completeReminder,
   getPendingReminders,
   retryReminderEmail,
+  skipReminderOccurrence,
 } from '../shared/reminders-api'
+import { getReminderRecurrenceLabel } from '../shared/reminder-recurrence'
 
 const REFRESH_INTERVAL_MS = 30000
 
@@ -35,9 +38,11 @@ function getCopy(language) {
       refresh: '刷新待处理提醒',
       complete: (title) => `完成：${title}`,
       retryEmail: (title) => `重新发送邮件：${title}`,
+      skipOccurrence: (title) => `跳过本次：${title}`,
       loadFailed: '待处理提醒加载失败。',
       completeFailed: '提醒完成失败，请稍后重试。',
       retryFailed: '邮件重试启动失败，请稍后再试。',
+      skipFailed: '本次提醒跳过失败，请稍后再试。',
     }
   }
 
@@ -56,9 +61,11 @@ function getCopy(language) {
     refresh: 'Refresh pending reminders',
     complete: (title) => `Complete: ${title}`,
     retryEmail: (title) => `Retry email: ${title}`,
+    skipOccurrence: (title) => `Skip this occurrence: ${title}`,
     loadFailed: 'Failed to load pending reminders.',
     completeFailed: 'Failed to complete the reminder. Try again.',
     retryFailed: 'Failed to restart email delivery. Try again.',
+    skipFailed: 'Failed to skip this occurrence. Try again.',
   }
 }
 
@@ -107,6 +114,7 @@ export function PendingReminderPanel({
   const [loading, setLoading] = useState(true)
   const [savingId, setSavingId] = useState(null)
   const [retryingId, setRetryingId] = useState(null)
+  const [skippingId, setSkippingId] = useState(null)
   const [error, setError] = useState('')
   const copy = getCopy(language)
 
@@ -136,7 +144,7 @@ export function PendingReminderPanel({
   }, [loadReminders])
 
   const handleComplete = async (reminder) => {
-    if (savingId !== null || retryingId !== null) {
+    if (savingId !== null || retryingId !== null || skippingId !== null) {
       return
     }
     setSavingId(reminder.id)
@@ -153,7 +161,7 @@ export function PendingReminderPanel({
   }
 
   const handleRetryEmail = async (reminder) => {
-    if (savingId !== null || retryingId !== null) {
+    if (savingId !== null || retryingId !== null || skippingId !== null) {
       return
     }
     setRetryingId(reminder.id)
@@ -167,6 +175,22 @@ export function PendingReminderPanel({
       setError(copy.retryFailed)
     } finally {
       setRetryingId(null)
+    }
+  }
+
+  const handleSkipOccurrence = async (reminder) => {
+    if (savingId !== null || retryingId !== null || skippingId !== null) {
+      return
+    }
+    setSkippingId(reminder.id)
+    setError('')
+    try {
+      await skipReminderOccurrence(reminder.id)
+      setReminders((current) => current.filter((item) => item.id !== reminder.id))
+    } catch {
+      setError(copy.skipFailed)
+    } finally {
+      setSkippingId(null)
     }
   }
 
@@ -198,12 +222,18 @@ export function PendingReminderPanel({
           {reminders.map((reminder) => {
             const emailDelivery = getEmailDelivery(reminder, copy)
             const EmailIcon = emailDelivery.Icon
+            const recurrenceLabel = getReminderRecurrenceLabel(
+              reminder.recurrence_type,
+              reminder.remind_at,
+              language,
+            )
             return (
               <div className="pending-reminder-item" key={reminder.id}>
                 <div className="pending-reminder-copy">
                   <div className="pending-reminder-title">{reminder.title}</div>
                   <div className="pending-reminder-time">
                     {copy.delivered} · {formatReminderTime(reminder.remind_at, language)}
+                    {recurrenceLabel ? ` · ${recurrenceLabel}` : ''}
                   </div>
                   <div
                     className={`pending-reminder-email is-${emailDelivery.tone}`}
@@ -220,7 +250,7 @@ export function PendingReminderPanel({
                       className="pending-reminder-retry"
                       title={copy.retryEmail(reminder.title)}
                       aria-label={copy.retryEmail(reminder.title)}
-                      disabled={savingId !== null || retryingId !== null}
+                      disabled={savingId !== null || retryingId !== null || skippingId !== null}
                       onClick={() => {
                         void handleRetryEmail(reminder)
                       }}
@@ -228,12 +258,26 @@ export function PendingReminderPanel({
                       <RotateCcw size={15} aria-hidden="true" />
                     </button>
                   )}
+                  {reminder.series_id && (
+                    <button
+                      type="button"
+                      className="pending-reminder-retry"
+                      title={copy.skipOccurrence(reminder.title)}
+                      aria-label={copy.skipOccurrence(reminder.title)}
+                      disabled={savingId !== null || retryingId !== null || skippingId !== null}
+                      onClick={() => {
+                        void handleSkipOccurrence(reminder)
+                      }}
+                    >
+                      <SkipForward size={15} aria-hidden="true" />
+                    </button>
+                  )}
                   <button
                     type="button"
                     className="pending-reminder-complete"
                     title={copy.complete(reminder.title)}
                     aria-label={copy.complete(reminder.title)}
-                    disabled={savingId !== null || retryingId !== null}
+                    disabled={savingId !== null || retryingId !== null || skippingId !== null}
                     onClick={() => {
                       void handleComplete(reminder)
                     }}

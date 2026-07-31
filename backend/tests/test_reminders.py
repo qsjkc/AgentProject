@@ -16,6 +16,7 @@ os.environ["UPLOAD_DIR"] = str(TEST_ROOT / "uploads")
 os.environ["DOWNLOAD_DIR"] = str(TEST_ROOT / "downloads")
 os.environ["SMTP_USER"] = ""
 os.environ["SMTP_PASSWORD"] = ""
+os.environ["REMINDER_RECURRENCE_WORKER_ENABLED"] = "false"
 os.environ["INITIAL_ADMIN_USERNAME"] = "admin"
 os.environ["INITIAL_ADMIN_EMAIL"] = "admin@example.com"
 os.environ["INITIAL_ADMIN_PASSWORD"] = "ChangeThisPassword123!"
@@ -486,3 +487,195 @@ async def test_exhausted_stale_email_claim_becomes_failed(
     recovered = next(item for item in reminders.json() if item["id"] == reminder_id)
     assert recovered["email_status"] == "failed"
     assert recovered["email_attempt_count"] == 3
+
+
+@pytest.mark.asyncio
+async def test_daily_reminder_creates_series_and_materializes_independent_occurrence(
+    client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    headers = await register_and_login(
+        client,
+        "daily-series",
+        "daily-series@example.com",
+    )
+    created = await client.post(
+        "/api/v1/reminders",
+        headers=headers,
+        json={
+            "pet_type": "pig",
+            "title": "喝水",
+            "source_text": "每天上午九点提醒我喝水",
+            "remind_at": (utc_now() + timedelta(days=1)).isoformat(),
+            "recurrence_type": "daily",
+            "recurrence_timezone": "Asia/Shanghai",
+        },
+    )
+    assert created.status_code == 200
+    first = created.json()
+    assert first["series_id"] is not None
+    assert first["recurrence_type"] == "daily"
+    assert first["occurrence_sequence"] == 1
+    assert first["creation_source"] == "user"
+    assert first["remind_at"].endswith("Z")
+
+    series_list = await client.get(
+        "/api/v1/reminder-series?pet_type=pig&status=active",
+        headers=headers,
+    )
+    assert series_list.status_code == 200
+    series = next(item for item in series_list.json() if item["id"] == first["series_id"])
+    assert series["recurrence_type"] == "daily"
+    assert series["timezone"] == "Asia/Shanghai"
+    assert series["weekdays"] == [0, 1, 2, 3, 4, 5, 6]
+    assert series["next_occurrence_at"].endswith("Z")
+
+    from app.core.config import settings  # noqa: E402
+    from app.models.database import ReminderSeries, async_session_maker  # noqa: E402
+    from app.services.reminder_recurrence import reminder_recurrence_service  # noqa: E402
+
+    monkeypatch.setattr(settings, "REMINDER_RECURRENCE_LOOKAHEAD_SECONDS", 60)
+    async with async_session_maker.begin() as session:
+        stored_series = await session.get(ReminderSeries, first["series_id"])
+        stored_series.next_occurrence_at = utc_now() + timedelta(seconds=30)
+
+    materialized = await reminder_recurrence_service.process_due_once()
+    assert materialized >= 1
+
+    reminders = await client.get(
+        "/api/v1/reminders?pet_type=pig&status=pending",
+        headers=headers,
+    )
+    occurrences = [
+        item for item in reminders.json()
+        if item["series_id"] == first["series_id"]
+    ]
+    assert [item["occurrence_sequence"] for item in occurrences] == [2, 1]
+    generated = next(item for item in occurrences if item["occurrence_sequence"] == 2)
+    assert generated["creation_source"] == "recurrence"
+    assert generated["email_status"] == "pending"
+
+    relationship = await client.get(
+        "/api/v1/pets/pig/relationship",
+        headers=headers,
+    )
+    assert relationship.json()["intimacy_xp"] == 4
+
+    completed = await client.post(
+        f"/api/v1/reminders/{generated['id']}/complete",
+        headers=headers,
+    )
+    assert completed.status_code == 200
+    assert completed.json()["occurrence_sequence"] == 2
+    relationship_after_completion = await client.get(
+        "/api/v1/pets/pig/relationship",
+        headers=headers,
+    )
+    assert relationship_after_completion.json()["intimacy_xp"] == 14
+
+    daily_summary = await client.get(
+        "/api/v1/pets/pig/daily-summary",
+        headers=headers,
+    )
+    assert daily_summary.json()["reminders_created_count"] == 1
+    assert daily_summary.json()["reminders_completed_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_paused_series_restores_future_occurrence_and_cancel_stops_it(
+    client: AsyncClient,
+):
+    headers = await register_and_login(
+        client,
+        "series-controls",
+        "series-controls@example.com",
+    )
+    created = await client.post(
+        "/api/v1/reminders",
+        headers=headers,
+        json={
+            "pet_type": "pig",
+            "title": "工作日报",
+            "remind_at": (utc_now() + timedelta(days=1)).isoformat(),
+            "recurrence_type": "weekdays",
+            "recurrence_timezone": "Asia/Shanghai",
+        },
+    )
+    reminder_id = created.json()["id"]
+    series_id = created.json()["series_id"]
+
+    paused = await client.post(
+        f"/api/v1/reminder-series/{series_id}/pause",
+        headers=headers,
+    )
+    assert paused.status_code == 200
+    assert paused.json()["status"] == "paused"
+
+    paused_occurrence = await client.get(
+        f"/api/v1/reminders?pet_type=pig",
+        headers=headers,
+    )
+    paused_item = next(item for item in paused_occurrence.json() if item["id"] == reminder_id)
+    assert paused_item["status"] == "canceled"
+    assert paused_item["cancellation_source"] == "series_pause"
+
+    resumed = await client.post(
+        f"/api/v1/reminder-series/{series_id}/resume",
+        headers=headers,
+    )
+    assert resumed.status_code == 200
+    assert resumed.json()["status"] == "active"
+
+    resumed_occurrence = await client.get(
+        f"/api/v1/reminders?pet_type=pig",
+        headers=headers,
+    )
+    resumed_item = next(item for item in resumed_occurrence.json() if item["id"] == reminder_id)
+    assert resumed_item["status"] == "pending"
+    assert resumed_item["cancellation_source"] is None
+
+    paused_again = await client.post(
+        f"/api/v1/reminder-series/{series_id}/pause",
+        headers=headers,
+    )
+    assert paused_again.status_code == 200
+
+    canceled = await client.post(
+        f"/api/v1/reminder-series/{series_id}/cancel",
+        headers=headers,
+    )
+    assert canceled.status_code == 200
+    assert canceled.json()["status"] == "canceled"
+
+    canceled_occurrence = await client.get(
+        f"/api/v1/reminders?pet_type=pig",
+        headers=headers,
+    )
+    canceled_item = next(item for item in canceled_occurrence.json() if item["id"] == reminder_id)
+    assert canceled_item["status"] == "canceled"
+    assert canceled_item["cancellation_source"] == "series_cancel"
+
+
+def test_weekly_recurrence_keeps_local_weekday_and_time():
+    from app.services.reminder_recurrence import (  # noqa: E402
+        calculate_next_occurrence,
+        normalize_first_occurrence,
+    )
+
+    first, hour, minute, weekdays = normalize_first_occurrence(
+        datetime(2026, 8, 3, 7, 0, 0),
+        recurrence_type="weekly",
+        timezone_name="Asia/Shanghai",
+        now=datetime(2026, 7, 31, 0, 0, 0),
+    )
+    following = calculate_next_occurrence(
+        first,
+        local_hour=hour,
+        local_minute=minute,
+        timezone_name="Asia/Shanghai",
+        weekdays=weekdays,
+    )
+
+    assert first == datetime(2026, 8, 3, 7, 0, 0)
+    assert following == datetime(2026, 8, 10, 7, 0, 0)
+    assert weekdays == [0]

@@ -16,6 +16,7 @@ os.environ["UPLOAD_DIR"] = str(TEST_ROOT / "uploads")
 os.environ["DOWNLOAD_DIR"] = str(TEST_ROOT / "downloads")
 os.environ["SMTP_USER"] = ""
 os.environ["SMTP_PASSWORD"] = ""
+os.environ["REMINDER_RECURRENCE_WORKER_ENABLED"] = "false"
 os.environ["INITIAL_ADMIN_USERNAME"] = "admin"
 os.environ["INITIAL_ADMIN_EMAIL"] = "admin@example.com"
 os.environ["INITIAL_ADMIN_PASSWORD"] = "ChangeThisPassword123!"

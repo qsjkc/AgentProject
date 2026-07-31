@@ -7,7 +7,11 @@ import { normalizeLanguage, t } from './shared/i18n'
 import { getPetReminderCopy } from './shared/pet-personality'
 import { refreshPetRelationship } from './shared/pet-relationships-api'
 import { getPetVisual } from './shared/pets'
-import { parseOneTimeReminder } from './shared/reminder-parser'
+import { parseReminder } from './shared/reminder-parser'
+import {
+  getBrowserTimeZone,
+  getReminderRecurrenceLabel,
+} from './shared/reminder-recurrence'
 import { createReminder } from './shared/reminders-api'
 
 function formatError(error, fallbackMessage) {
@@ -211,7 +215,7 @@ function QuickChatApp() {
     }
 
     const outgoingMessage = message.trim()
-    const parsedReminder = parseOneTimeReminder(outgoingMessage)
+    const parsedReminder = parseReminder(outgoingMessage)
     if (parsedReminder.ok) {
       setMessages((current) => [...current, { role: 'user', content: outgoingMessage }])
       setMessage('')
@@ -222,6 +226,10 @@ function QuickChatApp() {
           title: parsedReminder.title,
           source_text: parsedReminder.sourceText,
           remind_at: parsedReminder.remindAt.toISOString(),
+          recurrence_type: parsedReminder.recurrenceType,
+          recurrence_timezone: parsedReminder.recurrenceType === 'once'
+            ? null
+            : getBrowserTimeZone(),
         })
         void refreshPetRelationship(petType).catch((error) => {
           void logDesktopDebug({
@@ -230,7 +238,8 @@ function QuickChatApp() {
             reason: error instanceof Error ? error.message : String(error),
           })
         })
-        const timeText = parsedReminder.remindAt.toLocaleString(language === 'zh-CN' ? 'zh-CN' : 'en-US', {
+        const confirmedRemindAt = new Date(reminder.remind_at)
+        const timeText = confirmedRemindAt.toLocaleString(language === 'zh-CN' ? 'zh-CN' : 'en-US', {
           month: 'numeric',
           day: 'numeric',
           hour: '2-digit',
@@ -240,6 +249,11 @@ function QuickChatApp() {
           reminder.title,
           timeText,
           reminder.email_enabled,
+          getReminderRecurrenceLabel(
+            reminder.recurrence_type,
+            reminder.remind_at,
+            language,
+          ),
         )
         setMessages((current) => [...current, { role: 'assistant', content: copy }])
         await window.desktopBridge?.notifyPetReminderEvent?.({

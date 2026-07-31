@@ -161,6 +161,7 @@ async def get_pet_daily_summary(
         ).where(
             Reminder.user_id == user_id,
             Reminder.pet_type == pet_type,
+            Reminder.creation_source == "user",
             Reminder.created_at >= day_start,
             Reminder.created_at < day_end,
         )

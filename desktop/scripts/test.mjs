@@ -37,7 +37,8 @@ import {
   getPetOutfitSlotLabel,
   normalizePetOutfitState,
 } from '../src/shared/pet-outfits.js'
-import { parseOneTimeReminder } from '../src/shared/reminder-parser.js'
+import { parseOneTimeReminder, parseReminder } from '../src/shared/reminder-parser.js'
+import { getReminderRecurrenceLabel } from '../src/shared/reminder-recurrence.js'
 import {
   decodeRtsSubtitlePayload,
   normalizeRtsSubtitleItems,
@@ -645,6 +646,7 @@ const fixedNow = new Date('2026-07-06T10:00:00+08:00')
 const todayMeeting = parseOneTimeReminder('下午三点有一个会议', fixedNow)
 assert.equal(todayMeeting.ok, true)
 assert.equal(todayMeeting.title, '开会')
+assert.equal(todayMeeting.recurrenceType, 'once')
 assert.equal(todayMeeting.remindAt.getTime(), new Date('2026-07-06T15:00:00+08:00').getTime())
 
 const tomorrowTask = parseOneTimeReminder('明早九点交材料', fixedNow)
@@ -663,5 +665,33 @@ assert.equal(afternoonGreeting.reason, 'not_reminder')
 const tomorrowQuestion = parseOneTimeReminder('明天有哪些计划？', fixedNow)
 assert.equal(tomorrowQuestion.ok, false)
 assert.equal(tomorrowQuestion.reason, 'not_reminder')
+
+const dailyWater = parseReminder('每天上午九点提醒我喝水', fixedNow)
+assert.equal(dailyWater.ok, true)
+assert.equal(dailyWater.title, '喝水')
+assert.equal(dailyWater.recurrenceType, 'daily')
+assert.equal(dailyWater.remindAt.getTime(), new Date('2026-07-07T09:00:00+08:00').getTime())
+
+const conciseDailyWater = parseReminder('每天上午九点喝水', fixedNow)
+assert.equal(conciseDailyWater.ok, true)
+assert.equal(conciseDailyWater.title, '喝水')
+assert.equal(conciseDailyWater.recurrenceType, 'daily')
+
+const weekdayReport = parseReminder('工作日下午三点提醒我交日报', fixedNow)
+assert.equal(weekdayReport.ok, true)
+assert.equal(weekdayReport.title, '交日报')
+assert.equal(weekdayReport.recurrenceType, 'weekdays')
+assert.equal(weekdayReport.remindAt.getTime(), new Date('2026-07-06T15:00:00+08:00').getTime())
+
+const weeklyMeeting = parseReminder('每周三下午三点提醒我周会', fixedNow)
+assert.equal(weeklyMeeting.ok, true)
+assert.equal(weeklyMeeting.title, '周会')
+assert.equal(weeklyMeeting.recurrenceType, 'weekly')
+assert.equal(weeklyMeeting.remindAt.getTime(), new Date('2026-07-08T15:00:00+08:00').getTime())
+assert.equal(getReminderRecurrenceLabel('weekly', weeklyMeeting.remindAt, 'zh-CN'), '每周三')
+
+const missingWeeklyDay = parseReminder('每周下午三点提醒我周会', fixedNow)
+assert.equal(missingWeeklyDay.ok, false)
+assert.equal(missingWeeklyDay.reason, 'missing_recurrence_day')
 
 console.log('desktop tests passed')
