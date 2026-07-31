@@ -263,9 +263,9 @@ async def test_daily_summary_uses_local_day_and_isolates_user_and_pet(client: As
     assert summary["interaction_count"] == 6
     assert summary["xp_gained"] == 19
     assert summary["action_counts"] == {
-        "meaningful_chat": 1,
+        "meaningful_chat": 2,
         "pat": 1,
-        "reminder_completed": 1,
+        "reminder_completed": 2,
         "reminder_created": 1,
     }
     assert summary["care_count"] == 1
@@ -274,6 +274,227 @@ async def test_daily_summary_uses_local_day_and_isolates_user_and_pet(client: As
     assert summary["reminders_completed_count"] == 2
     assert summary["first_interaction_at"] == summary_time
     assert summary["last_interaction_at"] == summary_time + timedelta(minutes=6)
+
+
+@pytest.mark.asyncio
+async def test_max_level_activity_is_remembered_without_more_xp(client: AsyncClient):
+    headers = await register_and_login(client, "max-memory", "max-memory@example.com")
+    relationship_response = await client.get("/api/v1/pets/pig/relationship", headers=headers)
+    user_id = relationship_response.json()["user_id"]
+
+    from sqlalchemy import select  # noqa: E402
+    from app.models.database import (  # noqa: E402
+        PetActivityEvent,
+        PetRelationship,
+        async_session_maker,
+    )
+
+    first_pat_at = datetime(2026, 8, 1, 2, 0, 0)
+    async with async_session_maker() as session:
+        relationship_result = await session.execute(
+            select(PetRelationship).where(
+                PetRelationship.user_id == user_id,
+                PetRelationship.pet_type == "pig",
+            )
+        )
+        relationship = relationship_result.scalar_one()
+        relationship.intimacy_xp = 900
+        relationship.level = 5
+        relationship.relationship_stage = "deep_bond"
+        await session.commit()
+
+        first = await award_pet_relationship(
+            session,
+            user_id=user_id,
+            pet_type="pig",
+            action="pat",
+            idempotency_key="max-level-pat-0",
+            now=first_pat_at,
+        )
+        assert first["reason"] == "max_level"
+        assert first["awarded_xp"] == 0
+
+        duplicate = await award_pet_relationship(
+            session,
+            user_id=user_id,
+            pet_type="pig",
+            action="pat",
+            idempotency_key="max-level-pat-0",
+            now=first_pat_at + timedelta(seconds=1),
+        )
+        assert duplicate["reason"] == "duplicate"
+
+        cooling_down = await award_pet_relationship(
+            session,
+            user_id=user_id,
+            pet_type="pig",
+            action="pat",
+            idempotency_key="max-level-pat-cooldown",
+            now=first_pat_at + timedelta(minutes=1),
+        )
+        assert cooling_down["reason"] == "cooldown"
+
+        for index in range(1, 10):
+            max_level_result = await award_pet_relationship(
+                session,
+                user_id=user_id,
+                pet_type="pig",
+                action="pat",
+                idempotency_key=f"max-level-pat-{index}",
+                now=first_pat_at + timedelta(minutes=index * 5),
+            )
+            assert max_level_result["reason"] == "max_level"
+            assert max_level_result["awarded_xp"] == 0
+
+        beyond_daily_limit = await award_pet_relationship(
+            session,
+            user_id=user_id,
+            pet_type="pig",
+            action="pat",
+            idempotency_key="max-level-pat-10",
+            now=first_pat_at + timedelta(minutes=50),
+        )
+        assert beyond_daily_limit["reason"] == "max_level"
+
+        summary = await get_pet_daily_summary(
+            session,
+            user_id=user_id,
+            pet_type="pig",
+            now=first_pat_at,
+        )
+        activity_result = await session.execute(
+            select(PetActivityEvent).where(
+                PetActivityEvent.user_id == user_id,
+                PetActivityEvent.pet_type == "pig",
+                PetActivityEvent.action == "pat",
+            )
+        )
+        activities = activity_result.scalars().all()
+
+    assert len(activities) == 10
+    assert summary["interaction_count"] == 10
+    assert summary["care_count"] == 10
+    assert summary["action_counts"] == {"pat": 10}
+    assert summary["xp_gained"] == 0
+    assert summary["last_interaction_at"] == first_pat_at + timedelta(minutes=45)
+
+
+@pytest.mark.asyncio
+async def test_activity_survives_daily_xp_cap(client: AsyncClient):
+    headers = await register_and_login(client, "daily-cap-memory", "daily-cap-memory@example.com")
+    relationship_response = await client.get("/api/v1/pets/pig/relationship", headers=headers)
+    user_id = relationship_response.json()["user_id"]
+
+    from sqlalchemy import select  # noqa: E402
+    from app.models.database import (  # noqa: E402
+        PetIntimacyEvent,
+        PetRelationship,
+        async_session_maker,
+    )
+
+    interaction_at = datetime(2026, 8, 2, 2, 0, 0)
+    async with async_session_maker() as session:
+        relationship_result = await session.execute(
+            select(PetRelationship).where(
+                PetRelationship.user_id == user_id,
+                PetRelationship.pet_type == "pig",
+            )
+        )
+        relationship = relationship_result.scalar_one()
+        relationship.intimacy_xp = 120
+        relationship.level = 2
+        relationship.relationship_stage = "getting_familiar"
+        session.add(
+            PetIntimacyEvent(
+                user_id=user_id,
+                relationship_id=relationship.id,
+                pet_type="pig",
+                action="reminder_completed",
+                xp_awarded=120,
+                idempotency_key="daily-cap-seed",
+                awarded_at=interaction_at,
+            )
+        )
+        await session.commit()
+
+        capped = await award_pet_relationship(
+            session,
+            user_id=user_id,
+            pet_type="pig",
+            action="feed",
+            idempotency_key="daily-cap-feed",
+            now=interaction_at + timedelta(minutes=1),
+        )
+        summary = await get_pet_daily_summary(
+            session,
+            user_id=user_id,
+            pet_type="pig",
+            now=interaction_at,
+        )
+
+    assert capped["reason"] == "daily_cap"
+    assert capped["awarded_xp"] == 0
+    assert capped["relationship"]["intimacy_xp"] == 120
+    assert summary["interaction_count"] == 1
+    assert summary["care_count"] == 1
+    assert summary["action_counts"] == {"feed": 1}
+    assert summary["xp_gained"] == 120
+
+
+@pytest.mark.asyncio
+async def test_activity_backfill_is_idempotent(client: AsyncClient):
+    headers = await register_and_login(client, "activity-backfill", "activity-backfill@example.com")
+    relationship_response = await client.get("/api/v1/pets/pig/relationship", headers=headers)
+    user_id = relationship_response.json()["user_id"]
+    relationship_id = relationship_response.json()["id"]
+
+    from sqlalchemy import func, select  # noqa: E402
+    from app.models.database import (  # noqa: E402
+        PetActivityEvent,
+        PetIntimacyEvent,
+        async_session_maker,
+        backfill_pet_activity_events,
+        engine,
+    )
+
+    occurred_at = datetime(2026, 8, 3, 2, 0, 0)
+    async with async_session_maker() as session:
+        session.add(
+            PetIntimacyEvent(
+                user_id=user_id,
+                relationship_id=relationship_id,
+                pet_type="pig",
+                action="clean",
+                xp_awarded=4,
+                idempotency_key="legacy-clean-event",
+                awarded_at=occurred_at,
+            )
+        )
+        await session.commit()
+
+    async with engine.begin() as connection:
+        await backfill_pet_activity_events(connection)
+        await backfill_pet_activity_events(connection)
+
+    async with async_session_maker() as session:
+        count_result = await session.execute(
+            select(func.count(PetActivityEvent.id)).where(
+                PetActivityEvent.user_id == user_id,
+                PetActivityEvent.idempotency_key == "legacy-clean-event",
+            )
+        )
+        activity_count = count_result.scalar_one()
+        activity_result = await session.execute(
+            select(PetActivityEvent).where(
+                PetActivityEvent.user_id == user_id,
+                PetActivityEvent.idempotency_key == "legacy-clean-event",
+            )
+        )
+        activity = activity_result.scalar_one()
+
+    assert activity_count == 1
+    assert activity.action == "clean"
+    assert activity.occurred_at == occurred_at
 
 
 @pytest.mark.asyncio

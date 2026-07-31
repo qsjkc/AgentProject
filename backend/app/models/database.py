@@ -37,6 +37,7 @@ LEGACY_APP_TABLES = {
     "reminders",
     "pet_relationships",
     "pet_intimacy_events",
+    "pet_activity_events",
 }
 
 engine = create_async_engine(
@@ -75,6 +76,7 @@ async def init_db() -> None:
     if not settings.AUTO_RUN_MIGRATIONS:
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
+            await backfill_pet_activity_events(conn)
         logger.warning("AUTO_RUN_MIGRATIONS disabled; schema initialized via metadata bootstrap")
         return
 
@@ -112,12 +114,43 @@ async def ensure_relational_schema(existing_tables: set[str]) -> None:
     )
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        await backfill_pet_activity_events(conn)
     await run_alembic_command("stamp", "head")
 
 
 async def get_sqlite_table_columns(conn, table_name: str) -> set[str]:
     result = await conn.exec_driver_sql(f"PRAGMA table_info({table_name})")
     return {row[1] for row in result.fetchall()}
+
+
+async def backfill_pet_activity_events(conn) -> None:
+    await conn.exec_driver_sql(
+        """
+        INSERT INTO pet_activity_events (
+            user_id,
+            relationship_id,
+            pet_type,
+            action,
+            idempotency_key,
+            occurred_at
+        )
+        SELECT
+            source.user_id,
+            source.relationship_id,
+            source.pet_type,
+            source.action,
+            source.idempotency_key,
+            source.awarded_at
+        FROM pet_intimacy_events AS source
+        WHERE source.action NOT IN ('reminder_created', 'reminder_completed', 'meaningful_chat')
+          AND NOT EXISTS (
+              SELECT 1
+              FROM pet_activity_events AS existing
+              WHERE existing.user_id = source.user_id
+                AND existing.idempotency_key = source.idempotency_key
+          )
+        """
+    )
 
 
 async def ensure_legacy_sqlite_schema(conn) -> None:
@@ -163,6 +196,8 @@ async def ensure_legacy_sqlite_schema(conn) -> None:
             "ON chat_messages (pet_type, role, created_at)"
         )
 
+    await backfill_pet_activity_events(conn)
+
 
 class User(Base):
     __tablename__ = "users"
@@ -184,6 +219,7 @@ class User(Base):
     reminders = relationship("Reminder", back_populates="user", cascade="all, delete-orphan")
     pet_relationships = relationship("PetRelationship", back_populates="user", cascade="all, delete-orphan")
     pet_intimacy_events = relationship("PetIntimacyEvent", back_populates="user", cascade="all, delete-orphan")
+    pet_activity_events = relationship("PetActivityEvent", back_populates="user", cascade="all, delete-orphan")
 
 
 class UserPreference(Base):
@@ -303,6 +339,7 @@ class PetRelationship(Base):
 
     user = relationship("User", back_populates="pet_relationships")
     intimacy_events = relationship("PetIntimacyEvent", back_populates="relationship", cascade="all, delete-orphan")
+    activity_events = relationship("PetActivityEvent", back_populates="relationship", cascade="all, delete-orphan")
 
 
 class PetIntimacyEvent(Base):
@@ -329,3 +366,32 @@ class PetIntimacyEvent(Base):
 
     user = relationship("User", back_populates="pet_intimacy_events")
     relationship = relationship("PetRelationship", back_populates="intimacy_events")
+
+
+class PetActivityEvent(Base):
+    __tablename__ = "pet_activity_events"
+    __table_args__ = (
+        UniqueConstraint("user_id", "idempotency_key", name="uq_pet_activity_events_user_key"),
+        Index("ix_pet_activity_events_daily", "relationship_id", "occurred_at"),
+        Index(
+            "ix_pet_activity_events_action_daily",
+            "relationship_id",
+            "action",
+            "occurred_at",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    relationship_id = Column(
+        Integer,
+        ForeignKey("pet_relationships.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    pet_type = Column(String(20), nullable=False)
+    action = Column(String(32), nullable=False)
+    idempotency_key = Column(String(128), nullable=False)
+    occurred_at = Column(DateTime, default=utc_now, nullable=False)
+
+    user = relationship("User", back_populates="pet_activity_events")
+    relationship = relationship("PetRelationship", back_populates="activity_events")

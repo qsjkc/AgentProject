@@ -9,7 +9,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.time import utc_now
-from app.models.database import ChatMessage, ChatSession, PetIntimacyEvent, PetRelationship, Reminder
+from app.models.database import (
+    ChatMessage,
+    ChatSession,
+    PetActivityEvent,
+    PetIntimacyEvent,
+    PetRelationship,
+    Reminder,
+)
 from app.services.pet_outfits import (
     build_pet_outfit_state,
     get_pet_outfit_item,
@@ -119,28 +126,27 @@ async def get_pet_daily_summary(
 
     activity_event_result = await db.execute(
         select(
-            func.count(PetIntimacyEvent.id),
-            func.min(PetIntimacyEvent.awarded_at),
-            func.max(PetIntimacyEvent.awarded_at),
+            func.count(PetActivityEvent.id),
+            func.min(PetActivityEvent.occurred_at),
+            func.max(PetActivityEvent.occurred_at),
         ).where(
-            PetIntimacyEvent.user_id == user_id,
-            PetIntimacyEvent.pet_type == pet_type,
-            ~PetIntimacyEvent.action.in_(EXTERNAL_ACTIVITY_ACTIONS),
-            PetIntimacyEvent.awarded_at >= day_start,
-            PetIntimacyEvent.awarded_at < day_end,
+            PetActivityEvent.user_id == user_id,
+            PetActivityEvent.pet_type == pet_type,
+            PetActivityEvent.occurred_at >= day_start,
+            PetActivityEvent.occurred_at < day_end,
         )
     )
     activity_event_count, event_first_at, event_last_at = activity_event_result.one()
 
     action_result = await db.execute(
-        select(PetIntimacyEvent.action, func.count(PetIntimacyEvent.id))
+        select(PetActivityEvent.action, func.count(PetActivityEvent.id))
         .where(
-            PetIntimacyEvent.user_id == user_id,
-            PetIntimacyEvent.pet_type == pet_type,
-            PetIntimacyEvent.awarded_at >= day_start,
-            PetIntimacyEvent.awarded_at < day_end,
+            PetActivityEvent.user_id == user_id,
+            PetActivityEvent.pet_type == pet_type,
+            PetActivityEvent.occurred_at >= day_start,
+            PetActivityEvent.occurred_at < day_end,
         )
-        .group_by(PetIntimacyEvent.action)
+        .group_by(PetActivityEvent.action)
     )
     action_counts = {
         action: int(count)
@@ -195,6 +201,18 @@ async def get_pet_daily_summary(
     )
     meaningful_chat_count, meaningful_chat_first_at, meaningful_chat_last_at = (
         meaningful_chats_result.one()
+    )
+    external_action_counts = {
+        "reminder_created": int(reminders_created_count),
+        "reminder_completed": int(reminders_completed_count),
+        "meaningful_chat": int(meaningful_chat_count),
+    }
+    action_counts.update(
+        {
+            action: count
+            for action, count in external_action_counts.items()
+            if count > 0
+        }
     )
     interaction_count = (
         int(activity_event_count)
@@ -370,6 +388,71 @@ async def get_latest_action_event(
     return result.scalar_one_or_none()
 
 
+def get_activity_daily_limit(policy: RewardPolicy) -> int:
+    return max(1, ceil(policy.daily_cap / policy.xp))
+
+
+async def get_daily_activity_count(
+    db: AsyncSession,
+    *,
+    relationship_id: int,
+    action: str,
+    day_start: datetime,
+    day_end: datetime,
+) -> int:
+    result = await db.execute(
+        select(func.count(PetActivityEvent.id)).where(
+            PetActivityEvent.relationship_id == relationship_id,
+            PetActivityEvent.action == action,
+            PetActivityEvent.occurred_at >= day_start,
+            PetActivityEvent.occurred_at < day_end,
+        )
+    )
+    return int(result.scalar_one())
+
+
+async def get_latest_activity_event(
+    db: AsyncSession,
+    *,
+    relationship_id: int,
+    action: str,
+) -> PetActivityEvent | None:
+    result = await db.execute(
+        select(PetActivityEvent)
+        .where(
+            PetActivityEvent.relationship_id == relationship_id,
+            PetActivityEvent.action == action,
+        )
+        .order_by(PetActivityEvent.occurred_at.desc(), PetActivityEvent.id.desc())
+        .limit(1)
+    )
+    return result.scalar_one_or_none()
+
+
+async def has_duplicate_reward_request(
+    db: AsyncSession,
+    *,
+    user_id: int,
+    idempotency_key: str,
+) -> bool:
+    activity_result = await db.execute(
+        select(PetActivityEvent.id).where(
+            PetActivityEvent.user_id == user_id,
+            PetActivityEvent.idempotency_key == idempotency_key,
+        )
+    )
+    if activity_result.scalar_one_or_none() is not None:
+        return True
+
+    reward_result = await db.execute(
+        select(PetIntimacyEvent.id).where(
+            PetIntimacyEvent.user_id == user_id,
+            PetIntimacyEvent.idempotency_key == idempotency_key,
+        )
+    )
+    return reward_result.scalar_one_or_none() is not None
+
+
 def build_reward_response(
     relationship: PetRelationship,
     *,
@@ -420,13 +503,11 @@ async def award_pet_relationship(
     )
     relationship = locked_result.scalar_one()
 
-    duplicate_result = await db.execute(
-        select(PetIntimacyEvent).where(
-            PetIntimacyEvent.user_id == user_id,
-            PetIntimacyEvent.idempotency_key == idempotency_key,
-        )
+    duplicate = await has_duplicate_reward_request(
+        db,
+        user_id=user_id,
+        idempotency_key=idempotency_key,
     )
-    duplicate = duplicate_result.scalar_one_or_none()
     day_start, day_end = get_reward_day_bounds(award_time)
     daily_total, action_total = await get_daily_reward_totals(
         db,
@@ -436,7 +517,7 @@ async def award_pet_relationship(
         day_end=day_end,
     )
 
-    if duplicate is not None:
+    if duplicate:
         return build_reward_response(
             relationship,
             action=action,
@@ -447,24 +528,24 @@ async def award_pet_relationship(
             action_daily_awarded_xp=action_total,
         )
 
-    if relationship.intimacy_xp >= MAX_INTIMACY_XP:
-        return build_reward_response(
-            relationship,
+    tracks_activity = action not in EXTERNAL_ACTIVITY_ACTIONS
+    if tracks_activity:
+        latest_event = await get_latest_activity_event(
+            db,
+            relationship_id=relationship.id,
             action=action,
-            policy=policy,
-            awarded_xp=0,
-            reason="max_level",
-            daily_awarded_xp=daily_total,
-            action_daily_awarded_xp=action_total,
         )
+        latest_event_at = latest_event.occurred_at if latest_event is not None else None
+    else:
+        latest_event = await get_latest_action_event(
+            db,
+            relationship_id=relationship.id,
+            action=action,
+        )
+        latest_event_at = latest_event.awarded_at if latest_event is not None else None
 
-    latest_event = await get_latest_action_event(
-        db,
-        relationship_id=relationship.id,
-        action=action,
-    )
-    if latest_event is not None and policy.cooldown_seconds:
-        elapsed_seconds = (award_time - latest_event.awarded_at).total_seconds()
+    if latest_event_at is not None and policy.cooldown_seconds:
+        elapsed_seconds = (award_time - latest_event_at).total_seconds()
         if elapsed_seconds < policy.cooldown_seconds:
             return build_reward_response(
                 relationship,
@@ -477,73 +558,99 @@ async def award_pet_relationship(
                 action_daily_awarded_xp=action_total,
             )
 
-    action_remaining = policy.daily_cap - action_total
-    if action_remaining <= 0:
-        return build_reward_response(
-            relationship,
-            action=action,
-            policy=policy,
-            awarded_xp=0,
-            reason="action_daily_cap",
-            daily_awarded_xp=daily_total,
-            action_daily_awarded_xp=action_total,
-        )
-
-    daily_remaining = DAILY_XP_CAP - daily_total
-    if daily_remaining <= 0:
-        return build_reward_response(
-            relationship,
-            action=action,
-            policy=policy,
-            awarded_xp=0,
-            reason="daily_cap",
-            daily_awarded_xp=daily_total,
-            action_daily_awarded_xp=action_total,
-        )
-
-    awarded_xp = min(
-        policy.xp,
-        action_remaining,
-        daily_remaining,
-        MAX_INTIMACY_XP - relationship.intimacy_xp,
-    )
-    previous_level = relationship.level
-    relationship.intimacy_xp += awarded_xp
-    relationship.level, relationship.relationship_stage = get_relationship_level(
-        relationship.intimacy_xp
-    )
-    relationship.unlocked_outfits = merge_unlocked_outfit_ids(
-        pet_type,
-        relationship.level,
-        relationship.unlocked_outfits,
-    )
-    relationship.last_active_at = award_time
-    level_up = relationship.level > previous_level
-    if level_up:
-        relationship.last_level_up_at = award_time
-
-    db.add(
-        PetIntimacyEvent(
-            user_id=user_id,
+    activity_limit_reached = False
+    state_changed = False
+    if tracks_activity:
+        activity_count = await get_daily_activity_count(
+            db,
             relationship_id=relationship.id,
-            pet_type=pet_type,
             action=action,
-            xp_awarded=awarded_xp,
-            idempotency_key=idempotency_key,
-            awarded_at=award_time,
+            day_start=day_start,
+            day_end=day_end,
         )
-    )
+        activity_limit_reached = activity_count >= get_activity_daily_limit(policy)
+        if not activity_limit_reached:
+            db.add(
+                PetActivityEvent(
+                    user_id=user_id,
+                    relationship_id=relationship.id,
+                    pet_type=pet_type,
+                    action=action,
+                    idempotency_key=idempotency_key,
+                    occurred_at=award_time,
+                )
+            )
+            relationship.last_active_at = award_time
+            state_changed = True
+
+    action_remaining = policy.daily_cap - action_total
+    daily_remaining = DAILY_XP_CAP - daily_total
+    awarded_xp = 0
+    level_up = False
+    if relationship.intimacy_xp >= MAX_INTIMACY_XP:
+        reason = "max_level"
+    elif activity_limit_reached:
+        reason = "action_daily_cap"
+    elif action_remaining <= 0:
+        reason = "action_daily_cap"
+    elif daily_remaining <= 0:
+        reason = "daily_cap"
+    else:
+        awarded_xp = min(
+            policy.xp,
+            action_remaining,
+            daily_remaining,
+            MAX_INTIMACY_XP - relationship.intimacy_xp,
+        )
+        previous_level = relationship.level
+        relationship.intimacy_xp += awarded_xp
+        relationship.level, relationship.relationship_stage = get_relationship_level(
+            relationship.intimacy_xp
+        )
+        relationship.unlocked_outfits = merge_unlocked_outfit_ids(
+            pet_type,
+            relationship.level,
+            relationship.unlocked_outfits,
+        )
+        relationship.last_active_at = award_time
+        level_up = relationship.level > previous_level
+        if level_up:
+            relationship.last_level_up_at = award_time
+
+        db.add(
+            PetIntimacyEvent(
+                user_id=user_id,
+                relationship_id=relationship.id,
+                pet_type=pet_type,
+                action=action,
+                xp_awarded=awarded_xp,
+                idempotency_key=idempotency_key,
+                awarded_at=award_time,
+            )
+        )
+        state_changed = True
+        reason = "awarded"
+
+    if not state_changed:
+        return build_reward_response(
+            relationship,
+            action=action,
+            policy=policy,
+            awarded_xp=0,
+            reason=reason,
+            daily_awarded_xp=daily_total,
+            action_daily_awarded_xp=action_total,
+        )
+
     try:
         await db.commit()
     except IntegrityError:
         await db.rollback()
-        duplicate_result = await db.execute(
-            select(PetIntimacyEvent).where(
-                PetIntimacyEvent.user_id == user_id,
-                PetIntimacyEvent.idempotency_key == idempotency_key,
-            )
-        )
-        if duplicate_result.scalar_one_or_none() is None:
+        if not await has_duplicate_reward_request(
+            db,
+            user_id=user_id,
+            idempotency_key=idempotency_key,
+        ):
             raise
         relationship = await get_or_create_pet_relationship(
             db,
@@ -573,7 +680,7 @@ async def award_pet_relationship(
         action=action,
         policy=policy,
         awarded_xp=awarded_xp,
-        reason="awarded",
+        reason=reason,
         daily_awarded_xp=daily_total + awarded_xp,
         action_daily_awarded_xp=action_total + awarded_xp,
         level_up=level_up,
