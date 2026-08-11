@@ -1,7 +1,9 @@
 import os
 import shutil
+import asyncio
 from datetime import datetime, timedelta
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -23,7 +25,10 @@ os.environ["INITIAL_ADMIN_PASSWORD"] = "ChangeThisPassword123!"
 
 from app.main import app  # noqa: E402
 from app.services.pet_relationships import (  # noqa: E402
+    MILESTONE_CLAIM_LEASE_SECONDS,
+    acknowledge_pet_relationship_milestone,
     award_pet_relationship,
+    claim_pet_relationship_milestone,
     get_pet_daily_summary,
     get_pet_weekly_summary,
     get_relationship_level,
@@ -786,6 +791,381 @@ async def test_outfit_api_enforces_slot_and_unlock_level(client: AsyncClient):
     )
     assert cleared.status_code == 200
     assert cleared.json()["outfit"]["equipped_outfits"] == {}
+
+
+@pytest.mark.asyncio
+async def test_relationship_milestone_claim_and_ack_api_is_scoped_and_idempotent(
+    client: AsyncClient,
+):
+    alice_headers = await register_and_login(
+        client,
+        "milestone-alice",
+        "milestone-alice@example.com",
+    )
+    bob_headers = await register_and_login(
+        client,
+        "milestone-bob",
+        "milestone-bob@example.com",
+    )
+    relationship_response = await client.get(
+        "/api/v1/pets/pig/relationship",
+        headers=alice_headers,
+    )
+    assert relationship_response.status_code == 200
+    user_id = relationship_response.json()["user_id"]
+
+    empty_claim = await client.post(
+        "/api/v1/pets/pig/relationship/milestones/claim",
+        headers=alice_headers,
+        json={"claim_token": str(uuid4())},
+    )
+    assert empty_claim.status_code == 204
+
+    from sqlalchemy import select  # noqa: E402
+    from app.models.database import (  # noqa: E402
+        PetRelationship,
+        PetRelationshipMilestone,
+        async_session_maker,
+    )
+
+    achieved_at = datetime(2026, 8, 11, 1, 0, 0)
+    async with async_session_maker() as session:
+        relationship_result = await session.execute(
+            select(PetRelationship).where(
+                PetRelationship.user_id == user_id,
+                PetRelationship.pet_type == "pig",
+            )
+        )
+        relationship = relationship_result.scalar_one()
+        relationship.intimacy_xp = 99
+        relationship.level = 1
+        relationship.relationship_stage = "new_friend"
+        await session.commit()
+
+        awarded = await award_pet_relationship(
+            session,
+            user_id=user_id,
+            pet_type="pig",
+            action="poke",
+            idempotency_key="milestone-api-level-two",
+            now=achieved_at,
+        )
+        assert awarded["level_up"] is True
+
+        duplicate = await award_pet_relationship(
+            session,
+            user_id=user_id,
+            pet_type="pig",
+            action="poke",
+            idempotency_key="milestone-api-level-two",
+            now=achieved_at,
+        )
+        assert duplicate["reason"] == "duplicate"
+
+        milestone_result = await session.execute(
+            select(PetRelationshipMilestone).where(
+                PetRelationshipMilestone.relationship_id == relationship.id
+            )
+        )
+        milestones = milestone_result.scalars().all()
+
+    assert [(item.level, item.reward_outfit_id) for item in milestones] == [
+        (2, "pig_sleep_cap"),
+    ]
+
+    claim_token = str(uuid4())
+    claimed = await client.post(
+        "/api/v1/pets/pig/relationship/milestones/claim",
+        headers=alice_headers,
+        json={"claim_token": claim_token},
+    )
+    assert claimed.status_code == 200
+    assert claimed.json() == {
+        "id": milestones[0].id,
+        "pet_type": "pig",
+        "level": 2,
+        "relationship_stage": "getting_familiar",
+        "reward_outfit_id": "pig_sleep_cap",
+        "achieved_at": "2026-08-11T01:00:00",
+        "claim_token": claim_token,
+        "claim_expires_at": claimed.json()["claim_expires_at"],
+        "acknowledged_at": None,
+    }
+
+    retried_claim = await client.post(
+        "/api/v1/pets/pig/relationship/milestones/claim",
+        headers=alice_headers,
+        json={"claim_token": claim_token},
+    )
+    assert retried_claim.status_code == 200
+    assert {
+        key: value
+        for key, value in retried_claim.json().items()
+        if key != "claim_expires_at"
+    } == {
+        key: value
+        for key, value in claimed.json().items()
+        if key != "claim_expires_at"
+    }
+    assert datetime.fromisoformat(
+        retried_claim.json()["claim_expires_at"]
+    ) > datetime.fromisoformat(claimed.json()["claim_expires_at"])
+
+    busy_claim = await client.post(
+        "/api/v1/pets/pig/relationship/milestones/claim",
+        headers=alice_headers,
+        json={"claim_token": str(uuid4())},
+    )
+    assert busy_claim.status_code == 204
+
+    wrong_token = str(uuid4())
+    wrong_ack = await client.post(
+        f"/api/v1/pets/pig/relationship/milestones/{milestones[0].id}/ack",
+        headers=alice_headers,
+        json={"claim_token": wrong_token},
+    )
+    assert wrong_ack.status_code == 409
+    assert wrong_ack.json()["detail"] == "milestone_claim_invalid_or_expired"
+
+    wrong_pet = await client.post(
+        f"/api/v1/pets/cat/relationship/milestones/{milestones[0].id}/ack",
+        headers=alice_headers,
+        json={"claim_token": claim_token},
+    )
+    assert wrong_pet.status_code == 404
+    assert wrong_pet.json()["detail"] == "milestone_not_found"
+
+    wrong_user = await client.post(
+        f"/api/v1/pets/pig/relationship/milestones/{milestones[0].id}/ack",
+        headers=bob_headers,
+        json={"claim_token": claim_token},
+    )
+    assert wrong_user.status_code == 404
+    assert wrong_user.json()["detail"] == "milestone_not_found"
+
+    acknowledged = await client.post(
+        f"/api/v1/pets/pig/relationship/milestones/{milestones[0].id}/ack",
+        headers=alice_headers,
+        json={"claim_token": claim_token},
+    )
+    assert acknowledged.status_code == 200
+    assert acknowledged.json()["acknowledged_at"] is not None
+    assert acknowledged.json()["claim_expires_at"] is None
+
+    retried_ack = await client.post(
+        f"/api/v1/pets/pig/relationship/milestones/{milestones[0].id}/ack",
+        headers=alice_headers,
+        json={"claim_token": claim_token},
+    )
+    assert retried_ack.status_code == 200
+    assert retried_ack.json() == acknowledged.json()
+
+    wrong_token_after_ack = await client.post(
+        f"/api/v1/pets/pig/relationship/milestones/{milestones[0].id}/ack",
+        headers=alice_headers,
+        json={"claim_token": wrong_token},
+    )
+    assert wrong_token_after_ack.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_relationship_milestone_lease_reclaim_and_late_ack(client: AsyncClient):
+    headers = await register_and_login(
+        client,
+        "milestone-lease",
+        "milestone-lease@example.com",
+    )
+    relationship_response = await client.get(
+        "/api/v1/pets/pig/relationship",
+        headers=headers,
+    )
+    user_id = relationship_response.json()["user_id"]
+
+    from sqlalchemy import select  # noqa: E402
+    from app.models.database import PetRelationship, async_session_maker  # noqa: E402
+
+    achieved_at = datetime(2026, 8, 11, 2, 0, 0)
+    async with async_session_maker() as session:
+        relationship_result = await session.execute(
+            select(PetRelationship).where(
+                PetRelationship.user_id == user_id,
+                PetRelationship.pet_type == "pig",
+            )
+        )
+        relationship = relationship_result.scalar_one()
+        relationship.intimacy_xp = 99
+        relationship.level = 1
+        relationship.relationship_stage = "new_friend"
+        await session.commit()
+        await award_pet_relationship(
+            session,
+            user_id=user_id,
+            pet_type="pig",
+            action="poke",
+            idempotency_key="milestone-lease-level-two",
+            now=achieved_at,
+        )
+
+        first_token = str(uuid4())
+        first_claim = await claim_pet_relationship_milestone(
+            session,
+            user_id=user_id,
+            pet_type="pig",
+            claim_token=first_token,
+            now=achieved_at,
+        )
+        assert first_claim is not None
+
+        same_claim = await claim_pet_relationship_milestone(
+            session,
+            user_id=user_id,
+            pet_type="pig",
+            claim_token=first_token,
+            now=achieved_at + timedelta(seconds=1),
+        )
+        assert same_claim is not None
+        assert same_claim["id"] == first_claim["id"]
+        assert same_claim["claim_token"] == first_claim["claim_token"]
+        assert same_claim["claim_expires_at"] == (
+            first_claim["claim_expires_at"] + timedelta(seconds=1)
+        )
+
+        late_ack = await acknowledge_pet_relationship_milestone(
+            session,
+            milestone_id=first_claim["id"],
+            user_id=user_id,
+            pet_type="pig",
+            claim_token=first_token,
+            now=achieved_at
+            + timedelta(seconds=MILESTONE_CLAIM_LEASE_SECONDS + 1),
+        )
+        assert late_ack["acknowledged_at"] == (
+            achieved_at + timedelta(seconds=MILESTONE_CLAIM_LEASE_SECONDS + 1)
+        )
+
+        relationship.intimacy_xp = 259
+        relationship.level = 2
+        relationship.relationship_stage = "getting_familiar"
+        await session.commit()
+        await award_pet_relationship(
+            session,
+            user_id=user_id,
+            pet_type="pig",
+            action="poke",
+            idempotency_key="milestone-lease-level-three",
+            now=achieved_at + timedelta(days=1),
+        )
+
+        stale_token = str(uuid4())
+        stale_claim = await claim_pet_relationship_milestone(
+            session,
+            user_id=user_id,
+            pet_type="pig",
+            claim_token=stale_token,
+            now=achieved_at + timedelta(days=1),
+        )
+        assert stale_claim is not None
+        assert stale_claim["level"] == 3
+
+        replacement_token = str(uuid4())
+        replacement_claim = await claim_pet_relationship_milestone(
+            session,
+            user_id=user_id,
+            pet_type="pig",
+            claim_token=replacement_token,
+            now=achieved_at
+            + timedelta(days=1, seconds=MILESTONE_CLAIM_LEASE_SECONDS + 1),
+        )
+        assert replacement_claim is not None
+        assert replacement_claim["id"] == stale_claim["id"]
+        assert replacement_claim["claim_token"] == replacement_token
+
+        with pytest.raises(
+            PermissionError,
+            match="milestone_claim_invalid_or_expired",
+        ):
+            await acknowledge_pet_relationship_milestone(
+                session,
+                milestone_id=stale_claim["id"],
+                user_id=user_id,
+                pet_type="pig",
+                claim_token=stale_token,
+                now=achieved_at + timedelta(days=2),
+            )
+
+        replacement_ack = await acknowledge_pet_relationship_milestone(
+            session,
+            milestone_id=replacement_claim["id"],
+            user_id=user_id,
+            pet_type="pig",
+            claim_token=replacement_token,
+            now=achieved_at + timedelta(days=2),
+        )
+        repeated_ack = await acknowledge_pet_relationship_milestone(
+            session,
+            milestone_id=replacement_claim["id"],
+            user_id=user_id,
+            pet_type="pig",
+            claim_token=replacement_token,
+            now=achieved_at + timedelta(days=3),
+        )
+
+    assert repeated_ack == replacement_ack
+
+
+@pytest.mark.asyncio
+async def test_relationship_milestone_claim_is_atomic_between_clients(client: AsyncClient):
+    headers = await register_and_login(
+        client,
+        "milestone-race",
+        "milestone-race@example.com",
+    )
+    relationship_response = await client.get(
+        "/api/v1/pets/pig/relationship",
+        headers=headers,
+    )
+    user_id = relationship_response.json()["user_id"]
+
+    from sqlalchemy import select  # noqa: E402
+    from app.models.database import PetRelationship, async_session_maker  # noqa: E402
+
+    claim_time = datetime(2026, 8, 11, 3, 0, 0)
+    async with async_session_maker() as session:
+        relationship_result = await session.execute(
+            select(PetRelationship).where(
+                PetRelationship.user_id == user_id,
+                PetRelationship.pet_type == "pig",
+            )
+        )
+        relationship = relationship_result.scalar_one()
+        relationship.intimacy_xp = 99
+        relationship.level = 1
+        relationship.relationship_stage = "new_friend"
+        await session.commit()
+        await award_pet_relationship(
+            session,
+            user_id=user_id,
+            pet_type="pig",
+            action="poke",
+            idempotency_key="milestone-race-level-two",
+            now=claim_time,
+        )
+
+    async def claim_once(token: str):
+        async with async_session_maker() as session:
+            return await claim_pet_relationship_milestone(
+                session,
+                user_id=user_id,
+                pet_type="pig",
+                claim_token=token,
+                now=claim_time,
+            )
+
+    tokens = [str(uuid4()), str(uuid4())]
+    claims = await asyncio.gather(*(claim_once(token) for token in tokens))
+    won = [claim for claim in claims if claim is not None]
+    assert len(won) == 1
+    assert won[0]["claim_token"] in tokens
 
 
 @pytest.mark.asyncio

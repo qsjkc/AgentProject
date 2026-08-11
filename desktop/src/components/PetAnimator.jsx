@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { getPetAnimation } from '../shared/pet-animation-config'
 import { isLoopingPetAnimation } from '../shared/pet-animation-state'
 
-export function PetAnimator({ petType, action, alt, onCycleComplete }) {
+export function PetAnimator({ petType, action, cycleId = null, alt, onCycleComplete }) {
   const animation = useMemo(() => getPetAnimation(petType, action), [petType, action])
   const { frameCount, frameDuration } = animation
   const [index, setIndex] = useState(0)
@@ -14,7 +14,7 @@ export function PetAnimator({ petType, action, alt, onCycleComplete }) {
     resettingAnimationRef.current = true
     previousIndexRef.current = 0
     setIndex(0)
-  }, [action, petType])
+  }, [action, cycleId, petType])
 
   useEffect(() => {
     if (frameCount <= 1) {
@@ -22,7 +22,7 @@ export function PetAnimator({ petType, action, alt, onCycleComplete }) {
         return undefined
       }
       const timer = window.setTimeout(() => {
-        onCycleComplete?.(action)
+        onCycleComplete?.(action, cycleId)
       }, 660)
       return () => window.clearTimeout(timer)
     }
@@ -32,7 +32,7 @@ export function PetAnimator({ petType, action, alt, onCycleComplete }) {
     }, frameDuration)
 
     return () => window.clearInterval(timer)
-  }, [action, frameCount, frameDuration, onCycleComplete])
+  }, [action, cycleId, frameCount, frameDuration, onCycleComplete])
 
   useEffect(() => {
     if (resettingAnimationRef.current) {
@@ -46,10 +46,10 @@ export function PetAnimator({ petType, action, alt, onCycleComplete }) {
       return
     }
     if (index === 0 && previousIndexRef.current === frameCount - 1) {
-      onCycleComplete?.(action)
+      onCycleComplete?.(action, cycleId)
     }
     previousIndexRef.current = index
-  }, [action, frameCount, index, onCycleComplete])
+  }, [action, cycleId, frameCount, index, onCycleComplete])
 
   if (animation.type === 'sprite') {
     const column = index % animation.columns

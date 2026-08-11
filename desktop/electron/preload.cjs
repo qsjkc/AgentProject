@@ -16,6 +16,13 @@ contextBridge.exposeInMainWorld('desktopBridge', {
   notifyPetReminderEvent: (payload) => ipcRenderer.invoke('desktop:notify-pet-reminder-event', payload),
   getCachedPetRelationship: (petType) => ipcRenderer.invoke('desktop:get-cached-pet-relationship', petType),
   cachePetRelationship: (payload) => ipcRenderer.invoke('desktop:cache-pet-relationship', payload),
+  getPetMilestonePlayback: (petType) => ipcRenderer.invoke('desktop:get-pet-milestone-playback', petType),
+  setPetMilestonePlayback: (petType, playback, expectedRevision) => (
+    ipcRenderer.invoke('desktop:set-pet-milestone-playback', petType, playback, expectedRevision)
+  ),
+  clearPetMilestonePlayback: (petType, claimToken, expectedRevision) => (
+    ipcRenderer.invoke('desktop:clear-pet-milestone-playback', petType, claimToken, expectedRevision)
+  ),
   onPetStateChanged: (callback) => {
     const listener = (_event, payload) => callback(payload)
     ipcRenderer.on('desktop:pet-state-changed', listener)

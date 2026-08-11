@@ -1,5 +1,6 @@
 import { desktopApiRequest } from './api'
 import { normalizePetDailySummary } from './pet-daily-summary'
+import { normalizePetRelationshipMilestone } from './pet-milestone-state'
 import { normalizePetRelationship } from './pet-relationship'
 import { normalizePetWeeklySummary } from './pet-weekly-summary'
 
@@ -74,4 +75,32 @@ export async function updatePetOutfit(petType, slot, itemId) {
   )
   await window.desktopBridge?.cachePetRelationship?.(relationship)
   return relationship
+}
+
+
+export async function claimPetRelationshipMilestone(petType, claimToken) {
+  const milestone = await desktopApiRequest(
+    `/pets/${petType}/relationship/milestones/claim`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ claim_token: claimToken }),
+    },
+  )
+  return normalizePetRelationshipMilestone(milestone, petType)
+}
+
+
+export async function acknowledgePetRelationshipMilestone(
+  petType,
+  milestoneId,
+  claimToken,
+) {
+  const milestone = await desktopApiRequest(
+    `/pets/${petType}/relationship/milestones/${milestoneId}/ack`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ claim_token: claimToken }),
+    },
+  )
+  return normalizePetRelationshipMilestone(milestone, petType)
 }

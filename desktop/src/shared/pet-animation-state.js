@@ -41,11 +41,16 @@ export function isLoopingPetAnimation(action) {
   return LOOPING_ACTIONS.has(action)
 }
 
+export function doesPetAnimationBlockCare(action, locked) {
+  return Boolean(locked && action !== ANIMATION_ACTIONS.LEVEL_UP)
+}
+
 export function createInitialPetAnimationState() {
   return {
     action: ANIMATION_ACTIONS.IDLE,
     locked: false,
     message: '',
+    milestoneId: null,
     lastInteractionAt: Date.now(),
   }
 }
@@ -55,12 +60,19 @@ function transition(action, patch = {}) {
     action,
     locked: LOCKED_ACTIONS.has(action),
     message: patch.message || '',
+    milestoneId: patch.milestoneId || null,
     lastInteractionAt: patch.lastInteractionAt || Date.now(),
   }
 }
 
 export function petAnimationReducer(state, event) {
-  if (state.locked && event.type !== 'ANIMATION_DONE' && event.type !== 'WAKE') {
+  if (
+    state.locked
+    && event.type !== 'ANIMATION_DONE'
+    && event.type !== 'MILESTONE_INTERRUPTED'
+    && event.type !== 'REMINDER_DUE'
+    && event.type !== 'WAKE'
+  ) {
     return state
   }
 
@@ -71,7 +83,10 @@ export function petAnimationReducer(state, event) {
     case 'CHAT_SUCCESS':
       return transition(ANIMATION_ACTIONS.HAPPY, { message: event.message })
     case 'LEVEL_UP':
-      return transition(ANIMATION_ACTIONS.LEVEL_UP, { message: event.message })
+      return transition(ANIMATION_ACTIONS.LEVEL_UP, {
+        message: event.message,
+        milestoneId: event.milestoneId,
+      })
     case 'REMINDER_PARSE_FAILED':
     case 'CHAT_ERROR':
       return transition(ANIMATION_ACTIONS.CONFUSED, { message: event.message })
@@ -108,6 +123,14 @@ export function petAnimationReducer(state, event) {
         ? transition(ANIMATION_ACTIONS.WAKE, { message: event.message })
         : state
     case 'ANIMATION_DONE':
+      if (state.milestoneId && state.milestoneId !== event.milestoneId) {
+        return state
+      }
+      return transition(ANIMATION_ACTIONS.IDLE)
+    case 'MILESTONE_INTERRUPTED':
+      if (state.milestoneId !== event.milestoneId) {
+        return state
+      }
       return transition(ANIMATION_ACTIONS.IDLE)
     default:
       return state

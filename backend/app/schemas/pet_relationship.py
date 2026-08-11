@@ -1,5 +1,6 @@
 from datetime import date, datetime
 from typing import Literal, Optional
+from uuid import UUID
 
 from pydantic import BaseModel, Field
 
@@ -71,6 +72,26 @@ class PetRelationshipRewardRequest(BaseModel):
 class PetOutfitUpdateRequest(BaseModel):
     slot: OutfitSlot
     item_id: Optional[str] = Field(default=None, max_length=64)
+
+
+class PetRelationshipMilestoneClaimRequest(BaseModel):
+    claim_token: UUID
+
+
+class PetRelationshipMilestoneAckRequest(BaseModel):
+    claim_token: UUID
+
+
+class PetRelationshipMilestoneResponse(BaseModel):
+    id: int
+    pet_type: PetType
+    level: int = Field(ge=2, le=5)
+    relationship_stage: RelationshipStage
+    reward_outfit_id: str
+    achieved_at: datetime
+    claim_token: UUID
+    claim_expires_at: Optional[datetime] = None
+    acknowledged_at: Optional[datetime] = None
 
 
 class PetRelationshipRewardResponse(BaseModel):

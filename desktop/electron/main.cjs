@@ -2,6 +2,12 @@ const fs = require('node:fs')
 const path = require('node:path')
 
 const {
+  clearPetMilestonePlaybackEntry,
+  readPetMilestonePlaybackEntry,
+  setPetMilestonePlaybackEntry,
+} = require('./pet-milestone-playback-store.cjs')
+
+const {
   app,
   BrowserWindow,
   ipcMain,
@@ -240,6 +246,7 @@ async function createStore() {
         },
       },
       petRelationshipCache: {},
+      petMilestonePlayback: {},
       petCompanionSettings: DEFAULT_COMPANION_SETTINGS,
       petCompanionState: {},
       quickBounds: { width: QUICK_CHAT_WIDTH, height: QUICK_CHAT_HEIGHT },
@@ -391,6 +398,69 @@ function cachePetRelationship(payload = {}) {
   sendPetRelationshipToWindow(quickChatWindow, nextRelationship)
   sendPetRelationshipToWindow(mainPanelWindow, nextRelationship)
   return nextRelationship
+}
+
+function getPetMilestonePlayback(petType) {
+  const normalizedPetType = normalizePetType(petType)
+  const playbackByPet = getStore().get('petMilestonePlayback') || {}
+  const result = readPetMilestonePlaybackEntry(playbackByPet, normalizedPetType)
+  if (result.changed) {
+    getStore().set('petMilestonePlayback', result.playbackByPet)
+  }
+  return result.playback
+}
+
+function setPetMilestonePlayback(petType, playback = {}, expectedRevision = null) {
+  const normalizedPetType = normalizePetType(petType)
+  const playbackByPet = getStore().get('petMilestonePlayback') || {}
+  if (!getStore().get('sessionToken')) {
+    const current = readPetMilestonePlaybackEntry(
+      playbackByPet,
+      normalizedPetType,
+    ).playback
+    return { ok: false, reason: 'no-session', current }
+  }
+  const result = setPetMilestonePlaybackEntry({
+    playbackByPet,
+    petType: normalizedPetType,
+    playback,
+    expectedRevision,
+    updatedAt: new Date().toISOString(),
+  })
+  if (!result.ok) {
+    return { ok: false, reason: result.reason, current: result.current }
+  }
+  getStore().set('petMilestonePlayback', result.playbackByPet)
+  return { ok: true, playback: result.playback }
+}
+
+function clearPetMilestonePlayback(petType, claimToken = '', expectedRevision = null) {
+  const normalizedPetType = normalizePetType(petType)
+  const playbackByPet = getStore().get('petMilestonePlayback') || {}
+  const snapshot = readPetMilestonePlaybackEntry(playbackByPet, normalizedPetType)
+  if (snapshot.changed) {
+    getStore().set('petMilestonePlayback', snapshot.playbackByPet)
+    return { ok: true, playback: null }
+  }
+  if (!snapshot.playback) {
+    return { ok: true, playback: null }
+  }
+  if (!getStore().get('sessionToken')) {
+    return { ok: false, reason: 'no-session', current: snapshot.playback }
+  }
+  const result = clearPetMilestonePlaybackEntry({
+    playbackByPet,
+    petType: normalizedPetType,
+    claimToken,
+    expectedRevision,
+  })
+  if (!result.ok) {
+    return { ok: false, reason: result.reason, current: result.current }
+  }
+  if (result.changed) {
+    getStore().set('petMilestonePlayback', result.playbackByPet)
+  }
+  return { ok: true, playback: null }
 }
 
 function setVoiceSettings(patch = {}) {
@@ -1054,6 +1124,7 @@ function getRuntimeState() {
   return {
     petState: getPetState(),
     petRelationshipCache: getStore().get('petRelationshipCache') || {},
+    petMilestonePlayback: getStore().get('petMilestonePlayback') || {},
     voiceSettings: getVoiceSettings(),
     companionSettings: getCompanionSettings(),
     companionState: getStore().get('petCompanionState') || {},
@@ -1095,6 +1166,13 @@ function registerIpc() {
   ipcMain.handle('desktop:get-pet-state', async () => getPetState())
   ipcMain.handle('desktop:get-cached-pet-relationship', async (_event, petType) => getCachedPetRelationship(petType))
   ipcMain.handle('desktop:cache-pet-relationship', async (_event, payload) => cachePetRelationship(payload))
+  ipcMain.handle('desktop:get-pet-milestone-playback', async (_event, petType) => getPetMilestonePlayback(petType))
+  ipcMain.handle('desktop:set-pet-milestone-playback', async (_event, petType, playback, expectedRevision) => (
+    setPetMilestonePlayback(petType, playback, expectedRevision)
+  ))
+  ipcMain.handle('desktop:clear-pet-milestone-playback', async (_event, petType, claimToken, expectedRevision) => (
+    clearPetMilestonePlayback(petType, claimToken, expectedRevision)
+  ))
 
   ipcMain.handle('desktop:toggle-auto-launch', async (_event, enabled) => {
     getStore().set('autoLaunch', enabled)
@@ -1170,6 +1248,7 @@ function registerIpc() {
   ipcMain.handle('desktop:clear-session-token', async () => {
     getStore().set('sessionToken', null)
     getStore().set('petRelationshipCache', {})
+    getStore().set('petMilestonePlayback', {})
     getStore().set('petCompanionState', {})
     syncPetState({
       hasSession: false,

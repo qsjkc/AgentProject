@@ -70,6 +70,25 @@ const relationshipEventCopy = {
   },
 }
 
+const pigRelationshipMilestoneCopy = {
+  2: {
+    'zh-CN': '到 Lv.2 啦，软绒睡帽也解锁了。先戴给你看看。',
+    en: 'Lv.2! I unlocked a soft sleep cap. Let me try it on for you.',
+  },
+  3: {
+    'zh-CN': '到 Lv.3 啦，提醒铃铛也解锁了。先让我试试看。',
+    en: 'Lv.3! I unlocked a reminder bell. Let me try it on.',
+  },
+  4: {
+    'zh-CN': '到 Lv.4 啦，搭档工作牌归我了。戴上给你看看。',
+    en: 'Lv.4! My partner badge is here. Let me show you how it looks.',
+  },
+  5: {
+    'zh-CN': '到 Lv.5 啦，星星小帽也来了。我们真的很熟了。',
+    en: 'Lv.5! The star hat is here. We really do know each other now.',
+  },
+}
+
 const pigCompanionCopy = {
   'zh-CN': {
     daily_greeting: {
@@ -253,6 +272,15 @@ export function getPetRelationshipEventCopy(
     return value(relationship?.level || 1)
   }
   return value || ''
+}
+
+export function getPetRelationshipMilestoneCopy(petType, language, milestone) {
+  if (petType !== 'pig') {
+    return getPetRelationshipEventCopy(petType, language, 'level_up', milestone)
+  }
+  const locale = language === 'zh-CN' ? 'zh-CN' : 'en'
+  return pigRelationshipMilestoneCopy[Number(milestone?.level)]?.[locale]
+    || getPetRelationshipEventCopy(petType, language, 'level_up', milestone)
 }
 
 export function getPetCompanionCopy(

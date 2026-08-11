@@ -23,6 +23,7 @@ import { getMessagePool, getPetMessagePool, normalizeLanguage, t } from './share
 import {
   ANIMATION_ACTIONS,
   createInitialPetAnimationState,
+  doesPetAnimationBlockCare,
   petAnimationReducer,
 } from './shared/pet-animation-state'
 import { getPetCareActions, getPetCareToolbarLabel } from './shared/pet-care-actions'
@@ -37,6 +38,7 @@ import {
 import {
   getPetCompanionCopy,
   getPetRelationshipEventCopy,
+  getPetRelationshipMilestoneCopy,
   getPetReminderCopy,
 } from './shared/pet-personality'
 import {
@@ -45,12 +47,29 @@ import {
   normalizePetRelationship,
 } from './shared/pet-relationship'
 import {
+  acknowledgePetRelationshipMilestone,
+  claimPetRelationshipMilestone,
   getPetDailySummary,
   getPetWeeklySummary,
   markPetWeeklySummarySeen,
   markPetWeeklySummaryShown,
+  refreshPetRelationship,
   rewardPetRelationship,
 } from './shared/pet-relationships-api'
+import {
+  createPetMilestoneClaimToken,
+  createPetMilestonePlaybackState,
+  getPetMilestonePersistenceConflict,
+  isInvalidPetMilestoneClaimError,
+  isMissingPetRelationshipMilestoneError,
+  isPetMilestoneClaimSafe,
+  isPetMilestonePlaybackContextCurrent,
+  isPetMilestonePlaybackSafe,
+  isPetRelationshipReadyForMilestone,
+  normalizePetMilestonePlaybackState,
+  PET_MILESTONE_PLAYBACK_STATUS,
+  updatePetMilestonePlaybackStatus,
+} from './shared/pet-milestone-state'
 import { getPetVisual } from './shared/pets'
 import { getPendingReminders, markReminderTriggered } from './shared/reminders-api'
 
@@ -67,6 +86,7 @@ const REMINDER_POLL_INTERVAL_MS = 30000
 const PET_IDLE_ANIMATION_INTERVAL_MS = 45000
 const PET_SLEEP_TIMEOUT_MS = 10 * 60 * 1000
 const COMPANION_POLL_INTERVAL_MS = 30000
+const MILESTONE_POLL_INTERVAL_MS = 15000
 
 const CARE_ACTION_ICONS = {
   pat: Hand,
@@ -115,6 +135,7 @@ function PetApp() {
   const [intimacyFeedback, setIntimacyFeedback] = useState('')
   const [activeCareAction, setActiveCareAction] = useState('')
   const [petRelationship, setPetRelationship] = useState(null)
+  const [milestonePlayback, setMilestonePlayback] = useState(null)
   const [hovering, setHovering] = useState(false)
   const [voiceUiState, dispatchVoice] = useReducer(voiceStateReducer, undefined, createInitialVoiceUiState)
   const [petAnimationState, dispatchPetAnimation] = useReducer(
@@ -132,6 +153,7 @@ function PetApp() {
   const processingTimerRef = useRef(null)
   const replyTimerRef = useRef(null)
   const sleepTimerRef = useRef(null)
+  const milestonePumpTimerRef = useRef(null)
   const previousSessionRef = useRef(null)
   const previousPhaseRef = useRef(VOICE_PHASES.IDLE)
   const phaseRef = useRef(VOICE_PHASES.IDLE)
@@ -141,6 +163,11 @@ function PetApp() {
   const voiceSettingsRef = useRef(voiceSettings)
   const hasSessionRef = useRef(hasSession)
   const relationshipRef = useRef(null)
+  const milestonePlaybackRef = useRef(null)
+  const milestonePlaybackLoadedRef = useRef(false)
+  const milestoneRequestInFlightRef = useRef(null)
+  const milestoneContextEpochRef = useRef(0)
+  const milestonePumpRef = useRef(null)
   const companionSettingsRef = useRef(DEFAULT_COMPANION_SETTINGS)
   const companionStateRef = useRef(DEFAULT_COMPANION_STATE)
   const companionStateReadyRef = useRef(false)
@@ -252,6 +279,465 @@ function PetApp() {
     [clearTransientBubbleTimer, resetPetActivityTimer],
   )
 
+  const isMilestoneContextCurrent = useCallback((epoch) => (
+    isPetMilestonePlaybackContextCurrent({
+      expectedEpoch: epoch,
+      currentEpoch: milestoneContextEpochRef.current,
+      petType: petTypeRef.current,
+      hasSession: hasSessionRef.current,
+    })
+  ), [])
+
+  const replaceMilestoneRuntimeState = useCallback((value) => {
+    const nextPlayback = normalizePetMilestonePlaybackState(value, 'pig')
+    milestonePlaybackRef.current = nextPlayback
+    setMilestonePlayback(nextPlayback)
+    return nextPlayback
+  }, [])
+
+  const persistMilestonePlaybackState = useCallback(async (
+    value,
+    epoch = milestoneContextEpochRef.current,
+  ) => {
+    const nextPlayback = normalizePetMilestonePlaybackState(value, 'pig')
+    if (!nextPlayback || !window.desktopBridge?.setPetMilestonePlayback) {
+      throw new Error('pet_milestone_persistence_unavailable')
+    }
+    const response = await window.desktopBridge.setPetMilestonePlayback(
+      'pig',
+      nextPlayback,
+      nextPlayback.revision,
+    )
+    if (!response?.ok) {
+      const conflict = getPetMilestonePersistenceConflict(response, 'pig')
+      if (conflict && isMilestoneContextCurrent(epoch)) {
+        replaceMilestoneRuntimeState(conflict.current)
+      }
+      const error = new Error(response?.reason || 'pet_milestone_persistence_failed')
+      error.code = conflict
+        ? 'PET_MILESTONE_PERSISTENCE_CONFLICT'
+        : 'PET_MILESTONE_PERSISTENCE_UNAVAILABLE'
+      error.current = conflict?.current || null
+      throw error
+    }
+    const stored = normalizePetMilestonePlaybackState(response.playback, 'pig')
+    if (
+      !stored
+      || stored.claim_token !== nextPlayback.claim_token
+      || stored.revision !== nextPlayback.revision + 1
+    ) {
+      throw new Error('pet_milestone_persistence_failed')
+    }
+    return stored
+  }, [isMilestoneContextCurrent, replaceMilestoneRuntimeState])
+
+  const clearMilestonePlaybackState = useCallback(async (
+    claimToken,
+    expectedRevision,
+    epoch = milestoneContextEpochRef.current,
+  ) => {
+    if (!window.desktopBridge?.clearPetMilestonePlayback) {
+      throw new Error('pet_milestone_persistence_unavailable')
+    }
+    const response = await window.desktopBridge.clearPetMilestonePlayback(
+      'pig',
+      claimToken,
+      expectedRevision,
+    )
+    if (!response?.ok) {
+      const conflict = getPetMilestonePersistenceConflict(response, 'pig')
+      if (conflict && isMilestoneContextCurrent(epoch)) {
+        replaceMilestoneRuntimeState(conflict.current)
+      }
+      const error = new Error(response?.reason || 'pet_milestone_clear_failed')
+      error.code = conflict
+        ? 'PET_MILESTONE_PERSISTENCE_CONFLICT'
+        : 'PET_MILESTONE_PERSISTENCE_UNAVAILABLE'
+      error.current = conflict?.current || null
+      throw error
+    }
+    if (
+      isMilestoneContextCurrent(epoch)
+      && milestonePlaybackRef.current?.claim_token === claimToken
+    ) {
+      replaceMilestoneRuntimeState(null)
+    }
+  }, [isMilestoneContextCurrent, replaceMilestoneRuntimeState])
+
+  const getMilestonePlaybackContext = useCallback((milestone = null) => ({
+    petType: petTypeRef.current,
+    hasSession: hasSessionRef.current,
+    visibilityState: document.visibilityState,
+    voicePhase: phaseRef.current,
+    pointerActive: dragRef.current.pointerId !== null,
+    settlingPointer: settlingPointerRef.current,
+    activeCareAction: activeCareActionRef.current,
+    transientBubble: transientBubbleRef.current,
+    animationState: petAnimationStateRef.current,
+    relationship: relationshipRef.current,
+    milestone,
+  }), [])
+
+  const interruptMilestonePlayback = useCallback(
+    async (reason) => {
+      const epoch = milestoneContextEpochRef.current
+      const current = milestonePlaybackRef.current
+      if (
+        current?.status !== PET_MILESTONE_PLAYBACK_STATUS.PLAYING
+        || !current.milestone
+      ) {
+        return false
+      }
+
+      const queued = updatePetMilestonePlaybackStatus(
+        current,
+        PET_MILESTONE_PLAYBACK_STATUS.CLAIM,
+      )
+      replaceMilestoneRuntimeState(queued)
+      clearTransientBubbleTimer()
+      setTransientBubble('')
+      transientBubbleRef.current = ''
+      dispatchPetAnimation({
+        type: 'MILESTONE_INTERRUPTED',
+        milestoneId: current.milestone.id,
+      })
+      loggerRef.current.event('milestone:interrupted', {
+        milestoneId: current.milestone.id,
+        reason,
+      })
+      try {
+        const storedQueued = await persistMilestonePlaybackState(queued, epoch)
+        if (!isMilestoneContextCurrent(epoch)) {
+          return false
+        }
+        replaceMilestoneRuntimeState(storedQueued)
+      } catch (error) {
+        loggerRef.current.error('milestone:interrupt-persist-failed', error, {
+          milestoneId: current.milestone.id,
+          reason,
+        })
+      }
+      return true
+    },
+    [
+      clearTransientBubbleTimer,
+      isMilestoneContextCurrent,
+      persistMilestonePlaybackState,
+      replaceMilestoneRuntimeState,
+    ],
+  )
+
+  const acknowledgeMilestonePlayback = useCallback(
+    async (playback, epoch = milestoneContextEpochRef.current) => {
+      const milestone = playback?.milestone
+      if (!milestone || !isMilestoneContextCurrent(epoch)) {
+        return false
+      }
+
+      try {
+        await acknowledgePetRelationshipMilestone(
+          'pig',
+          milestone.id,
+          playback.claim_token,
+        )
+        if (!isMilestoneContextCurrent(epoch)) {
+          return false
+        }
+        await clearMilestonePlaybackState(
+          playback.claim_token,
+          playback.revision,
+          epoch,
+        )
+        loggerRef.current.event('milestone:acknowledged', {
+          milestoneId: milestone.id,
+        })
+        return true
+      } catch (error) {
+        if (isMissingPetRelationshipMilestoneError(error)) {
+          loggerRef.current.error('milestone:ack-not-found', error, {
+            milestoneId: milestone.id,
+          })
+          if (!isMilestoneContextCurrent(epoch)) {
+            return false
+          }
+          try {
+            await clearMilestonePlaybackState(
+              playback.claim_token,
+              playback.revision,
+              epoch,
+            )
+          } catch (clearError) {
+            loggerRef.current.error('milestone:ack-not-found-clear-failed', clearError, {
+              milestoneId: milestone.id,
+            })
+          }
+          return false
+        }
+
+        if (isInvalidPetMilestoneClaimError(error)) {
+          loggerRef.current.error('milestone:ack-claim-invalid', error, {
+            milestoneId: milestone.id,
+          })
+          if (!isMilestoneContextCurrent(epoch)) {
+            return false
+          }
+          const reconcileToken = createPetMilestoneClaimToken()
+          const reconcileState = createPetMilestonePlaybackState({
+            petType: 'pig',
+            status: PET_MILESTONE_PLAYBACK_STATUS.CLAIM,
+            claimToken: reconcileToken,
+            milestone: {
+              ...milestone,
+              claim_token: reconcileToken,
+              claim_expires_at: null,
+            },
+            displayed: true,
+            revision: playback.revision,
+          })
+          try {
+            const storedReconcile = await persistMilestonePlaybackState(reconcileState, epoch)
+            if (!isMilestoneContextCurrent(epoch)) {
+              return false
+            }
+            replaceMilestoneRuntimeState(storedReconcile)
+          } catch (persistError) {
+            loggerRef.current.error('milestone:ack-reconcile-persist-failed', persistError, {
+              milestoneId: milestone.id,
+            })
+          }
+          return false
+        }
+
+        loggerRef.current.error('milestone:ack-failed', error, {
+          milestoneId: milestone.id,
+        })
+        return false
+      }
+    },
+    [
+      clearMilestonePlaybackState,
+      isMilestoneContextCurrent,
+      persistMilestonePlaybackState,
+      replaceMilestoneRuntimeState,
+    ],
+  )
+
+  const runMilestonePump = useCallback(async () => {
+    const epoch = milestoneContextEpochRef.current
+    if (
+      milestoneRequestInFlightRef.current?.epoch === epoch
+      || !milestonePlaybackLoadedRef.current
+      || !isMilestoneContextCurrent(epoch)
+    ) {
+      return
+    }
+
+    const activePlayback = milestonePlaybackRef.current
+    if (activePlayback?.status === PET_MILESTONE_PLAYBACK_STATUS.PLAYING) {
+      return
+    }
+
+    const requestKey = { epoch }
+    milestoneRequestInFlightRef.current = requestKey
+    try {
+      if (activePlayback?.status === PET_MILESTONE_PLAYBACK_STATUS.ACK_PENDING) {
+        const storedAckPending = await persistMilestonePlaybackState(activePlayback, epoch)
+        if (!isMilestoneContextCurrent(epoch)) {
+          return
+        }
+        replaceMilestoneRuntimeState(storedAckPending)
+        await acknowledgeMilestonePlayback(storedAckPending, epoch)
+        return
+      }
+
+      if (!isPetMilestoneClaimSafe(getMilestonePlaybackContext())) {
+        return
+      }
+
+      let claimState = activePlayback
+      if (!claimState) {
+        claimState = createPetMilestonePlaybackState({
+          petType: 'pig',
+          status: PET_MILESTONE_PLAYBACK_STATUS.CLAIM,
+          claimToken: createPetMilestoneClaimToken(),
+        })
+        const storedClaim = await persistMilestonePlaybackState(claimState, epoch)
+        if (!isMilestoneContextCurrent(epoch)) {
+          return
+        }
+        claimState = replaceMilestoneRuntimeState(storedClaim)
+      }
+
+      if (
+        !isMilestoneContextCurrent(epoch)
+        || !isPetMilestoneClaimSafe(getMilestonePlaybackContext())
+      ) {
+        return
+      }
+
+      const milestone = await claimPetRelationshipMilestone(
+        'pig',
+        claimState.claim_token,
+      )
+      if (!isMilestoneContextCurrent(epoch)) {
+        return
+      }
+      if (!milestone) {
+        if (claimState.displayed && claimState.milestone) {
+          loggerRef.current.event('milestone:reconcile-waiting', {
+            milestoneId: claimState.milestone.id,
+          })
+          return
+        }
+        await clearMilestonePlaybackState(
+          claimState.claim_token,
+          claimState.revision,
+          epoch,
+        )
+        return
+      }
+      if (milestone.claim_token !== claimState.claim_token) {
+        return
+      }
+      if (milestone.acknowledged_at) {
+        await clearMilestonePlaybackState(
+          claimState.claim_token,
+          claimState.revision,
+          epoch,
+        )
+        return
+      }
+
+      if (claimState.displayed && claimState.milestone) {
+        if (milestone.id === claimState.milestone.id) {
+          const reconciledAckPending = createPetMilestonePlaybackState({
+            petType: 'pig',
+            status: PET_MILESTONE_PLAYBACK_STATUS.ACK_PENDING,
+            claimToken: claimState.claim_token,
+            milestone,
+            displayed: true,
+            revision: claimState.revision,
+          })
+          const storedReconciledAck = await persistMilestonePlaybackState(
+            reconciledAckPending,
+            epoch,
+          )
+          if (!isMilestoneContextCurrent(epoch)) {
+            return
+          }
+          replaceMilestoneRuntimeState(storedReconciledAck)
+          await acknowledgeMilestonePlayback(storedReconciledAck, epoch)
+          return
+        }
+        loggerRef.current.event('milestone:reconcile-advanced', {
+          previousMilestoneId: claimState.milestone.id,
+          nextMilestoneId: milestone.id,
+        })
+      }
+
+      const queued = createPetMilestonePlaybackState({
+        petType: 'pig',
+        status: PET_MILESTONE_PLAYBACK_STATUS.CLAIM,
+        claimToken: claimState.claim_token,
+        milestone,
+        displayed: false,
+        revision: claimState.revision,
+      })
+      const storedQueued = await persistMilestonePlaybackState(queued, epoch)
+      if (!isMilestoneContextCurrent(epoch)) {
+        return
+      }
+      replaceMilestoneRuntimeState(storedQueued)
+
+      if (!isPetRelationshipReadyForMilestone(relationshipRef.current, milestone)) {
+        try {
+          const refreshedRelationship = await refreshPetRelationship('pig')
+          if (!isMilestoneContextCurrent(epoch)) {
+            return
+          }
+          relationshipRef.current = refreshedRelationship
+          setPetRelationship(refreshedRelationship)
+        } catch (error) {
+          loggerRef.current.error('milestone:relationship-refresh-failed', error, {
+            milestoneId: milestone.id,
+          })
+        }
+        if (!isPetRelationshipReadyForMilestone(relationshipRef.current, milestone)) {
+          await clearMilestonePlaybackState(
+            storedQueued.claim_token,
+            storedQueued.revision,
+            epoch,
+          )
+          loggerRef.current.event('milestone:relationship-not-ready', {
+            milestoneId: milestone.id,
+            relationshipLevel: relationshipRef.current?.level,
+          })
+          return
+        }
+      }
+
+      const playbackContext = getMilestonePlaybackContext(milestone)
+      if (!isPetMilestonePlaybackSafe(playbackContext)) {
+        return
+      }
+
+      const playing = updatePetMilestonePlaybackStatus(
+        storedQueued,
+        PET_MILESTONE_PLAYBACK_STATUS.PLAYING,
+      )
+      const storedPlaying = await persistMilestonePlaybackState(playing, epoch)
+      if (!isMilestoneContextCurrent(epoch)) {
+        return
+      }
+      if (!isPetMilestonePlaybackSafe(getMilestonePlaybackContext(milestone))) {
+        const restoredClaim = updatePetMilestonePlaybackStatus(
+          storedPlaying,
+          PET_MILESTONE_PLAYBACK_STATUS.CLAIM,
+        )
+        const storedRestoredClaim = await persistMilestonePlaybackState(restoredClaim, epoch)
+        if (!isMilestoneContextCurrent(epoch)) {
+          return
+        }
+        replaceMilestoneRuntimeState(storedRestoredClaim)
+        return
+      }
+
+      replaceMilestoneRuntimeState(storedPlaying)
+      const message = getPetRelationshipMilestoneCopy(
+        'pig',
+        languageRef.current,
+        milestone,
+      )
+      setTransientBubbleForDuration(message, 3600)
+      dispatchPetAnimation({
+        type: 'LEVEL_UP',
+        message,
+        milestoneId: milestone.id,
+      })
+      loggerRef.current.event('milestone:playing', {
+        milestoneId: milestone.id,
+        level: milestone.level,
+        rewardOutfitId: milestone.reward_outfit_id,
+      })
+    } catch (error) {
+      loggerRef.current.error('milestone:pump-failed', error)
+    } finally {
+      if (milestoneRequestInFlightRef.current === requestKey) {
+        milestoneRequestInFlightRef.current = null
+      }
+    }
+  }, [
+    acknowledgeMilestonePlayback,
+    clearMilestonePlaybackState,
+    getMilestonePlaybackContext,
+    isMilestoneContextCurrent,
+    persistMilestonePlaybackState,
+    replaceMilestoneRuntimeState,
+    setTransientBubbleForDuration,
+  ])
+
+  milestonePumpRef.current = runMilestonePump
+
   const getVoiceCopy = useCallback((key) => {
     return getPetVoiceCopy(languageRef.current, petTypeRef.current, key)
   }, [])
@@ -322,8 +808,13 @@ function PetApp() {
       })
       previousPhaseRef.current = voiceUiState.phase
       resetPetActivityTimer()
+      if (voiceUiState.phase !== VOICE_PHASES.IDLE) {
+        void interruptMilestonePlayback('voice-active')
+      } else {
+        void milestonePumpRef.current?.()
+      }
     }
-  }, [resetPetActivityTimer, voiceUiState.phase])
+  }, [interruptMilestonePlayback, resetPetActivityTimer, voiceUiState.phase])
 
   useEffect(() => {
     languageRef.current = language
@@ -412,6 +903,127 @@ function PetApp() {
   useEffect(() => {
     hasSessionRef.current = hasSession
   }, [hasSession])
+
+  useEffect(() => {
+    let mounted = true
+    const epoch = milestoneContextEpochRef.current + 1
+    milestoneContextEpochRef.current = epoch
+    milestonePlaybackLoadedRef.current = false
+    replaceMilestoneRuntimeState(null)
+
+    if (petType !== 'pig' || !hasSession) {
+      return () => {
+        mounted = false
+        if (milestoneContextEpochRef.current === epoch) {
+          milestoneContextEpochRef.current += 1
+        }
+      }
+    }
+
+    const loadMilestonePlayback = async () => {
+      try {
+        let savedPlayback = normalizePetMilestonePlaybackState(
+          await window.desktopBridge?.getPetMilestonePlayback?.('pig'),
+          'pig',
+        )
+        if (!mounted || !isMilestoneContextCurrent(epoch)) {
+          return
+        }
+        if (savedPlayback?.status === PET_MILESTONE_PLAYBACK_STATUS.PLAYING) {
+          savedPlayback = updatePetMilestonePlaybackStatus(
+            savedPlayback,
+            PET_MILESTONE_PLAYBACK_STATUS.CLAIM,
+          )
+          replaceMilestoneRuntimeState(savedPlayback)
+          try {
+            const storedQueued = await persistMilestonePlaybackState(savedPlayback, epoch)
+            if (!isMilestoneContextCurrent(epoch)) {
+              return
+            }
+            replaceMilestoneRuntimeState(storedQueued)
+          } catch (error) {
+            loggerRef.current.error('milestone:restart-requeue-failed', error, {
+              milestoneId: savedPlayback?.milestone?.id,
+            })
+          }
+        } else {
+          replaceMilestoneRuntimeState(savedPlayback)
+        }
+      } catch (error) {
+        loggerRef.current.error('milestone:state-load-failed', error)
+      } finally {
+        if (mounted && isMilestoneContextCurrent(epoch)) {
+          milestonePlaybackLoadedRef.current = true
+          void milestonePumpRef.current?.()
+        }
+      }
+    }
+
+    void loadMilestonePlayback()
+    return () => {
+      mounted = false
+      if (milestoneContextEpochRef.current === epoch) {
+        milestoneContextEpochRef.current += 1
+        milestonePlaybackLoadedRef.current = false
+      }
+    }
+  }, [
+    hasSession,
+    isMilestoneContextCurrent,
+    persistMilestonePlaybackState,
+    petType,
+    replaceMilestoneRuntimeState,
+  ])
+
+  useEffect(() => {
+    if (petType !== 'pig' || !hasSession) {
+      return undefined
+    }
+    const poll = () => {
+      void milestonePumpRef.current?.()
+    }
+    poll()
+    milestonePumpTimerRef.current = window.setInterval(poll, MILESTONE_POLL_INTERVAL_MS)
+    return () => {
+      if (milestonePumpTimerRef.current) {
+        window.clearInterval(milestonePumpTimerRef.current)
+        milestonePumpTimerRef.current = null
+      }
+    }
+  }, [hasSession, petType])
+
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState !== 'visible') {
+        void interruptMilestonePlayback('window-hidden')
+        return
+      }
+      void milestonePumpRef.current?.()
+    }
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange)
+  }, [interruptMilestonePlayback])
+
+  useEffect(() => {
+    if (
+      petType === 'pig'
+      && hasSession
+      && voiceUiState.phase === VOICE_PHASES.IDLE
+      && !activeCareAction
+      && !transientBubble
+      && petAnimationState.action === ANIMATION_ACTIONS.IDLE
+    ) {
+      void milestonePumpRef.current?.()
+    }
+  }, [
+    activeCareAction,
+    hasSession,
+    petAnimationState.action,
+    petRelationship,
+    petType,
+    transientBubble,
+    voiceUiState.phase,
+  ])
 
   useEffect(() => {
     resetPetActivityTimer()
@@ -540,10 +1152,16 @@ function PetApp() {
         const previousRelationship = relationshipRef.current
         relationshipRef.current = relationship
         setPetRelationship(relationship)
+        if (relationship.pet_type === 'pig') {
+          void milestonePumpRef.current?.()
+        }
         if (!previousRelationship) {
           return
         }
-        if (relationship.level > previousRelationship.level) {
+        if (
+          relationship.pet_type !== 'pig'
+          && relationship.level > previousRelationship.level
+        ) {
           const message = getPetRelationshipEventCopy(
             relationship.pet_type,
             languageRef.current,
@@ -555,6 +1173,7 @@ function PetApp() {
           return
         }
         if (didEquippedOutfitChange(previousRelationship, relationship)) {
+          void interruptMilestonePlayback('outfit-change')
           const message = getPetRelationshipEventCopy(
             relationship.pet_type,
             languageRef.current,
@@ -574,7 +1193,7 @@ function PetApp() {
       unsubscribeCompanionState?.()
       unsubscribeRelationship?.()
     }
-  }, [setTransientBubbleForDuration])
+  }, [interruptMilestonePlayback, setTransientBubbleForDuration])
 
   useEffect(() => {
     const unsubscribe = window.desktopBridge?.onPetReminderEvent?.((payload) => {
@@ -582,18 +1201,20 @@ function PetApp() {
         return
       }
       if (payload.type === 'created') {
+        void interruptMilestonePlayback('reminder-created')
         setTransientBubbleForDuration(payload.message, 3200)
         dispatchPetAnimation({ type: 'REMINDER_CREATED', message: payload.message })
         return
       }
       if (payload.type === 'parse_failed') {
+        void interruptMilestonePlayback('reminder-parse-failed')
         setTransientBubbleForDuration(payload.message, 3200)
         dispatchPetAnimation({ type: 'REMINDER_PARSE_FAILED', message: payload.message })
       }
     })
 
     return () => unsubscribe?.()
-  }, [setTransientBubbleForDuration])
+  }, [interruptMilestonePlayback, setTransientBubbleForDuration])
 
   useEffect(() => {
     const logger = loggerRef.current
@@ -788,7 +1409,18 @@ function PetApp() {
           } else {
             loggerRef.current.error('companion:weekly-summary-failed', weeklyResult.reason)
           }
-          if (!mounted || petTypeRef.current !== 'pig') {
+          if (
+            !mounted
+            || petTypeRef.current !== 'pig'
+            || !hasSessionRef.current
+            || phaseRef.current !== VOICE_PHASES.IDLE
+            || dragRef.current.pointerId !== null
+            || transientBubbleRef.current
+            || settlingPointerRef.current
+            || activeCareActionRef.current
+            || petAnimationStateRef.current.locked
+            || milestonePlaybackRef.current?.status === PET_MILESTONE_PLAYBACK_STATUS.PLAYING
+          ) {
             return
           }
           const copy = getPetCompanionCopy(
@@ -877,6 +1509,7 @@ function PetApp() {
         }
         const reminder = due[0]
         const copy = getPetReminderCopy(petTypeRef.current).reminderDue(reminder.title)
+        await interruptMilestonePlayback('reminder-due')
         setTransientBubbleForDuration(copy, 8000)
         dispatchPetAnimation({ type: 'REMINDER_DUE', message: copy })
         await window.desktopBridge?.showNotification?.({
@@ -897,7 +1530,7 @@ function PetApp() {
       mounted = false
       window.clearInterval(timer)
     }
-  }, [setTransientBubbleForDuration])
+  }, [interruptMilestonePlayback, setTransientBubbleForDuration])
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -994,6 +1627,7 @@ function PetApp() {
       return
     }
 
+    await interruptMilestonePlayback('voice-enter')
     clearTransientBubbleTimer()
     setTransientBubble('')
     clearReplyTimer()
@@ -1043,6 +1677,7 @@ function PetApp() {
     getVoiceCopy,
     handleFatalVoiceError,
     handleInterrupt,
+    interruptMilestonePlayback,
     resetUiIdleTimer,
     setTransientBubbleForDuration,
     transitionToIdle,
@@ -1202,13 +1837,15 @@ function PetApp() {
       if (
         !action ||
         activeCareAction ||
-        petAnimationState.locked ||
+        doesPetAnimationBlockCare(petAnimationState.action, petAnimationState.locked) ||
         phaseRef.current !== VOICE_PHASES.IDLE
       ) {
         return
       }
 
       resetPetActivityTimer()
+      void interruptMilestonePlayback('care')
+      activeCareActionRef.current = action.id
       setActiveCareAction(action.id)
       setTransientBubbleForDuration(action.message, 2400)
       dispatchPetAnimation({ type: action.animationEvent })
@@ -1216,6 +1853,8 @@ function PetApp() {
     },
     [
       activeCareAction,
+      interruptMilestonePlayback,
+      petAnimationState.action,
       petAnimationState.locked,
       resetPetActivityTimer,
       rewardInteraction,
@@ -1325,6 +1964,7 @@ function PetApp() {
       return
     }
 
+    void interruptMilestonePlayback('pointer-down')
     const wasSleeping = petAnimationState.action === ANIMATION_ACTIONS.SLEEPING
     resetPetActivityTimer()
     if (wasSleeping) {
@@ -1437,15 +2077,96 @@ function PetApp() {
       return
     }
     resetPetActivityTimer()
+    void interruptMilestonePlayback('pet-click')
     dispatchPetAnimation({ type: 'PET_CLICK' })
     void rewardInteraction('poke')
     void handleEnterVoiceMode()
   }
 
-  const handlePetAnimationCycleComplete = useCallback(() => {
-    setActiveCareAction('')
-    dispatchPetAnimation({ type: 'ANIMATION_DONE' })
-  }, [])
+  const completeMilestonePlayback = useCallback(
+    async (milestoneId) => {
+      const epoch = milestoneContextEpochRef.current
+      const current = milestonePlaybackRef.current
+      if (
+        !isMilestoneContextCurrent(epoch)
+        || milestoneRequestInFlightRef.current?.epoch === epoch
+        || current?.status !== PET_MILESTONE_PLAYBACK_STATUS.PLAYING
+        || current.milestone?.id !== milestoneId
+        || petAnimationStateRef.current.milestoneId !== milestoneId
+      ) {
+        return false
+      }
+
+      const ackPending = createPetMilestonePlaybackState({
+        petType: 'pig',
+        status: PET_MILESTONE_PLAYBACK_STATUS.ACK_PENDING,
+        claimToken: current.claim_token,
+        milestone: current.milestone,
+        displayed: true,
+        revision: current.revision,
+      })
+      replaceMilestoneRuntimeState(ackPending)
+      const requestKey = { epoch, type: 'complete' }
+      milestoneRequestInFlightRef.current = requestKey
+      try {
+        const storedAckPending = await persistMilestonePlaybackState(ackPending, epoch)
+        if (!isMilestoneContextCurrent(epoch)) {
+          return false
+        }
+        if (milestonePlaybackRef.current?.claim_token !== storedAckPending.claim_token) {
+          return false
+        }
+        replaceMilestoneRuntimeState(storedAckPending)
+        await acknowledgeMilestonePlayback(storedAckPending, epoch)
+        return true
+      } catch (error) {
+        loggerRef.current.error('milestone:ack-pending-persist-failed', error, {
+          milestoneId,
+        })
+        return false
+      } finally {
+        if (milestoneRequestInFlightRef.current === requestKey) {
+          milestoneRequestInFlightRef.current = null
+        }
+      }
+    },
+    [
+      acknowledgeMilestonePlayback,
+      isMilestoneContextCurrent,
+      persistMilestonePlaybackState,
+      replaceMilestoneRuntimeState,
+    ],
+  )
+
+  const handlePetAnimationCycleComplete = useCallback(
+    (completedAction, completedMilestoneId) => {
+      const currentAnimation = petAnimationStateRef.current
+      if (completedAction !== currentAnimation.action) {
+        return
+      }
+      if (currentAnimation.milestoneId) {
+        if (
+          completedAction !== ANIMATION_ACTIONS.LEVEL_UP
+          || completedMilestoneId !== currentAnimation.milestoneId
+          || milestonePlaybackRef.current?.milestone?.id !== completedMilestoneId
+          || milestonePlaybackRef.current?.status !== PET_MILESTONE_PLAYBACK_STATUS.PLAYING
+        ) {
+          return
+        }
+        setActiveCareAction('')
+        dispatchPetAnimation({
+          type: 'ANIMATION_DONE',
+          milestoneId: completedMilestoneId,
+        })
+        void completeMilestonePlayback(completedMilestoneId)
+        return
+      }
+
+      setActiveCareAction('')
+      dispatchPetAnimation({ type: 'ANIMATION_DONE' })
+    },
+    [completeMilestonePlayback],
+  )
 
   const bubbleText = useMemo(() => {
     if (voiceUiState.phase !== VOICE_PHASES.IDLE) {
@@ -1520,7 +2241,7 @@ function PetApp() {
               const Icon = CARE_ACTION_ICONS[action.id]
               const disabled =
                 Boolean(activeCareAction) ||
-                petAnimationState.locked ||
+                doesPetAnimationBlockCare(petAnimationState.action, petAnimationState.locked) ||
                 voiceUiState.phase !== VOICE_PHASES.IDLE
 
               return (
@@ -1556,6 +2277,7 @@ function PetApp() {
               <PetAnimator
                 petType={petType}
                 action={petAnimationState.action}
+                cycleId={petAnimationState.milestoneId}
                 alt={t(language, 'desktopPetAlt', { pet: petLabel })}
                 onCycleComplete={handlePetAnimationCycleComplete}
               />
@@ -1563,6 +2285,12 @@ function PetApp() {
                 petType={petType}
                 action={petAnimationState.action}
                 outfit={petRelationship?.pet_type === petType ? petRelationship.outfit : null}
+                previewItemId={
+                  milestonePlayback?.status === PET_MILESTONE_PLAYBACK_STATUS.PLAYING
+                    && milestonePlayback.milestone?.id === petAnimationState.milestoneId
+                    ? milestonePlayback.milestone.reward_outfit_id
+                    : null
+                }
               />
             </div>
           </div>

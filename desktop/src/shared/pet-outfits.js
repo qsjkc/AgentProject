@@ -83,6 +83,10 @@ export function getPetOutfitCatalog(petType, language = 'zh-CN') {
   }))
 }
 
+export function getPetOutfitItem(petType, itemId, language = 'zh-CN') {
+  return getPetOutfitCatalog(petType, language).find((item) => item.id === itemId) || null
+}
+
 export function getPetOutfitSlotLabel(slot, language = 'zh-CN') {
   const labels = SLOT_LABELS[slot] || SLOT_LABELS.scene
   return labels[getLocale(language)]
@@ -121,5 +125,28 @@ export function normalizePetOutfitState(value, petType, level) {
       .filter((item) => unlockedIds.has(item.id))
       .map((item) => item.id),
     equipped_outfits: equippedOutfits,
+  }
+}
+
+export function applyPetOutfitPreview(outfit, petType, itemId) {
+  const item = getPetOutfitItem(petType, itemId)
+  const unlockedIds = Array.isArray(outfit?.unlocked_outfit_ids)
+    ? [...outfit.unlocked_outfit_ids]
+    : []
+  const equippedOutfits = { ...(outfit?.equipped_outfits || {}) }
+
+  if (!item || !unlockedIds.includes(item.id)) {
+    return {
+      unlocked_outfit_ids: unlockedIds,
+      equipped_outfits: equippedOutfits,
+    }
+  }
+
+  return {
+    unlocked_outfit_ids: unlockedIds,
+    equipped_outfits: {
+      ...equippedOutfits,
+      [item.slot]: item.id,
+    },
   }
 }

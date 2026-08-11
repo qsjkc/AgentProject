@@ -60,7 +60,7 @@ const pigAnimations = {
   poke: [pigJump01, pigJump02, pigJump03, pigJump04, pigJump05, pigJump06],
   drag: [pigWalk01, pigWalk02, pigWalk03, pigWalk04, pigWalk05, pigWalk06],
   dress_up: [pigIdle01, pigIdle02, pigIdle03, pigIdle04, pigIdle05, pigIdle06],
-  level_up: [pigJump01, pigJump02, pigJump03, pigJump04, pigJump05, pigJump06],
+  level_up: [pigHappy01, pigHappy02, pigJump01, pigJump02, pigJump03, pigJump04, pigJump05, pigJump06, pigHappy05, pigHappy06],
   run: [pigWalk01, pigWalk02, pigWalk03, pigWalk04, pigWalk05, pigWalk06, pigWalk05, pigWalk04],
   stretch: [pigIdle01, pigIdle02, pigIdle03, pigIdle04, pigIdle05, pigIdle06, pigIdle05, pigIdle04],
   look_around: [pigIdle02, pigIdle03, pigIdle04, pigIdle05, pigIdle04, pigIdle03],
@@ -74,6 +74,7 @@ const pigAnimationDurations = {
   look_around: 165,
   yawn: 175,
   welcome_back: 92,
+  level_up: 92,
 }
 
 const pigSpriteAnimations = {

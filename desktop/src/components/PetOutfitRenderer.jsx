@@ -1,4 +1,4 @@
-import { PET_OUTFIT_SLOTS } from '../shared/pet-outfits'
+import { applyPetOutfitPreview, PET_OUTFIT_SLOTS } from '../shared/pet-outfits'
 import {
   getPetOutfitSpriteStyle,
   getPetOutfitVisual,
@@ -12,10 +12,12 @@ const OUTFIT_COMPATIBLE_ACTIONS = new Set([
   'look_around',
   'yawn',
   'welcome_back',
+  'level_up',
 ])
 
-function getEffectiveOutfits(petType, action, outfit) {
-  const unlocked = new Set(outfit?.unlocked_outfit_ids || [])
+function getEffectiveOutfits(petType, action, outfit, previewItemId) {
+  const effectiveOutfit = applyPetOutfitPreview(outfit, petType, previewItemId)
+  const unlocked = new Set(effectiveOutfit.unlocked_outfit_ids || [])
 
   if (petType !== 'pig') {
     return []
@@ -31,7 +33,7 @@ function getEffectiveOutfits(petType, action, outfit) {
     return []
   }
 
-  const equipped = outfit?.equipped_outfits || {}
+  const equipped = effectiveOutfit.equipped_outfits || {}
   return PET_OUTFIT_SLOTS
     .map((slot) => equipped[slot])
     .filter(Boolean)
@@ -52,8 +54,8 @@ export function OutfitSprite({ petType, itemId, className = '' }) {
   )
 }
 
-export function PetOutfitRenderer({ petType, action, outfit }) {
-  const itemIds = getEffectiveOutfits(petType, action, outfit)
+export function PetOutfitRenderer({ petType, action, outfit, previewItemId = null }) {
+  const itemIds = getEffectiveOutfits(petType, action, outfit, previewItemId)
   if (!itemIds.length) {
     return null
   }

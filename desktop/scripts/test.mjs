@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict'
 
+import petMilestonePlaybackStore from '../electron/pet-milestone-playback-store.cjs'
 import { normalizeApiBaseUrl } from '../src/shared/api-base-url.js'
 import { getPetMessagePool, normalizeLanguage, t } from '../src/shared/i18n.js'
 import {
   ANIMATION_ACTIONS,
   createInitialPetAnimationState,
+  doesPetAnimationBlockCare,
   isLoopingPetAnimation,
   petAnimationReducer,
 } from '../src/shared/pet-animation-state.js'
@@ -39,10 +41,26 @@ import {
   normalizePetRelationship,
 } from '../src/shared/pet-relationship.js'
 import {
+  applyPetOutfitPreview,
   getPetOutfitCatalog,
   getPetOutfitSlotLabel,
   normalizePetOutfitState,
 } from '../src/shared/pet-outfits.js'
+import {
+  createPetMilestoneClaimToken,
+  createPetMilestonePlaybackState,
+  getPetMilestonePersistenceConflict,
+  isInvalidPetMilestoneClaimError,
+  isMissingPetRelationshipMilestoneError,
+  isPetMilestoneClaimSafe,
+  isPetMilestonePlaybackContextCurrent,
+  isPetMilestonePlaybackSafe,
+  isPetRelationshipReadyForMilestone,
+  normalizePetRelationshipMilestone,
+  normalizePetMilestonePlaybackState,
+  PET_MILESTONE_PLAYBACK_STATUS,
+  updatePetMilestonePlaybackStatus,
+} from '../src/shared/pet-milestone-state.js'
 import { parseOneTimeReminder, parseReminder } from '../src/shared/reminder-parser.js'
 import { getReminderRecurrenceLabel } from '../src/shared/reminder-recurrence.js'
 import {
@@ -61,6 +79,12 @@ import {
   VOICE_PHASES,
   voiceStateReducer,
 } from '../src/shared/voice-state.js'
+
+const {
+  clearPetMilestonePlaybackEntry,
+  readPetMilestonePlaybackEntry,
+  setPetMilestonePlaybackEntry,
+} = petMilestonePlaybackStore
 
 assert.equal(normalizeApiBaseUrl('detachym.top'), 'http://detachym.top/api/v1')
 assert.equal(normalizeApiBaseUrl('https://detachym.top/api'), 'https://detachym.top/api/v1')
@@ -244,6 +268,8 @@ assert.deepEqual(
 assert.equal(isLoopingPetAnimation(ANIMATION_ACTIONS.IDLE), true)
 assert.equal(isLoopingPetAnimation(ANIMATION_ACTIONS.SLEEPING), true)
 assert.equal(isLoopingPetAnimation(ANIMATION_ACTIONS.WAKE), false)
+assert.equal(doesPetAnimationBlockCare(ANIMATION_ACTIONS.REMINDING, true), true)
+assert.equal(doesPetAnimationBlockCare(ANIMATION_ACTIONS.LEVEL_UP, true), false)
 
 assert.equal(
   petAnimationReducer(initialPetAnimation, {
@@ -641,9 +667,314 @@ assert.deepEqual(
   },
 )
 
+const milestoneClaimToken = createPetMilestoneClaimToken()
+assert.match(
+  milestoneClaimToken,
+  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+)
+const relationshipMilestone = normalizePetRelationshipMilestone({
+  id: 23,
+  pet_type: 'pig',
+  level: 3,
+  relationship_stage: 'clingy',
+  reward_outfit_id: 'pig_bell',
+  achieved_at: '2026-08-11T09:00:00Z',
+  claim_token: milestoneClaimToken,
+  claim_expires_at: '2026-08-11T09:05:00Z',
+  acknowledged_at: null,
+})
+assert.equal(relationshipMilestone.id, 23)
+assert.equal(relationshipMilestone.reward_outfit_id, 'pig_bell')
+assert.equal(normalizePetRelationshipMilestone({ ...relationshipMilestone, pet_type: 'cat' }), null)
+
+const milestoneClaimState = createPetMilestonePlaybackState({
+  petType: 'pig',
+  status: PET_MILESTONE_PLAYBACK_STATUS.CLAIM,
+  claimToken: milestoneClaimToken,
+  milestone: relationshipMilestone,
+})
+const milestonePlayingState = updatePetMilestonePlaybackStatus(
+  milestoneClaimState,
+  PET_MILESTONE_PLAYBACK_STATUS.PLAYING,
+)
+assert.equal(milestonePlayingState.status, PET_MILESTONE_PLAYBACK_STATUS.PLAYING)
+assert.equal(milestonePlayingState.revision, milestoneClaimState.revision)
+const milestoneAckPendingState = createPetMilestonePlaybackState({
+  petType: 'pig',
+  status: PET_MILESTONE_PLAYBACK_STATUS.ACK_PENDING,
+  claimToken: milestoneClaimToken,
+  milestone: relationshipMilestone,
+  displayed: true,
+})
+assert.equal(normalizePetMilestonePlaybackState(milestoneAckPendingState).displayed, true)
+assert.equal(
+  normalizePetMilestonePlaybackState({
+    ...milestoneAckPendingState,
+    claim_token: 'not-a-uuid',
+  }),
+  null,
+)
+assert.equal(
+  normalizePetMilestonePlaybackState({
+    ...milestoneAckPendingState,
+    milestone: {
+      ...relationshipMilestone,
+      claim_token: createPetMilestoneClaimToken(),
+    },
+  }),
+  null,
+)
+assert.equal(
+  normalizePetMilestonePlaybackState({
+    ...milestoneAckPendingState,
+    revision: '1',
+  }),
+  null,
+)
+assert.equal(
+  normalizePetMilestonePlaybackState({
+    ...milestoneAckPendingState,
+    displayed: false,
+  }),
+  null,
+)
+assert.equal(
+  createPetMilestonePlaybackState({
+    status: PET_MILESTONE_PLAYBACK_STATUS.PLAYING,
+    claimToken: milestoneClaimToken,
+  }),
+  null,
+)
+
+const persistedConflictState = createPetMilestonePlaybackState({
+  ...milestoneAckPendingState,
+  revision: 7,
+})
+assert.deepEqual(
+  getPetMilestonePersistenceConflict({
+    ok: false,
+    reason: 'revision-conflict',
+    current: persistedConflictState,
+  }),
+  { current: persistedConflictState },
+)
+assert.deepEqual(
+  getPetMilestonePersistenceConflict({
+    ok: false,
+    reason: 'revision-conflict',
+    current: {
+      ...persistedConflictState,
+      claim_token: 'corrupted-token',
+    },
+  }),
+  { current: null },
+)
+assert.equal(
+  getPetMilestonePersistenceConflict({
+    ok: false,
+    reason: 'no-session',
+    current: persistedConflictState,
+  }),
+  null,
+)
+assert.equal(
+  isPetMilestonePlaybackContextCurrent({
+    expectedEpoch: 4,
+    currentEpoch: 4,
+    petType: 'pig',
+    hasSession: true,
+  }),
+  true,
+)
+assert.equal(
+  isPetMilestonePlaybackContextCurrent({
+    expectedEpoch: 3,
+    currentEpoch: 4,
+    petType: 'pig',
+    hasSession: true,
+  }),
+  false,
+)
+
+const reconcileClaimToken = createPetMilestoneClaimToken()
+const reconcileClaimState = createPetMilestonePlaybackState({
+  petType: 'pig',
+  status: PET_MILESTONE_PLAYBACK_STATUS.CLAIM,
+  claimToken: reconcileClaimToken,
+  milestone: {
+    ...relationshipMilestone,
+    claim_token: reconcileClaimToken,
+  },
+  displayed: true,
+  revision: 7,
+})
+assert.equal(reconcileClaimState.claim_token, reconcileClaimState.milestone.claim_token)
+assert.equal(reconcileClaimState.revision, 7)
+
+const unrelatedStoredPlayback = { cat: { untouched: true } }
+const corruptedStoredPlayback = {
+  ...unrelatedStoredPlayback,
+  pig: {
+    ...persistedConflictState,
+    status: 'corrupted-status',
+  },
+}
+const corruptedTokenStoredPlayback = {
+  ...unrelatedStoredPlayback,
+  pig: {
+    ...persistedConflictState,
+    claim_token: 'corrupted-token',
+  },
+}
+const recoveredRead = readPetMilestonePlaybackEntry(corruptedStoredPlayback, 'pig')
+assert.equal(recoveredRead.playback, null)
+assert.equal(recoveredRead.changed, true)
+assert.equal(Object.hasOwn(recoveredRead.playbackByPet, 'pig'), false)
+assert.deepEqual(recoveredRead.playbackByPet.cat, unrelatedStoredPlayback.cat)
+
+const recoveredSet = setPetMilestonePlaybackEntry({
+  playbackByPet: corruptedTokenStoredPlayback,
+  petType: 'pig',
+  playback: milestoneClaimState,
+  expectedRevision: 0,
+  updatedAt: '2026-08-11T10:00:00.000Z',
+})
+assert.equal(recoveredSet.ok, true)
+assert.equal(recoveredSet.recoveredCorruption, true)
+assert.equal(recoveredSet.playback.revision, 1)
+assert.equal(recoveredSet.playback.claim_token, milestoneClaimToken)
+assert.deepEqual(recoveredSet.playbackByPet.cat, unrelatedStoredPlayback.cat)
+
+const recoveredClear = clearPetMilestonePlaybackEntry({
+  playbackByPet: corruptedTokenStoredPlayback,
+  petType: 'pig',
+  claimToken: 'corrupted-token',
+  expectedRevision: 7,
+})
+assert.equal(recoveredClear.ok, true)
+assert.equal(recoveredClear.recoveredCorruption, true)
+assert.equal(Object.hasOwn(recoveredClear.playbackByPet, 'pig'), false)
+assert.deepEqual(recoveredClear.playbackByPet.cat, unrelatedStoredPlayback.cat)
+
+const validStoredConflict = setPetMilestonePlaybackEntry({
+  playbackByPet: { pig: persistedConflictState },
+  petType: 'pig',
+  playback: milestoneClaimState,
+  expectedRevision: 0,
+  updatedAt: '2026-08-11T10:00:00.000Z',
+})
+assert.equal(validStoredConflict.ok, false)
+assert.equal(validStoredConflict.reason, 'revision-conflict')
+assert.equal(validStoredConflict.current.revision, 7)
+
+const invalidIncomingPlayback = setPetMilestonePlaybackEntry({
+  playbackByPet: {},
+  petType: 'pig',
+  playback: { ...milestoneClaimState, status: 'corrupted-status' },
+  expectedRevision: 0,
+  updatedAt: '2026-08-11T10:00:00.000Z',
+})
+assert.equal(invalidIncomingPlayback.ok, false)
+assert.equal(invalidIncomingPlayback.reason, 'invalid-playback')
+
+const milestoneReadyRelationship = {
+  pet_type: 'pig',
+  level: 4,
+  outfit: {
+    unlocked_outfit_ids: ['pig_basic_scarf', 'pig_sleep_cap', 'pig_bell', 'pig_work_badge'],
+    equipped_outfits: {},
+  },
+}
+const milestoneSafeContext = {
+  petType: 'pig',
+  hasSession: true,
+  visibilityState: 'visible',
+  voicePhase: 'idle',
+  pointerActive: false,
+  settlingPointer: false,
+  activeCareAction: '',
+  transientBubble: '',
+  animationState: initialPetAnimation,
+  relationship: milestoneReadyRelationship,
+  milestone: relationshipMilestone,
+}
+assert.equal(isPetMilestoneClaimSafe(milestoneSafeContext), true)
+assert.equal(isPetRelationshipReadyForMilestone(milestoneReadyRelationship, relationshipMilestone), true)
+assert.equal(isPetMilestonePlaybackSafe(milestoneSafeContext), true)
+assert.equal(
+  isPetMilestonePlaybackSafe({
+    ...milestoneSafeContext,
+    relationship: {
+      ...milestoneReadyRelationship,
+      level: 1,
+      outfit: { unlocked_outfit_ids: [], equipped_outfits: {} },
+    },
+  }),
+  false,
+)
+assert.equal(
+  isPetMilestonePlaybackSafe({
+    ...milestoneSafeContext,
+    relationship: {
+      ...milestoneReadyRelationship,
+      outfit: { unlocked_outfit_ids: ['pig_sleep_cap'], equipped_outfits: {} },
+    },
+  }),
+  false,
+)
+assert.equal(isPetMilestoneClaimSafe({ ...milestoneSafeContext, visibilityState: 'hidden' }), false)
+assert.equal(isPetMilestoneClaimSafe({ ...milestoneSafeContext, voicePhase: 'replying' }), false)
+assert.equal(isInvalidPetMilestoneClaimError({ status: 409 }), true)
+assert.equal(isInvalidPetMilestoneClaimError(new Error('network_error')), false)
+assert.equal(isMissingPetRelationshipMilestoneError({ status: 404 }), true)
+assert.equal(isMissingPetRelationshipMilestoneError({ status: 409 }), false)
+
+const persistedOutfit = {
+  unlocked_outfit_ids: ['pig_sleep_cap', 'pig_star_hat'],
+  equipped_outfits: { head: 'pig_sleep_cap' },
+}
+const previewedOutfit = applyPetOutfitPreview(persistedOutfit, 'pig', 'pig_star_hat')
+assert.equal(previewedOutfit.equipped_outfits.head, 'pig_star_hat')
+assert.equal(persistedOutfit.equipped_outfits.head, 'pig_sleep_cap')
+assert.deepEqual(
+  applyPetOutfitPreview(persistedOutfit, 'pig', 'pig_bell'),
+  persistedOutfit,
+)
+
 const levelUpAnimation = petAnimationReducer(initialPetAnimation, { type: 'LEVEL_UP' })
 assert.equal(levelUpAnimation.action, ANIMATION_ACTIONS.LEVEL_UP)
 assert.equal(levelUpAnimation.locked, true)
+
+const milestoneLevelUpAnimation = petAnimationReducer(initialPetAnimation, {
+  type: 'LEVEL_UP',
+  milestoneId: relationshipMilestone.id,
+})
+assert.equal(milestoneLevelUpAnimation.milestoneId, relationshipMilestone.id)
+assert.equal(
+  petAnimationReducer(milestoneLevelUpAnimation, { type: 'ANIMATION_DONE' }).action,
+  ANIMATION_ACTIONS.LEVEL_UP,
+)
+assert.equal(
+  petAnimationReducer(milestoneLevelUpAnimation, {
+    type: 'ANIMATION_DONE',
+    milestoneId: relationshipMilestone.id + 1,
+  }).action,
+  ANIMATION_ACTIONS.LEVEL_UP,
+)
+assert.equal(
+  petAnimationReducer(milestoneLevelUpAnimation, {
+    type: 'ANIMATION_DONE',
+    milestoneId: relationshipMilestone.id,
+  }).action,
+  ANIMATION_ACTIONS.IDLE,
+)
+assert.equal(
+  petAnimationReducer(milestoneLevelUpAnimation, {
+    type: 'REMINDER_DUE',
+    message: 'priority reminder',
+  }).action,
+  ANIMATION_ACTIONS.REMINDING,
+)
 
 const draggingAnimation = petAnimationReducer(initialPetAnimation, { type: 'PET_DRAG_START' })
 assert.equal(draggingAnimation.action, ANIMATION_ACTIONS.DRAG)

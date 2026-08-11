@@ -3,7 +3,7 @@ from datetime import UTC, date, datetime, timedelta
 from math import ceil
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -15,11 +15,13 @@ from app.models.database import (
     PetActivityEvent,
     PetIntimacyEvent,
     PetRelationship,
+    PetRelationshipMilestone,
     Reminder,
 )
 from app.services.pet_outfits import (
     build_pet_outfit_state,
     get_pet_outfit_item,
+    get_pet_outfit_catalog,
     merge_unlocked_outfit_ids,
     normalize_equipped_outfits,
 )
@@ -41,6 +43,7 @@ RELATIONSHIP_LEVELS = (
 )
 MAX_INTIMACY_XP = RELATIONSHIP_LEVELS[-1][1]
 DAILY_XP_CAP = 120
+MILESTONE_CLAIM_LEASE_SECONDS = 5 * 60
 EXTERNAL_ACTIVITY_ACTIONS = (
     "reminder_created",
     "reminder_completed",
@@ -613,6 +616,324 @@ def serialize_pet_relationship(relationship: PetRelationship) -> dict:
     }
 
 
+def get_relationship_milestone_outfit_id(
+    pet_type: str,
+    level: int,
+) -> str | None:
+    if pet_type != "pig" or level < 2:
+        return None
+    return next(
+        (
+            item["id"]
+            for item in get_pet_outfit_catalog(pet_type)
+            if item["unlock_level"] == level
+        ),
+        None,
+    )
+
+
+def add_pet_relationship_milestones(
+    db: AsyncSession,
+    *,
+    relationship: PetRelationship,
+    previous_level: int,
+    new_level: int,
+    achieved_at: datetime,
+) -> None:
+    for level in range(max(2, previous_level + 1), new_level + 1):
+        reward_outfit_id = get_relationship_milestone_outfit_id(
+            relationship.pet_type,
+            level,
+        )
+        if reward_outfit_id is None:
+            continue
+        db.add(
+            PetRelationshipMilestone(
+                relationship_id=relationship.id,
+                level=level,
+                reward_outfit_id=reward_outfit_id,
+                achieved_at=achieved_at,
+            )
+        )
+
+
+def serialize_pet_relationship_milestone(
+    milestone: PetRelationshipMilestone,
+    *,
+    pet_type: str,
+) -> dict:
+    _, relationship_stage = get_relationship_level(
+        RELATIONSHIP_LEVELS[milestone.level - 1][1]
+    )
+    return {
+        "id": milestone.id,
+        "pet_type": pet_type,
+        "level": milestone.level,
+        "relationship_stage": relationship_stage,
+        "reward_outfit_id": milestone.reward_outfit_id,
+        "achieved_at": milestone.achieved_at,
+        "claim_token": milestone.claim_token,
+        "claim_expires_at": milestone.claim_expires_at,
+        "acknowledged_at": milestone.acknowledged_at,
+    }
+
+
+async def get_owned_pet_relationship_milestone(
+    db: AsyncSession,
+    *,
+    milestone_id: int,
+    user_id: int,
+    pet_type: str,
+) -> PetRelationshipMilestone | None:
+    result = await db.execute(
+        select(PetRelationshipMilestone)
+        .join(
+            PetRelationship,
+            PetRelationship.id == PetRelationshipMilestone.relationship_id,
+        )
+        .where(
+            PetRelationshipMilestone.id == milestone_id,
+            PetRelationship.user_id == user_id,
+            PetRelationship.pet_type == pet_type,
+        )
+        .execution_options(populate_existing=True)
+    )
+    return result.scalar_one_or_none()
+
+
+async def claim_pet_relationship_milestone(
+    db: AsyncSession,
+    *,
+    user_id: int,
+    pet_type: str,
+    claim_token: str,
+    now: datetime | None = None,
+) -> dict | None:
+    claim_time = now or utc_now()
+    claim_time = (
+        claim_time.astimezone(UTC).replace(tzinfo=None)
+        if claim_time.tzinfo
+        else claim_time
+    )
+    claim_expires_at = claim_time + timedelta(
+        seconds=MILESTONE_CLAIM_LEASE_SECONDS
+    )
+    relationship = await get_or_create_pet_relationship(
+        db,
+        user_id=user_id,
+        pet_type=pet_type,
+    )
+    relationship_id = relationship.id
+
+    existing_result = await db.execute(
+        select(PetRelationshipMilestone)
+        .where(
+            PetRelationshipMilestone.relationship_id == relationship_id,
+            PetRelationshipMilestone.claim_token == claim_token,
+        )
+        .order_by(PetRelationshipMilestone.level.asc())
+        .limit(1)
+    )
+    existing = existing_result.scalar_one_or_none()
+    if existing is not None:
+        if existing.acknowledged_at is not None:
+            return serialize_pet_relationship_milestone(
+                existing,
+                pet_type=pet_type,
+            )
+
+        existing_id = existing.id
+        await db.rollback()
+        renewed = await db.execute(
+            update(PetRelationshipMilestone)
+            .where(
+                PetRelationshipMilestone.id == existing_id,
+                PetRelationshipMilestone.relationship_id == relationship_id,
+                PetRelationshipMilestone.acknowledged_at.is_(None),
+                PetRelationshipMilestone.claim_token == claim_token,
+            )
+            .values(claim_expires_at=claim_expires_at)
+        )
+        if renewed.rowcount == 1:
+            await db.commit()
+            renewed_milestone = await get_owned_pet_relationship_milestone(
+                db,
+                milestone_id=existing_id,
+                user_id=user_id,
+                pet_type=pet_type,
+            )
+            if renewed_milestone is not None:
+                return serialize_pet_relationship_milestone(
+                    renewed_milestone,
+                    pet_type=pet_type,
+                )
+        else:
+            await db.rollback()
+
+        retry_result = await db.execute(
+            select(PetRelationshipMilestone).where(
+                PetRelationshipMilestone.relationship_id == relationship_id,
+                PetRelationshipMilestone.claim_token == claim_token,
+            )
+        )
+        retry_milestone = retry_result.scalar_one_or_none()
+        if retry_milestone is not None:
+            return serialize_pet_relationship_milestone(
+                retry_milestone,
+                pet_type=pet_type,
+            )
+        return None
+
+    pending_result = await db.execute(
+        select(PetRelationshipMilestone)
+        .where(
+            PetRelationshipMilestone.relationship_id == relationship_id,
+            PetRelationshipMilestone.acknowledged_at.is_(None),
+        )
+        .order_by(PetRelationshipMilestone.level.asc())
+        .limit(1)
+    )
+    pending = pending_result.scalar_one_or_none()
+    if pending is None:
+        return None
+    if (
+        pending.claim_token is not None
+        and pending.claim_expires_at is not None
+        and pending.claim_expires_at > claim_time
+    ):
+        return None
+
+    pending_id = pending.id
+    await db.rollback()
+    try:
+        claimed = await db.execute(
+            update(PetRelationshipMilestone)
+            .where(
+                PetRelationshipMilestone.id == pending_id,
+                PetRelationshipMilestone.relationship_id == relationship_id,
+                PetRelationshipMilestone.acknowledged_at.is_(None),
+                or_(
+                    PetRelationshipMilestone.claim_token.is_(None),
+                    PetRelationshipMilestone.claim_expires_at.is_(None),
+                    PetRelationshipMilestone.claim_expires_at <= claim_time,
+                ),
+            )
+            .values(
+                claim_token=claim_token,
+                claim_expires_at=claim_expires_at,
+            )
+        )
+        if claimed.rowcount != 1:
+            await db.rollback()
+            retry_result = await db.execute(
+                select(PetRelationshipMilestone).where(
+                    PetRelationshipMilestone.relationship_id == relationship_id,
+                    PetRelationshipMilestone.claim_token == claim_token,
+                )
+            )
+            retry_milestone = retry_result.scalar_one_or_none()
+            if retry_milestone is None:
+                return None
+            return serialize_pet_relationship_milestone(
+                retry_milestone,
+                pet_type=pet_type,
+            )
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        retry_result = await db.execute(
+            select(PetRelationshipMilestone).where(
+                PetRelationshipMilestone.relationship_id == relationship_id,
+                PetRelationshipMilestone.claim_token == claim_token,
+            )
+        )
+        retry_milestone = retry_result.scalar_one_or_none()
+        if retry_milestone is None:
+            raise
+        return serialize_pet_relationship_milestone(
+            retry_milestone,
+            pet_type=pet_type,
+        )
+
+    claimed_milestone = await get_owned_pet_relationship_milestone(
+        db,
+        milestone_id=pending_id,
+        user_id=user_id,
+        pet_type=pet_type,
+    )
+    if claimed_milestone is None:
+        return None
+    return serialize_pet_relationship_milestone(
+        claimed_milestone,
+        pet_type=pet_type,
+    )
+
+
+async def acknowledge_pet_relationship_milestone(
+    db: AsyncSession,
+    *,
+    milestone_id: int,
+    user_id: int,
+    pet_type: str,
+    claim_token: str,
+    now: datetime | None = None,
+) -> dict:
+    acknowledged_at = now or utc_now()
+    acknowledged_at = (
+        acknowledged_at.astimezone(UTC).replace(tzinfo=None)
+        if acknowledged_at.tzinfo
+        else acknowledged_at
+    )
+    milestone = await get_owned_pet_relationship_milestone(
+        db,
+        milestone_id=milestone_id,
+        user_id=user_id,
+        pet_type=pet_type,
+    )
+    if milestone is None:
+        raise LookupError("milestone_not_found")
+    if milestone.claim_token != claim_token:
+        raise PermissionError("milestone_claim_invalid_or_expired")
+    if milestone.acknowledged_at is not None:
+        return serialize_pet_relationship_milestone(
+            milestone,
+            pet_type=pet_type,
+        )
+
+    await db.rollback()
+    acknowledged = await db.execute(
+        update(PetRelationshipMilestone)
+        .where(
+            PetRelationshipMilestone.id == milestone_id,
+            PetRelationshipMilestone.acknowledged_at.is_(None),
+            PetRelationshipMilestone.claim_token == claim_token,
+        )
+        .values(
+            acknowledged_at=acknowledged_at,
+            claim_expires_at=None,
+        )
+    )
+    if acknowledged.rowcount == 1:
+        await db.commit()
+    else:
+        await db.rollback()
+
+    receipt = await get_owned_pet_relationship_milestone(
+        db,
+        milestone_id=milestone_id,
+        user_id=user_id,
+        pet_type=pet_type,
+    )
+    if receipt is None:
+        raise LookupError("milestone_not_found")
+    if receipt.claim_token != claim_token or receipt.acknowledged_at is None:
+        raise PermissionError("milestone_claim_invalid_or_expired")
+    return serialize_pet_relationship_milestone(
+        receipt,
+        pet_type=pet_type,
+    )
+
+
 async def get_daily_reward_totals(
     db: AsyncSession,
     *,
@@ -880,7 +1201,7 @@ async def award_pet_relationship(
             daily_remaining,
             MAX_INTIMACY_XP - relationship.intimacy_xp,
         )
-        previous_level = relationship.level
+        previous_level, _ = get_relationship_level(relationship.intimacy_xp)
         relationship.intimacy_xp += awarded_xp
         relationship.level, relationship.relationship_stage = get_relationship_level(
             relationship.intimacy_xp
@@ -894,6 +1215,13 @@ async def award_pet_relationship(
         level_up = relationship.level > previous_level
         if level_up:
             relationship.last_level_up_at = award_time
+            add_pet_relationship_milestones(
+                db,
+                relationship=relationship,
+                previous_level=previous_level,
+                new_level=relationship.level,
+                achieved_at=award_time,
+            )
 
         db.add(
             PetIntimacyEvent(

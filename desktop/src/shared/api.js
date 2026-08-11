@@ -127,7 +127,14 @@ async function request(path, options = {}) {
       await clearSessionToken().catch(() => undefined)
       throw new Error('登录已过期，请重新登录。')
     }
-    throw new Error(payload.detail || '请求失败')
+    const error = new Error(payload.detail || '请求失败')
+    error.status = response.status
+    error.detail = payload.detail
+    throw error
+  }
+
+  if (response.status === 204) {
+    return null
   }
 
   return response.json()

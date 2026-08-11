@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import get_current_user
@@ -6,6 +6,9 @@ from app.models.database import get_db
 from app.models.user import User
 from app.schemas.pet_relationship import (
     PetDailySummaryResponse,
+    PetRelationshipMilestoneAckRequest,
+    PetRelationshipMilestoneClaimRequest,
+    PetRelationshipMilestoneResponse,
     PetRelationshipResponse,
     PetOutfitUpdateRequest,
     PetRelationshipRewardRequest,
@@ -15,7 +18,9 @@ from app.schemas.pet_relationship import (
     PetWeeklySummarySeenRequest,
 )
 from app.services.pet_relationships import (
+    acknowledge_pet_relationship_milestone,
     award_pet_relationship,
+    claim_pet_relationship_milestone,
     get_or_create_pet_relationship,
     get_pet_daily_summary,
     get_pet_weekly_summary,
@@ -115,6 +120,59 @@ async def get_pet_relationship(
         pet_type=pet_type,
     )
     return serialize_pet_relationship(relationship)
+
+
+@router.post(
+    "/{pet_type}/relationship/milestones/claim",
+    response_model=PetRelationshipMilestoneResponse,
+    responses={status.HTTP_204_NO_CONTENT: {"description": "No claimable milestone"}},
+)
+async def claim_relationship_milestone(
+    pet_type: PetType,
+    payload: PetRelationshipMilestoneClaimRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    milestone = await claim_pet_relationship_milestone(
+        db,
+        user_id=current_user.id,
+        pet_type=pet_type,
+        claim_token=str(payload.claim_token),
+    )
+    if milestone is None:
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+    return milestone
+
+
+@router.post(
+    "/{pet_type}/relationship/milestones/{milestone_id}/ack",
+    response_model=PetRelationshipMilestoneResponse,
+)
+async def acknowledge_relationship_milestone(
+    pet_type: PetType,
+    milestone_id: int,
+    payload: PetRelationshipMilestoneAckRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        return await acknowledge_pet_relationship_milestone(
+            db,
+            milestone_id=milestone_id,
+            user_id=current_user.id,
+            pet_type=pet_type,
+            claim_token=str(payload.claim_token),
+        )
+    except LookupError as error:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(error),
+        ) from error
+    except PermissionError as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(error),
+        ) from error
 
 
 @router.post(

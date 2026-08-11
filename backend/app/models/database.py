@@ -37,6 +37,7 @@ LEGACY_APP_TABLES = {
     "reminders",
     "reminder_series",
     "pet_relationships",
+    "pet_relationship_milestones",
     "pet_intimacy_events",
     "pet_activity_events",
     "pet_retention_events",
@@ -494,6 +495,52 @@ class PetRelationship(Base):
     user = relationship("User", back_populates="pet_relationships")
     intimacy_events = relationship("PetIntimacyEvent", back_populates="relationship", cascade="all, delete-orphan")
     activity_events = relationship("PetActivityEvent", back_populates="relationship", cascade="all, delete-orphan")
+    milestones = relationship(
+        "PetRelationshipMilestone",
+        back_populates="relationship",
+        cascade="all, delete-orphan",
+    )
+
+
+class PetRelationshipMilestone(Base):
+    __tablename__ = "pet_relationship_milestones"
+    __table_args__ = (
+        UniqueConstraint(
+            "relationship_id",
+            "level",
+            name="uq_pet_relationship_milestones_relationship_level",
+        ),
+        UniqueConstraint(
+            "relationship_id",
+            "claim_token",
+            name="uq_pet_relationship_milestones_relationship_claim_token",
+        ),
+        CheckConstraint(
+            "level >= 2 AND level <= 5",
+            name="ck_pet_relationship_milestones_level_range",
+        ),
+        Index(
+            "ix_pet_relationship_milestones_pending",
+            "relationship_id",
+            "acknowledged_at",
+            "level",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    relationship_id = Column(
+        Integer,
+        ForeignKey("pet_relationships.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    level = Column(Integer, nullable=False)
+    reward_outfit_id = Column(String(64), nullable=False)
+    achieved_at = Column(DateTime, default=utc_now, nullable=False)
+    claim_token = Column(String(36), nullable=True)
+    claim_expires_at = Column(DateTime, nullable=True)
+    acknowledged_at = Column(DateTime, nullable=True)
+
+    relationship = relationship("PetRelationship", back_populates="milestones")
 
 
 class PetIntimacyEvent(Base):
