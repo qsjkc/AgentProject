@@ -6,6 +6,7 @@ from app.schemas.user import UserResponse
 
 
 AdminUserStatus = Literal["active", "disabled"]
+AdminPetType = Literal["cat", "dog", "pig"]
 
 
 class AdminOverviewResponse(BaseModel):
@@ -14,6 +15,29 @@ class AdminOverviewResponse(BaseModel):
     disabled_users: int
     total_documents: int
     admin_users: int
+
+
+class AdminWeeklyReviewFunnelItem(BaseModel):
+    review_key: str = Field(
+        min_length=21,
+        max_length=21,
+        pattern=r"^\d{4}-\d{2}-\d{2}_\d{4}-\d{2}-\d{2}$",
+    )
+    generated_users: int = Field(ge=0)
+    shown_users: int = Field(ge=0)
+    seen_users: int = Field(ge=0)
+    follow_up_users: int = Field(ge=0)
+    follow_up_care_users: int = Field(ge=0)
+    follow_up_chat_users: int = Field(ge=0)
+    follow_up_reminder_users: int = Field(ge=0)
+    shown_from_generated_rate: float = Field(ge=0, le=1)
+    seen_from_shown_rate: float = Field(ge=0, le=1)
+    follow_up_from_seen_rate: float = Field(ge=0, le=1)
+
+
+class AdminWeeklyReviewFunnelResponse(BaseModel):
+    pet_type: AdminPetType
+    items: List[AdminWeeklyReviewFunnelItem]
 
 
 class AdminUserListItem(UserResponse):

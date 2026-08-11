@@ -1,5 +1,6 @@
 import os
 import shutil
+from datetime import datetime
 from pathlib import Path
 import json
 
@@ -511,6 +512,153 @@ async def test_admin_user_crud_and_self_protection(client: AsyncClient):
         headers={"Content-Type": "application/x-www-form-urlencoded"},
     )
     assert deleted_login.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_admin_weekly_review_funnel_is_aggregated_and_private(
+    client: AsyncClient,
+):
+    for username in ("funnel-a", "funnel-b", "funnel-c"):
+        await register_user(
+            client,
+            username=username,
+            email=f"{username}@example.com",
+        )
+
+    admin_token = await login(
+        client,
+        username="admin",
+        password="ChangeThisPassword123!",
+    )
+    user_token = await login(client, username="funnel-a")
+    admin_headers = {"Authorization": f"Bearer {admin_token}"}
+    user_headers = {"Authorization": f"Bearer {user_token}"}
+
+    from sqlalchemy import select  # noqa: E402
+    from app.models.database import (  # noqa: E402
+        PetRetentionEvent,
+        User,
+        async_session_maker,
+    )
+
+    async with async_session_maker() as session:
+        users = (
+            (
+                await session.execute(
+                    select(User).where(
+                        User.username.in_(("funnel-a", "funnel-b", "funnel-c"))
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        user_ids = {user.username: user.id for user in users}
+
+        older_review = "2026-07-27_2026-08-02"
+        newer_review = "2026-08-03_2026-08-09"
+        rows = [
+            ("funnel-a", "pig", "weekly_review_generated", older_review),
+            ("funnel-b", "pig", "weekly_review_generated", older_review),
+            ("funnel-b", "pig", "weekly_review_shown", older_review),
+            ("funnel-b", "pig", "weekly_review_seen", older_review),
+            ("funnel-b", "pig", "weekly_review_follow_up_care", older_review),
+            ("funnel-b", "pig", "weekly_review_follow_up_chat", older_review),
+            ("funnel-c", "pig", "weekly_review_generated", older_review),
+            ("funnel-c", "pig", "weekly_review_shown", older_review),
+            ("funnel-c", "pig", "weekly_review_seen", older_review),
+            ("funnel-c", "pig", "weekly_review_follow_up_reminder", older_review),
+            ("funnel-a", "pig", "weekly_review_generated", newer_review),
+            ("funnel-a", "pig", "weekly_review_shown", newer_review),
+            ("funnel-b", "pig", "weekly_review_seen", newer_review),
+            ("funnel-c", "pig", "weekly_review_follow_up_reminder", newer_review),
+            ("funnel-c", "cat", "weekly_review_generated", newer_review),
+        ]
+        session.add_all(
+            [
+                PetRetentionEvent(
+                    user_id=user_ids[username],
+                    pet_type=pet_type,
+                    event_type=event_type,
+                    review_key=review_key,
+                    occurred_at=datetime(2026, 8, 11, 3, 0, 0),
+                )
+                for username, pet_type, event_type, review_key in rows
+            ]
+        )
+        await session.commit()
+
+    unauthorized = await client.get("/api/v1/admin/retention/weekly-reviews")
+    assert unauthorized.status_code == 401
+    forbidden = await client.get(
+        "/api/v1/admin/retention/weekly-reviews",
+        headers=user_headers,
+    )
+    assert forbidden.status_code == 403
+
+    response = await client.get(
+        "/api/v1/admin/retention/weekly-reviews?pet_type=pig",
+        headers=admin_headers,
+    )
+    assert response.status_code == 200
+    assert response.json() == {
+        "pet_type": "pig",
+        "items": [
+            {
+                "review_key": newer_review,
+                "generated_users": 3,
+                "shown_users": 3,
+                "seen_users": 2,
+                "follow_up_users": 1,
+                "follow_up_care_users": 0,
+                "follow_up_chat_users": 0,
+                "follow_up_reminder_users": 1,
+                "shown_from_generated_rate": 1.0,
+                "seen_from_shown_rate": 0.6667,
+                "follow_up_from_seen_rate": 0.5,
+            },
+            {
+                "review_key": older_review,
+                "generated_users": 3,
+                "shown_users": 2,
+                "seen_users": 2,
+                "follow_up_users": 2,
+                "follow_up_care_users": 1,
+                "follow_up_chat_users": 1,
+                "follow_up_reminder_users": 1,
+                "shown_from_generated_rate": 0.6667,
+                "seen_from_shown_rate": 1.0,
+                "follow_up_from_seen_rate": 1.0,
+            },
+        ],
+    }
+    assert "user_id" not in response.text
+    assert "funnel-a" not in response.text
+
+    limited = await client.get(
+        "/api/v1/admin/retention/weekly-reviews?pet_type=pig&limit=1",
+        headers=admin_headers,
+    )
+    assert limited.status_code == 200
+    assert [item["review_key"] for item in limited.json()["items"]] == [newer_review]
+
+    empty = await client.get(
+        "/api/v1/admin/retention/weekly-reviews?pet_type=dog",
+        headers=admin_headers,
+    )
+    assert empty.status_code == 200
+    assert empty.json() == {"pet_type": "dog", "items": []}
+
+    invalid_pet = await client.get(
+        "/api/v1/admin/retention/weekly-reviews?pet_type=horse",
+        headers=admin_headers,
+    )
+    assert invalid_pet.status_code == 422
+    invalid_limit = await client.get(
+        "/api/v1/admin/retention/weekly-reviews?limit=53",
+        headers=admin_headers,
+    )
+    assert invalid_limit.status_code == 422
 
 
 @pytest.mark.asyncio

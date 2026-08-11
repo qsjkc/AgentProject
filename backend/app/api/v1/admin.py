@@ -11,13 +11,16 @@ from app.models.document import Document
 from app.models.user import User, VerificationCode
 from app.schemas.admin import (
     AdminOverviewResponse,
+    AdminPetType,
     AdminUserCreate,
     AdminUserListItem,
     AdminUserListResponse,
     AdminUserStatusUpdate,
     AdminUserUpdate,
+    AdminWeeklyReviewFunnelResponse,
 )
 from app.schemas.user import MessageResponse
+from app.services.pet_retention import get_weekly_review_funnel
 from app.services.rag import rag_service
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -126,6 +129,26 @@ async def get_overview(
         disabled_users=disabled_users,
         total_documents=total_documents,
         admin_users=admin_users,
+    )
+
+
+@router.get(
+    "/retention/weekly-reviews",
+    response_model=AdminWeeklyReviewFunnelResponse,
+)
+async def get_weekly_review_retention(
+    _: User = Depends(get_current_superuser),
+    db: AsyncSession = Depends(get_db),
+    pet_type: AdminPetType = Query(default="pig"),
+    limit: int = Query(default=12, ge=1, le=52),
+) -> AdminWeeklyReviewFunnelResponse:
+    return AdminWeeklyReviewFunnelResponse(
+        pet_type=pet_type,
+        items=await get_weekly_review_funnel(
+            db,
+            pet_type=pet_type,
+            limit=limit,
+        ),
     )
 
 

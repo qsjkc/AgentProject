@@ -261,6 +261,16 @@ async def ensure_legacy_sqlite_schema(conn) -> None:
             "ON reminders (series_id, occurrence_sequence)"
         )
 
+    retention_event_columns = await get_sqlite_table_columns(
+        conn,
+        "pet_retention_events",
+    )
+    if retention_event_columns:
+        await conn.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_pet_retention_events_weekly_funnel "
+            "ON pet_retention_events (pet_type, review_key, event_type, user_id)"
+        )
+
     await backfill_pet_activity_events(conn)
 
 
@@ -563,6 +573,13 @@ class PetRetentionEvent(Base):
             name="ck_pet_retention_events_type",
         ),
         Index("ix_pet_retention_events_funnel", "event_type", "occurred_at"),
+        Index(
+            "ix_pet_retention_events_weekly_funnel",
+            "pet_type",
+            "review_key",
+            "event_type",
+            "user_id",
+        ),
     )
 
     id = Column(Integer, primary_key=True, index=True)

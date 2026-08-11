@@ -1,6 +1,6 @@
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import case, func, select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -29,10 +29,125 @@ PET_RETENTION_EVENT_TYPES = frozenset(
     }
 )
 WEEKLY_REVIEW_FOLLOW_UP_WINDOW = timedelta(days=7)
+WEEKLY_REVIEW_FOLLOW_UP_EVENT_TYPES = frozenset(
+    WEEKLY_REVIEW_FOLLOW_UP_EVENTS.values()
+)
+WEEKLY_REVIEW_SHOWN_OR_LATER = frozenset(
+    {
+        WEEKLY_REVIEW_SHOWN,
+        WEEKLY_REVIEW_SEEN,
+        *WEEKLY_REVIEW_FOLLOW_UP_EVENT_TYPES,
+    }
+)
+WEEKLY_REVIEW_SEEN_OR_LATER = frozenset(
+    {
+        WEEKLY_REVIEW_SEEN,
+        *WEEKLY_REVIEW_FOLLOW_UP_EVENT_TYPES,
+    }
+)
 
 
 def normalize_event_time(value: datetime) -> datetime:
     return value.astimezone(UTC).replace(tzinfo=None) if value.tzinfo else value
+
+
+def conversion_rate(numerator: int, denominator: int) -> float:
+    if denominator <= 0:
+        return 0.0
+    return round(numerator / denominator, 4)
+
+
+async def get_weekly_review_funnel(
+    db: AsyncSession,
+    *,
+    pet_type: str,
+    limit: int,
+) -> list[dict]:
+    review_key_result = await db.execute(
+        select(PetRetentionEvent.review_key)
+        .where(PetRetentionEvent.pet_type == pet_type)
+        .distinct()
+        .order_by(PetRetentionEvent.review_key.desc())
+        .limit(limit)
+    )
+    review_keys = list(review_key_result.scalars().all())
+    if not review_keys:
+        return []
+
+    def distinct_users_for(event_types: frozenset[str]):
+        return func.count(
+            func.distinct(
+                case(
+                    (
+                        PetRetentionEvent.event_type.in_(tuple(event_types)),
+                        PetRetentionEvent.user_id,
+                    ),
+                    else_=None,
+                )
+            )
+        )
+
+    aggregate_result = await db.execute(
+        select(
+            PetRetentionEvent.review_key,
+            func.count(func.distinct(PetRetentionEvent.user_id)).label(
+                "generated_users"
+            ),
+            distinct_users_for(WEEKLY_REVIEW_SHOWN_OR_LATER).label("shown_users"),
+            distinct_users_for(WEEKLY_REVIEW_SEEN_OR_LATER).label("seen_users"),
+            distinct_users_for(WEEKLY_REVIEW_FOLLOW_UP_EVENT_TYPES).label(
+                "follow_up_users"
+            ),
+            distinct_users_for(
+                frozenset({"weekly_review_follow_up_care"})
+            ).label("follow_up_care_users"),
+            distinct_users_for(
+                frozenset({"weekly_review_follow_up_chat"})
+            ).label("follow_up_chat_users"),
+            distinct_users_for(
+                frozenset({"weekly_review_follow_up_reminder"})
+            ).label("follow_up_reminder_users"),
+        )
+        .where(
+            PetRetentionEvent.pet_type == pet_type,
+            PetRetentionEvent.review_key.in_(review_keys),
+        )
+        .group_by(PetRetentionEvent.review_key)
+    )
+    aggregates = {
+        row["review_key"]: row
+        for row in aggregate_result.mappings().all()
+    }
+
+    items = []
+    for review_key in review_keys:
+        row = aggregates[review_key]
+        generated_users = int(row["generated_users"])
+        shown_users = int(row["shown_users"])
+        seen_users = int(row["seen_users"])
+        follow_up_users = int(row["follow_up_users"])
+        items.append(
+            {
+                "review_key": review_key,
+                "generated_users": generated_users,
+                "shown_users": shown_users,
+                "seen_users": seen_users,
+                "follow_up_users": follow_up_users,
+                "follow_up_care_users": int(row["follow_up_care_users"]),
+                "follow_up_chat_users": int(row["follow_up_chat_users"]),
+                "follow_up_reminder_users": int(row["follow_up_reminder_users"]),
+                "shown_from_generated_rate": conversion_rate(
+                    shown_users,
+                    generated_users,
+                ),
+                "seen_from_shown_rate": conversion_rate(seen_users, shown_users),
+                "follow_up_from_seen_rate": conversion_rate(
+                    follow_up_users,
+                    seen_users,
+                ),
+            }
+        )
+    return items
 
 
 async def record_pet_retention_event(
