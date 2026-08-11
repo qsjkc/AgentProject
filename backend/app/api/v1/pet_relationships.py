@@ -11,11 +11,15 @@ from app.schemas.pet_relationship import (
     PetRelationshipRewardRequest,
     PetRelationshipRewardResponse,
     PetType,
+    PetWeeklySummaryResponse,
+    PetWeeklySummarySeenRequest,
 )
 from app.services.pet_relationships import (
     award_pet_relationship,
     get_or_create_pet_relationship,
     get_pet_daily_summary,
+    get_pet_weekly_summary,
+    mark_pet_weekly_summary_seen,
     serialize_pet_relationship,
     update_pet_outfit,
 )
@@ -35,6 +39,43 @@ async def get_daily_summary(
         user_id=current_user.id,
         pet_type=pet_type,
     )
+
+
+@router.get("/{pet_type}/weekly-summary", response_model=PetWeeklySummaryResponse)
+async def get_weekly_summary(
+    pet_type: PetType,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    return await get_pet_weekly_summary(
+        db,
+        user_id=current_user.id,
+        pet_type=pet_type,
+    )
+
+
+@router.post(
+    "/{pet_type}/weekly-summary/seen",
+    response_model=PetWeeklySummaryResponse,
+)
+async def mark_weekly_summary_seen(
+    pet_type: PetType,
+    payload: PetWeeklySummarySeenRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        return await mark_pet_weekly_summary_seen(
+            db,
+            user_id=current_user.id,
+            pet_type=pet_type,
+            review_key=payload.review_key,
+        )
+    except ValueError as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(error),
+        ) from error
 
 
 @router.get("/{pet_type}/relationship", response_model=PetRelationshipResponse)

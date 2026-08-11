@@ -1,6 +1,7 @@
 import { desktopApiRequest } from './api'
 import { normalizePetDailySummary } from './pet-daily-summary'
 import { normalizePetRelationship } from './pet-relationship'
+import { normalizePetWeeklySummary } from './pet-weekly-summary'
 
 
 export async function getPetRelationship(petType) {
@@ -12,6 +13,21 @@ export async function getPetRelationship(petType) {
 export async function getPetDailySummary(petType) {
   const summary = await desktopApiRequest(`/pets/${petType}/daily-summary`)
   return normalizePetDailySummary(summary, petType)
+}
+
+
+export async function getPetWeeklySummary(petType) {
+  const summary = await desktopApiRequest(`/pets/${petType}/weekly-summary`)
+  return normalizePetWeeklySummary(summary, petType)
+}
+
+
+export async function markPetWeeklySummarySeen(petType, reviewKey) {
+  const summary = await desktopApiRequest(`/pets/${petType}/weekly-summary/seen`, {
+    method: 'POST',
+    body: JSON.stringify({ review_key: reviewKey }),
+  })
+  return normalizePetWeeklySummary(summary, petType)
 }
 
 

@@ -104,6 +104,30 @@ def get_reward_local_date(now: datetime) -> date:
     return aware_utc.astimezone(ZoneInfo(settings.PET_REWARD_TIMEZONE)).date()
 
 
+def get_completed_reward_week_bounds(
+    now: datetime,
+) -> tuple[date, date, datetime, datetime]:
+    aware_utc = now.replace(tzinfo=UTC) if now.tzinfo is None else now.astimezone(UTC)
+    timezone = ZoneInfo(settings.PET_REWARD_TIMEZONE)
+    local_today = aware_utc.astimezone(timezone).date()
+    current_week_start = local_today - timedelta(days=local_today.weekday())
+    week_start = current_week_start - timedelta(days=7)
+    week_end = current_week_start - timedelta(days=1)
+    local_start = datetime.combine(week_start, datetime.min.time(), tzinfo=timezone)
+    local_end = datetime.combine(current_week_start, datetime.min.time(), tzinfo=timezone)
+    return (
+        week_start,
+        week_end,
+        local_start.astimezone(UTC).replace(tzinfo=None),
+        local_end.astimezone(UTC).replace(tzinfo=None),
+    )
+
+
+def get_local_event_date(value: datetime) -> date:
+    aware_utc = value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+    return aware_utc.astimezone(ZoneInfo(settings.PET_REWARD_TIMEZONE)).date()
+
+
 async def get_pet_daily_summary(
     db: AsyncSession,
     *,
@@ -256,6 +280,192 @@ async def get_pet_daily_summary(
         "first_interaction_at": min(first_candidates) if first_candidates else None,
         "last_interaction_at": max(last_candidates) if last_candidates else None,
     }
+
+
+async def get_pet_weekly_summary(
+    db: AsyncSession,
+    *,
+    user_id: int,
+    pet_type: str,
+    now: datetime | None = None,
+) -> dict:
+    summary_time = now or utc_now()
+    week_start, week_end, range_start, range_end = get_completed_reward_week_bounds(
+        summary_time
+    )
+    review_key = f"{week_start.isoformat()}_{week_end.isoformat()}"
+    relationship = await get_or_create_pet_relationship(
+        db,
+        user_id=user_id,
+        pet_type=pet_type,
+    )
+
+    xp_before_result = await db.execute(
+        select(func.coalesce(func.sum(PetIntimacyEvent.xp_awarded), 0)).where(
+            PetIntimacyEvent.user_id == user_id,
+            PetIntimacyEvent.pet_type == pet_type,
+            PetIntimacyEvent.awarded_at < range_start,
+        )
+    )
+    xp_result = await db.execute(
+        select(func.coalesce(func.sum(PetIntimacyEvent.xp_awarded), 0)).where(
+            PetIntimacyEvent.user_id == user_id,
+            PetIntimacyEvent.pet_type == pet_type,
+            PetIntimacyEvent.awarded_at >= range_start,
+            PetIntimacyEvent.awarded_at < range_end,
+        )
+    )
+    xp_before = int(xp_before_result.scalar_one())
+    xp_gained = int(xp_result.scalar_one())
+
+    activity_result = await db.execute(
+        select(PetActivityEvent.action, PetActivityEvent.occurred_at).where(
+            PetActivityEvent.user_id == user_id,
+            PetActivityEvent.pet_type == pet_type,
+            PetActivityEvent.occurred_at >= range_start,
+            PetActivityEvent.occurred_at < range_end,
+        )
+    )
+    activity_rows = activity_result.all()
+    action_counts: dict[str, int] = {}
+    activity_timestamps = []
+    for action, occurred_at in activity_rows:
+        action_counts[action] = action_counts.get(action, 0) + 1
+        activity_timestamps.append(occurred_at)
+
+    reminders_created_result = await db.execute(
+        select(Reminder.created_at).where(
+            Reminder.user_id == user_id,
+            Reminder.pet_type == pet_type,
+            Reminder.creation_source == "user",
+            Reminder.created_at >= range_start,
+            Reminder.created_at < range_end,
+        )
+    )
+    reminders_completed_result = await db.execute(
+        select(Reminder.completed_at).where(
+            Reminder.user_id == user_id,
+            Reminder.pet_type == pet_type,
+            Reminder.status == "completed",
+            Reminder.completed_at >= range_start,
+            Reminder.completed_at < range_end,
+        )
+    )
+    meaningful_chats_result = await db.execute(
+        select(ChatMessage.created_at)
+        .join(ChatSession, ChatSession.id == ChatMessage.session_id)
+        .where(
+            ChatSession.user_id == user_id,
+            ChatMessage.role == "user",
+            ChatMessage.pet_type == pet_type,
+            ChatMessage.created_at >= range_start,
+            ChatMessage.created_at < range_end,
+        )
+    )
+    reminder_created_timestamps = list(reminders_created_result.scalars().all())
+    reminder_completed_timestamps = [
+        value for value in reminders_completed_result.scalars().all() if value is not None
+    ]
+    meaningful_chat_timestamps = list(meaningful_chats_result.scalars().all())
+    reminders_created_count = len(reminder_created_timestamps)
+    reminders_completed_count = len(reminder_completed_timestamps)
+    meaningful_chat_count = len(meaningful_chat_timestamps)
+
+    external_action_counts = {
+        "reminder_created": reminders_created_count,
+        "reminder_completed": reminders_completed_count,
+        "meaningful_chat": meaningful_chat_count,
+    }
+    action_counts.update(
+        {
+            action: count
+            for action, count in external_action_counts.items()
+            if count > 0
+        }
+    )
+    all_timestamps = (
+        activity_timestamps
+        + reminder_created_timestamps
+        + reminder_completed_timestamps
+        + meaningful_chat_timestamps
+    )
+    active_days = len({get_local_event_date(value) for value in all_timestamps})
+    interaction_count = len(all_timestamps)
+    care_count = sum(action_counts.get(action, 0) for action in ("pat", "feed", "clean"))
+    level_at_start, _ = get_relationship_level(xp_before)
+    level_at_end, relationship_stage_at_end = get_relationship_level(
+        min(MAX_INTIMACY_XP, xp_before + xp_gained)
+    )
+    levels_gained = max(0, level_at_end - level_at_start)
+    eligible = bool(
+        care_count
+        or meaningful_chat_count
+        or reminders_created_count
+        or reminders_completed_count
+        or interaction_count >= 3
+        or levels_gained
+    )
+    was_reviewed = relationship.last_weekly_review_key == review_key
+
+    return {
+        "pet_type": pet_type,
+        "review_key": review_key,
+        "week_start": week_start,
+        "week_end": week_end,
+        "timezone": settings.PET_REWARD_TIMEZONE,
+        "eligible": eligible,
+        "is_new": eligible and not was_reviewed,
+        "reviewed_at": relationship.last_weekly_review_seen_at if was_reviewed else None,
+        "active_days": active_days,
+        "interaction_count": interaction_count,
+        "xp_gained": xp_gained,
+        "action_counts": action_counts,
+        "care_count": care_count,
+        "meaningful_chat_count": meaningful_chat_count,
+        "reminders_created_count": reminders_created_count,
+        "reminders_completed_count": reminders_completed_count,
+        "level_at_start": level_at_start,
+        "level_at_end": level_at_end,
+        "levels_gained": levels_gained,
+        "relationship_stage_at_end": relationship_stage_at_end,
+        "first_interaction_at": min(all_timestamps) if all_timestamps else None,
+        "last_interaction_at": max(all_timestamps) if all_timestamps else None,
+    }
+
+
+async def mark_pet_weekly_summary_seen(
+    db: AsyncSession,
+    *,
+    user_id: int,
+    pet_type: str,
+    review_key: str,
+    now: datetime | None = None,
+) -> dict:
+    summary_time = now or utc_now()
+    summary = await get_pet_weekly_summary(
+        db,
+        user_id=user_id,
+        pet_type=pet_type,
+        now=summary_time,
+    )
+    if summary["review_key"] != review_key:
+        raise ValueError("Weekly review is no longer current")
+    if not summary["eligible"]:
+        raise ValueError("Weekly review is not available")
+
+    relationship = await get_or_create_pet_relationship(
+        db,
+        user_id=user_id,
+        pet_type=pet_type,
+    )
+    if relationship.last_weekly_review_key != review_key:
+        relationship.last_weekly_review_key = review_key
+        relationship.last_weekly_review_seen_at = summary_time
+        await db.commit()
+
+    summary["is_new"] = False
+    summary["reviewed_at"] = relationship.last_weekly_review_seen_at
+    return summary
 
 
 async def get_or_create_pet_relationship(

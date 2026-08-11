@@ -25,8 +25,10 @@ from app.main import app  # noqa: E402
 from app.services.pet_relationships import (  # noqa: E402
     award_pet_relationship,
     get_pet_daily_summary,
+    get_pet_weekly_summary,
     get_relationship_level,
     get_relationship_progress,
+    mark_pet_weekly_summary_seen,
 )
 
 
@@ -275,6 +277,145 @@ async def test_daily_summary_uses_local_day_and_isolates_user_and_pet(client: As
     assert summary["reminders_completed_count"] == 2
     assert summary["first_interaction_at"] == summary_time
     assert summary["last_interaction_at"] == summary_time + timedelta(minutes=6)
+
+
+@pytest.mark.asyncio
+async def test_weekly_summary_uses_completed_week_and_persists_seen_receipt(
+    client: AsyncClient,
+):
+    headers = await register_and_login(
+        client,
+        "weekly-review",
+        "weekly-review@example.com",
+    )
+    relationship_response = await client.get(
+        "/api/v1/pets/pig/relationship",
+        headers=headers,
+    )
+    user_id = relationship_response.json()["user_id"]
+
+    from sqlalchemy import select  # noqa: E402
+    from app.models.database import (  # noqa: E402
+        ChatMessage,
+        ChatSession,
+        PetRelationship,
+        Reminder,
+        async_session_maker,
+    )
+
+    monday = datetime(2026, 7, 27, 1, 0, 0)
+    next_monday = datetime(2026, 8, 3, 1, 0, 0)
+    async with async_session_maker() as session:
+        for index, action in enumerate(
+            ("pat", "reminder_created", "reminder_completed", "meaningful_chat")
+        ):
+            result = await award_pet_relationship(
+                session,
+                user_id=user_id,
+                pet_type="pig",
+                action=action,
+                idempotency_key=f"weekly-review-{action}",
+                now=monday + timedelta(days=index),
+            )
+            assert result["reason"] == "awarded"
+
+        chat_session = ChatSession(user_id=user_id, title="Weekly review chat")
+        session.add(chat_session)
+        await session.flush()
+        session.add_all(
+            [
+                Reminder(
+                    user_id=user_id,
+                    pet_type="pig",
+                    title="Private reminder title",
+                    remind_at=monday + timedelta(days=2),
+                    status="completed",
+                    completed_at=monday + timedelta(days=2),
+                    created_at=monday + timedelta(days=1),
+                ),
+                ChatMessage(
+                    session_id=chat_session.id,
+                    role="user",
+                    pet_type="pig",
+                    content="Private weekly chat content",
+                    created_at=monday + timedelta(days=3),
+                ),
+            ]
+        )
+        await session.commit()
+
+        summary = await get_pet_weekly_summary(
+            session,
+            user_id=user_id,
+            pet_type="pig",
+            now=next_monday,
+        )
+
+        assert summary["review_key"] == "2026-07-27_2026-08-02"
+        assert summary["week_start"].isoformat() == "2026-07-27"
+        assert summary["week_end"].isoformat() == "2026-08-02"
+        assert summary["active_days"] == 4
+        assert summary["interaction_count"] == 4
+        assert summary["xp_gained"] == 19
+        assert summary["action_counts"] == {
+            "meaningful_chat": 1,
+            "pat": 1,
+            "reminder_completed": 1,
+            "reminder_created": 1,
+        }
+        assert summary["care_count"] == 1
+        assert summary["level_at_start"] == 1
+        assert summary["level_at_end"] == 1
+        assert summary["levels_gained"] == 0
+        assert summary["eligible"] is True
+        assert summary["is_new"] is True
+        assert "content" not in summary
+        assert "title" not in summary
+
+        seen_summary = await mark_pet_weekly_summary_seen(
+            session,
+            user_id=user_id,
+            pet_type="pig",
+            review_key=summary["review_key"],
+            now=next_monday,
+        )
+        relationship_result = await session.execute(
+            select(PetRelationship).where(
+                PetRelationship.user_id == user_id,
+                PetRelationship.pet_type == "pig",
+            )
+        )
+        relationship = relationship_result.scalar_one()
+
+    assert seen_summary["is_new"] is False
+    assert seen_summary["reviewed_at"] == next_monday
+    assert relationship.last_weekly_review_key == summary["review_key"]
+    assert relationship.last_weekly_review_seen_at == next_monday
+
+
+@pytest.mark.asyncio
+async def test_weekly_summary_hides_empty_week(client: AsyncClient):
+    headers = await register_and_login(client, "weekly-empty", "weekly-empty@example.com")
+    relationship_response = await client.get(
+        "/api/v1/pets/pig/relationship",
+        headers=headers,
+    )
+    user_id = relationship_response.json()["user_id"]
+
+    from app.models.database import async_session_maker  # noqa: E402
+
+    async with async_session_maker() as session:
+        summary = await get_pet_weekly_summary(
+            session,
+            user_id=user_id,
+            pet_type="pig",
+            now=datetime(2026, 8, 3, 1, 0, 0),
+        )
+
+    assert summary["eligible"] is False
+    assert summary["is_new"] is False
+    assert summary["interaction_count"] == 0
+    assert summary["active_days"] == 0
 
 
 @pytest.mark.asyncio

@@ -25,6 +25,12 @@ import {
   getPetDailySummaryMessage,
   normalizePetDailySummary,
 } from '../src/shared/pet-daily-summary.js'
+import {
+  getPetWeeklyCompanionCopy,
+  getPetWeeklySummaryHighlights,
+  getPetWeeklySummaryMessage,
+  normalizePetWeeklySummary,
+} from '../src/shared/pet-weekly-summary.js'
 import { getPetCompanionCopy, getPetRelationshipEventCopy } from '../src/shared/pet-personality.js'
 import {
   createRewardIdempotencyKey,
@@ -488,6 +494,77 @@ const secondMemoryCopy = getPetCompanionCopy(
   normalizedDailySummary,
 )
 assert.match(secondMemoryCopy.id, /^pig-memory-care/)
+
+const normalizedWeeklySummary = normalizePetWeeklySummary({
+  pet_type: 'pig',
+  review_key: '2026-07-27_2026-08-02',
+  week_start: '2026-07-27',
+  week_end: '2026-08-02',
+  timezone: 'Asia/Shanghai',
+  eligible: true,
+  is_new: true,
+  active_days: 9,
+  interaction_count: 12.9,
+  xp_gained: 113,
+  action_counts: {
+    pat: 2,
+    meaningful_chat: 3,
+    unknown_action: 99,
+  },
+  care_count: 2,
+  meaningful_chat_count: 3,
+  reminders_created_count: 1,
+  reminders_completed_count: 2,
+  level_at_start: 2,
+  level_at_end: 3,
+  levels_gained: 1,
+  relationship_stage_at_end: 'clingy',
+})
+assert.equal(normalizedWeeklySummary.active_days, 7)
+assert.equal(normalizedWeeklySummary.interaction_count, 12)
+assert.deepEqual(normalizedWeeklySummary.action_counts, {
+  pat: 2,
+  meaningful_chat: 3,
+})
+assert.deepEqual(getPetWeeklySummaryHighlights('zh-CN', normalizedWeeklySummary), [
+  '有记录 7 天',
+  '照料 2',
+  '聊天 3',
+])
+assert.match(getPetWeeklySummaryMessage('zh-CN', normalizedWeeklySummary), /Lv\.2/)
+assert.match(getPetWeeklySummaryMessage('zh-CN', normalizedWeeklySummary), /Lv\.3/)
+const weeklyCopy = getPetWeeklyCompanionCopy('zh-CN', normalizedWeeklySummary)
+assert.equal(weeklyCopy.weeklyReviewKey, normalizedWeeklySummary.review_key)
+assert.match(weeklyCopy.id, /^pig-weekly-review-zh-CN-/)
+assert.equal(
+  getPetWeeklyCompanionCopy('zh-CN', {
+    ...normalizedWeeklySummary,
+    is_new: false,
+  }),
+  null,
+)
+assert.equal(normalizePetWeeklySummary(null), null)
+
+const prioritizedWeeklyCopy = getPetCompanionCopy(
+  'pig',
+  'zh-CN',
+  firstCompanionMoment.event,
+  { level: 3 },
+  [],
+  normalizedDailySummary,
+  normalizedWeeklySummary,
+)
+assert.equal(prioritizedWeeklyCopy.id, weeklyCopy.id)
+const weeklyCopySuppressed = getPetCompanionCopy(
+  'pig',
+  'zh-CN',
+  firstCompanionMoment.event,
+  { level: 3 },
+  [weeklyCopy.id],
+  normalizedDailySummary,
+  normalizedWeeklySummary,
+)
+assert.match(weeklyCopySuppressed.id, /^pig-memory-/)
 
 const remindingPetAnimation = petAnimationReducer(initialPetAnimation, {
   type: 'REMINDER_DUE',

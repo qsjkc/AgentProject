@@ -1,3 +1,6 @@
+import { getPetWeeklyCompanionCopy } from './pet-weekly-summary.js'
+
+
 const personality = {
   cat: {
     createdReminder: (title, time, emailEnabled = false, recurrenceLabel = '') => (
@@ -259,12 +262,17 @@ export function getPetCompanionCopy(
   relationship = null,
   recentCopyIds = [],
   dailySummary = null,
+  weeklySummary = null,
 ) {
   if (petType !== 'pig' || !event?.type) {
     return null
   }
 
   const locale = language === 'zh-CN' ? 'zh-CN' : 'en'
+  const weeklyCopy = getPetWeeklyCompanionCopy(locale, weeklySummary)
+  if (weeklyCopy && !recentCopyIds.includes(weeklyCopy.id)) {
+    return weeklyCopy
+  }
   const memoryCopy = getPigDailyMemoryCopy(locale, event, dailySummary, recentCopyIds)
   if (memoryCopy) {
     return memoryCopy

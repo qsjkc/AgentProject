@@ -44,7 +44,12 @@ import {
   didEquippedOutfitChange,
   normalizePetRelationship,
 } from './shared/pet-relationship'
-import { getPetDailySummary, rewardPetRelationship } from './shared/pet-relationships-api'
+import {
+  getPetDailySummary,
+  getPetWeeklySummary,
+  markPetWeeklySummarySeen,
+  rewardPetRelationship,
+} from './shared/pet-relationships-api'
 import { getPetVisual } from './shared/pets'
 import { getPendingReminders, markReminderTriggered } from './shared/reminders-api'
 
@@ -767,10 +772,20 @@ function PetApp() {
 
         if (result.event) {
           let dailySummary = null
-          try {
-            dailySummary = await getPetDailySummary('pig')
-          } catch (error) {
-            loggerRef.current.error('companion:daily-summary-failed', error)
+          let weeklySummary = null
+          const [dailyResult, weeklyResult] = await Promise.allSettled([
+            getPetDailySummary('pig'),
+            getPetWeeklySummary('pig'),
+          ])
+          if (dailyResult.status === 'fulfilled') {
+            dailySummary = dailyResult.value
+          } else {
+            loggerRef.current.error('companion:daily-summary-failed', dailyResult.reason)
+          }
+          if (weeklyResult.status === 'fulfilled') {
+            weeklySummary = weeklyResult.value
+          } else {
+            loggerRef.current.error('companion:weekly-summary-failed', weeklyResult.reason)
           }
           if (!mounted || petTypeRef.current !== 'pig') {
             return
@@ -782,22 +797,35 @@ function PetApp() {
             relationshipRef.current,
             nextState.recentCopyIds,
             dailySummary,
+            weeklySummary,
           )
           if (copy) {
-            nextState = recordCompanionCopy(nextState, copy.id)
             setTransientBubbleForDuration(copy.text, 3600)
+            const companionAction = copy.weeklyReviewKey
+              ? ANIMATION_ACTIONS.HAPPY
+              : result.event.action
             dispatchPetAnimation({
               type: 'COMPANION_ACTION',
-              action: result.event.action,
+              action: companionAction,
               message: copy.text,
             })
             loggerRef.current.event('companion:event', {
               type: result.event.type,
-              action: result.event.action,
+              action: companionAction,
               mood: result.event.mood,
               timeContext: result.event.timeContext,
               copyId: copy.id,
             })
+            if (copy.weeklyReviewKey) {
+              try {
+                await markPetWeeklySummarySeen('pig', copy.weeklyReviewKey)
+                nextState = recordCompanionCopy(nextState, copy.id)
+              } catch (error) {
+                loggerRef.current.error('companion:weekly-summary-seen-failed', error)
+              }
+            } else {
+              nextState = recordCompanionCopy(nextState, copy.id)
+            }
           }
         }
 

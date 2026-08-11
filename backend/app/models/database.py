@@ -470,6 +470,8 @@ class PetRelationship(Base):
     last_active_at = Column(DateTime, nullable=True)
     last_greeting_at = Column(DateTime, nullable=True)
     last_level_up_at = Column(DateTime, nullable=True)
+    last_weekly_review_key = Column(String(21), nullable=True)
+    last_weekly_review_seen_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=utc_now, nullable=False)
     updated_at = Column(DateTime, default=utc_now, onupdate=utc_now, nullable=False)
 
