@@ -31,6 +31,15 @@ export async function markPetWeeklySummarySeen(petType, reviewKey) {
 }
 
 
+export async function markPetWeeklySummaryShown(petType, reviewKey) {
+  const summary = await desktopApiRequest(`/pets/${petType}/weekly-summary/shown`, {
+    method: 'POST',
+    body: JSON.stringify({ review_key: reviewKey }),
+  })
+  return normalizePetWeeklySummary(summary, petType)
+}
+
+
 export async function refreshPetRelationship(petType) {
   const relationship = await getPetRelationship(petType)
   await window.desktopBridge?.cachePetRelationship?.(relationship)

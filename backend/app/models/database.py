@@ -39,6 +39,7 @@ LEGACY_APP_TABLES = {
     "pet_relationships",
     "pet_intimacy_events",
     "pet_activity_events",
+    "pet_retention_events",
 }
 
 engine = create_async_engine(
@@ -289,6 +290,11 @@ class User(Base):
     pet_relationships = relationship("PetRelationship", back_populates="user", cascade="all, delete-orphan")
     pet_intimacy_events = relationship("PetIntimacyEvent", back_populates="user", cascade="all, delete-orphan")
     pet_activity_events = relationship("PetActivityEvent", back_populates="user", cascade="all, delete-orphan")
+    pet_retention_events = relationship(
+        "PetRetentionEvent",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
 
 
 class UserPreference(Base):
@@ -533,3 +539,41 @@ class PetActivityEvent(Base):
 
     user = relationship("User", back_populates="pet_activity_events")
     relationship = relationship("PetRelationship", back_populates="activity_events")
+
+
+class PetRetentionEvent(Base):
+    __tablename__ = "pet_retention_events"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            "pet_type",
+            "event_type",
+            "review_key",
+            name="uq_pet_retention_events_funnel_step",
+        ),
+        CheckConstraint(
+            "event_type IN ("
+            "'weekly_review_generated', "
+            "'weekly_review_shown', "
+            "'weekly_review_seen', "
+            "'weekly_review_follow_up_care', "
+            "'weekly_review_follow_up_chat', "
+            "'weekly_review_follow_up_reminder'"
+            ")",
+            name="ck_pet_retention_events_type",
+        ),
+        Index("ix_pet_retention_events_funnel", "event_type", "occurred_at"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(
+        Integer,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    pet_type = Column(String(20), nullable=False)
+    event_type = Column(String(48), nullable=False)
+    review_key = Column(String(21), nullable=False)
+    occurred_at = Column(DateTime, default=utc_now, nullable=False)
+
+    user = relationship("User", back_populates="pet_retention_events")

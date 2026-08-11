@@ -28,6 +28,7 @@ from app.services.pet_relationships import (  # noqa: E402
     get_pet_weekly_summary,
     get_relationship_level,
     get_relationship_progress,
+    mark_pet_weekly_summary_shown,
     mark_pet_weekly_summary_seen,
 )
 
@@ -299,6 +300,7 @@ async def test_weekly_summary_uses_completed_week_and_persists_seen_receipt(
         ChatMessage,
         ChatSession,
         PetRelationship,
+        PetRetentionEvent,
         Reminder,
         async_session_maker,
     )
@@ -372,6 +374,23 @@ async def test_weekly_summary_uses_completed_week_and_persists_seen_receipt(
         assert "content" not in summary
         assert "title" not in summary
 
+        shown_summary = await mark_pet_weekly_summary_shown(
+            session,
+            user_id=user_id,
+            pet_type="pig",
+            review_key=summary["review_key"],
+            now=next_monday,
+        )
+        duplicate_shown_summary = await mark_pet_weekly_summary_shown(
+            session,
+            user_id=user_id,
+            pet_type="pig",
+            review_key=summary["review_key"],
+            now=next_monday + timedelta(seconds=1),
+        )
+        assert shown_summary["is_new"] is True
+        assert duplicate_shown_summary["is_new"] is True
+
         seen_summary = await mark_pet_weekly_summary_seen(
             session,
             user_id=user_id,
@@ -387,10 +406,61 @@ async def test_weekly_summary_uses_completed_week_and_persists_seen_receipt(
         )
         relationship = relationship_result.scalar_one()
 
+        for index, action in enumerate(
+            ("pat", "meaningful_chat", "reminder_created")
+        ):
+            follow_up = await award_pet_relationship(
+                session,
+                user_id=user_id,
+                pet_type="pig",
+                action=action,
+                idempotency_key=f"weekly-follow-up-{action}",
+                now=next_monday + timedelta(minutes=index + 1),
+            )
+            assert follow_up["reason"] == "awarded"
+
+        duplicate_follow_up = await award_pet_relationship(
+            session,
+            user_id=user_id,
+            pet_type="pig",
+            action="pat",
+            idempotency_key="weekly-follow-up-pat-duplicate-funnel",
+            now=next_monday + timedelta(minutes=5),
+        )
+        assert duplicate_follow_up["reason"] == "cooldown"
+
+        retention_result = await session.execute(
+            select(PetRetentionEvent)
+            .where(
+                PetRetentionEvent.user_id == user_id,
+                PetRetentionEvent.pet_type == "pig",
+                PetRetentionEvent.review_key == summary["review_key"],
+            )
+            .order_by(PetRetentionEvent.event_type)
+        )
+        retention_events = retention_result.scalars().all()
+
     assert seen_summary["is_new"] is False
     assert seen_summary["reviewed_at"] == next_monday
     assert relationship.last_weekly_review_key == summary["review_key"]
     assert relationship.last_weekly_review_seen_at == next_monday
+    assert [event.event_type for event in retention_events] == [
+        "weekly_review_follow_up_care",
+        "weekly_review_follow_up_chat",
+        "weekly_review_follow_up_reminder",
+        "weekly_review_generated",
+        "weekly_review_seen",
+        "weekly_review_shown",
+    ]
+    assert {event.user_id for event in retention_events} == {user_id}
+    assert set(PetRetentionEvent.__table__.columns.keys()) == {
+        "id",
+        "user_id",
+        "pet_type",
+        "event_type",
+        "review_key",
+        "occurred_at",
+    }
 
 
 @pytest.mark.asyncio
@@ -402,7 +472,15 @@ async def test_weekly_summary_hides_empty_week(client: AsyncClient):
     )
     user_id = relationship_response.json()["user_id"]
 
-    from app.models.database import async_session_maker  # noqa: E402
+    from sqlalchemy import select  # noqa: E402
+    from app.models.database import (  # noqa: E402
+        PetRetentionEvent,
+        async_session_maker,
+    )
+    from app.services.pet_retention import (  # noqa: E402
+        record_pet_retention_event,
+        record_weekly_review_follow_up,
+    )
 
     async with async_session_maker() as session:
         summary = await get_pet_weekly_summary(
@@ -411,11 +489,43 @@ async def test_weekly_summary_hides_empty_week(client: AsyncClient):
             pet_type="pig",
             now=datetime(2026, 8, 3, 1, 0, 0),
         )
+        retention_result = await session.execute(
+            select(PetRetentionEvent).where(
+                PetRetentionEvent.user_id == user_id,
+                PetRetentionEvent.pet_type == "pig",
+            )
+        )
+        outside_window = await record_weekly_review_follow_up(
+            session,
+            user_id=user_id,
+            pet_type="pig",
+            action="pat",
+            review_key=summary["review_key"],
+            review_seen_at=datetime(2026, 8, 3, 1, 0, 0),
+            occurred_at=datetime(2026, 8, 10, 1, 0, 1),
+        )
+        with pytest.raises(ValueError, match="unknown_retention_event"):
+            await record_pet_retention_event(
+                session,
+                user_id=user_id,
+                pet_type="pig",
+                event_type="arbitrary_client_metadata",
+                review_key=summary["review_key"],
+            )
 
     assert summary["eligible"] is False
     assert summary["is_new"] is False
     assert summary["interaction_count"] == 0
     assert summary["active_days"] == 0
+    assert retention_result.scalars().all() == []
+    assert outside_window is False
+
+    rejected_shown = await client.post(
+        "/api/v1/pets/pig/weekly-summary/shown",
+        headers=headers,
+        json={"review_key": summary["review_key"]},
+    )
+    assert rejected_shown.status_code == 409
 
 
 @pytest.mark.asyncio

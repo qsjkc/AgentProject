@@ -48,6 +48,7 @@ import {
   getPetDailySummary,
   getPetWeeklySummary,
   markPetWeeklySummarySeen,
+  markPetWeeklySummaryShown,
   rewardPetRelationship,
 } from './shared/pet-relationships-api'
 import { getPetVisual } from './shared/pets'
@@ -817,6 +818,12 @@ function PetApp() {
               copyId: copy.id,
             })
             if (copy.weeklyReviewKey) {
+              void markPetWeeklySummaryShown(
+                'pig',
+                copy.weeklyReviewKey,
+              ).catch((error) => {
+                loggerRef.current.error('companion:weekly-summary-shown-failed', error)
+              })
               try {
                 await markPetWeeklySummarySeen('pig', copy.weeklyReviewKey)
                 nextState = recordCompanionCopy(nextState, copy.id)

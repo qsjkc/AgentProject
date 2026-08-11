@@ -23,6 +23,13 @@ from app.services.pet_outfits import (
     merge_unlocked_outfit_ids,
     normalize_equipped_outfits,
 )
+from app.services.pet_retention import (
+    WEEKLY_REVIEW_GENERATED,
+    WEEKLY_REVIEW_SEEN,
+    WEEKLY_REVIEW_SHOWN,
+    record_pet_retention_event,
+    record_weekly_review_follow_up,
+)
 
 
 RELATIONSHIP_LEVELS = (
@@ -407,7 +414,7 @@ async def get_pet_weekly_summary(
     )
     was_reviewed = relationship.last_weekly_review_key == review_key
 
-    return {
+    summary = {
         "pet_type": pet_type,
         "review_key": review_key,
         "week_start": week_start,
@@ -431,6 +438,50 @@ async def get_pet_weekly_summary(
         "first_interaction_at": min(all_timestamps) if all_timestamps else None,
         "last_interaction_at": max(all_timestamps) if all_timestamps else None,
     }
+    if eligible:
+        await record_pet_retention_event(
+            db,
+            user_id=user_id,
+            pet_type=pet_type,
+            event_type=WEEKLY_REVIEW_GENERATED,
+            review_key=review_key,
+            occurred_at=summary_time,
+        )
+    return summary
+
+
+def ensure_current_weekly_summary(summary: dict, review_key: str) -> None:
+    if summary["review_key"] != review_key:
+        raise ValueError("Weekly review is no longer current")
+    if not summary["eligible"]:
+        raise ValueError("Weekly review is not available")
+
+
+async def mark_pet_weekly_summary_shown(
+    db: AsyncSession,
+    *,
+    user_id: int,
+    pet_type: str,
+    review_key: str,
+    now: datetime | None = None,
+) -> dict:
+    summary_time = now or utc_now()
+    summary = await get_pet_weekly_summary(
+        db,
+        user_id=user_id,
+        pet_type=pet_type,
+        now=summary_time,
+    )
+    ensure_current_weekly_summary(summary, review_key)
+    await record_pet_retention_event(
+        db,
+        user_id=user_id,
+        pet_type=pet_type,
+        event_type=WEEKLY_REVIEW_SHOWN,
+        review_key=review_key,
+        occurred_at=summary_time,
+    )
+    return summary
 
 
 async def mark_pet_weekly_summary_seen(
@@ -448,10 +499,7 @@ async def mark_pet_weekly_summary_seen(
         pet_type=pet_type,
         now=summary_time,
     )
-    if summary["review_key"] != review_key:
-        raise ValueError("Weekly review is no longer current")
-    if not summary["eligible"]:
-        raise ValueError("Weekly review is not available")
+    ensure_current_weekly_summary(summary, review_key)
 
     relationship = await get_or_create_pet_relationship(
         db,
@@ -463,8 +511,18 @@ async def mark_pet_weekly_summary_seen(
         relationship.last_weekly_review_seen_at = summary_time
         await db.commit()
 
+    reviewed_at = relationship.last_weekly_review_seen_at or summary_time
+    await record_pet_retention_event(
+        db,
+        user_id=user_id,
+        pet_type=pet_type,
+        event_type=WEEKLY_REVIEW_SEEN,
+        review_key=review_key,
+        occurred_at=reviewed_at,
+    )
+
     summary["is_new"] = False
-    summary["reviewed_at"] = relationship.last_weekly_review_seen_at
+    summary["reviewed_at"] = reviewed_at
     return summary
 
 
@@ -758,6 +816,15 @@ async def award_pet_relationship(
     if latest_event_at is not None and policy.cooldown_seconds:
         elapsed_seconds = (award_time - latest_event_at).total_seconds()
         if elapsed_seconds < policy.cooldown_seconds:
+            await record_weekly_review_follow_up(
+                db,
+                user_id=user_id,
+                pet_type=pet_type,
+                action=action,
+                review_key=relationship.last_weekly_review_key,
+                review_seen_at=relationship.last_weekly_review_seen_at,
+                occurred_at=award_time,
+            )
             return build_reward_response(
                 relationship,
                 action=action,
@@ -843,6 +910,15 @@ async def award_pet_relationship(
         reason = "awarded"
 
     if not state_changed:
+        await record_weekly_review_follow_up(
+            db,
+            user_id=user_id,
+            pet_type=pet_type,
+            action=action,
+            review_key=relationship.last_weekly_review_key,
+            review_seen_at=relationship.last_weekly_review_seen_at,
+            occurred_at=award_time,
+        )
         return build_reward_response(
             relationship,
             action=action,
@@ -885,6 +961,16 @@ async def award_pet_relationship(
             action_daily_awarded_xp=action_total,
         )
     await db.refresh(relationship)
+
+    await record_weekly_review_follow_up(
+        db,
+        user_id=user_id,
+        pet_type=pet_type,
+        action=action,
+        review_key=relationship.last_weekly_review_key,
+        review_seen_at=relationship.last_weekly_review_seen_at,
+        occurred_at=award_time,
+    )
 
     return build_reward_response(
         relationship,
