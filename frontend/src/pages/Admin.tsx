@@ -1,5 +1,6 @@
 import { FormEvent, useEffect, useState } from 'react'
 
+import AdminWeeklyReviewFunnel from '../components/AdminWeeklyReviewFunnel'
 import MetricCard from '../components/MetricCard'
 import StatusBadge from '../components/StatusBadge'
 import { getErrorMessage } from '../lib/errors'
@@ -559,6 +560,8 @@ export default function Admin() {
           </table>
         </div>
       </section>
+
+      <AdminWeeklyReviewFunnel />
     </div>
   )
 }

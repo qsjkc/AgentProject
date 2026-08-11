@@ -31,6 +31,25 @@ export interface AdminOverview {
   admin_users: number
 }
 
+export interface AdminWeeklyReviewFunnelItem {
+  review_key: string
+  generated_users: number
+  shown_users: number
+  seen_users: number
+  follow_up_users: number
+  follow_up_care_users: number
+  follow_up_chat_users: number
+  follow_up_reminder_users: number
+  shown_from_generated_rate: number
+  seen_from_shown_rate: number
+  follow_up_from_seen_rate: number
+}
+
+export interface AdminWeeklyReviewFunnelResponse {
+  pet_type: PetType
+  items: AdminWeeklyReviewFunnelItem[]
+}
+
 export interface AdminUserListItem extends User {
   document_count: number
 }

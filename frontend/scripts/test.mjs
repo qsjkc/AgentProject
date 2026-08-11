@@ -28,7 +28,19 @@ async function main() {
     runTypeScriptCompile()
 
     const { getErrorMessage } = await importCompiledModule('src/lib/errors.js')
+    const { formatRetentionRate, formatReviewPeriod } = await importCompiledModule(
+      'src/lib/retention.js',
+    )
     const { resolveDownloadUrlWithOrigin } = await importCompiledModule('src/services/url.js')
+
+    assert.equal(formatReviewPeriod('2026-08-03_2026-08-09'), '2026-08-03 至 2026-08-09')
+    assert.equal(formatReviewPeriod('unexpected-key'), 'unexpected-key')
+    assert.equal(formatRetentionRate(0), '0%')
+    assert.equal(formatRetentionRate(0.6667), '66.7%')
+    assert.equal(formatRetentionRate(1), '100%')
+    assert.equal(formatRetentionRate(Number.NaN), '—')
+    assert.equal(formatRetentionRate(-0.1), '—')
+    assert.equal(formatRetentionRate(1.1), '—')
 
     assert.equal(
       getErrorMessage(

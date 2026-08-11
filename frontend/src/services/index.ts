@@ -14,6 +14,7 @@ import type {
   AdminUserListItem,
   AdminUserListResponse,
   AdminUserUpdateInput,
+  AdminWeeklyReviewFunnelResponse,
   DesktopRelease,
   PetType,
   User,
@@ -105,6 +106,19 @@ export const userApi = {
 export const adminApi = {
   async getOverview(): Promise<AdminOverview> {
     const response = await api.get('/admin/overview')
+    return response.data
+  },
+
+  async getWeeklyReviewFunnel(
+    petType: PetType,
+    limit = 12,
+  ): Promise<AdminWeeklyReviewFunnelResponse> {
+    const response = await api.get('/admin/retention/weekly-reviews', {
+      params: {
+        pet_type: petType,
+        limit: String(limit),
+      },
+    })
     return response.data
   },
 

@@ -12,6 +12,7 @@
   },
   "include": [
     "src/lib/errors.ts",
+    "src/lib/retention.ts",
     "src/services/url.ts",
     "src/types/index.ts"
   ]
