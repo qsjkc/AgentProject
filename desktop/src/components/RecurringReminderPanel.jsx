@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   Pause,
   Play,
@@ -13,6 +13,11 @@ import {
   pauseReminderSeries,
   resumeReminderSeries,
 } from '../shared/reminders-api'
+import {
+  createAccountOperationGate,
+  runAccountOperation,
+} from '../shared/pet-account-context'
+import { captureApiOperationContext } from '../shared/api'
 
 const REFRESH_INTERVAL_MS = 30000
 const WEEKDAYS = {
@@ -72,29 +77,49 @@ function formatSchedule(series, language, copy) {
     : `Every ${weekday} ${time}`
 }
 
-export function RecurringReminderPanel({ language, petType }) {
+export function RecurringReminderPanel({ language, petType, accountContext, onUpdated }) {
   const [seriesItems, setSeriesItems] = useState([])
   const [loading, setLoading] = useState(true)
   const [savingId, setSavingId] = useState(null)
   const [error, setError] = useState('')
+  const currentContextRef = useRef(accountContext)
+  const loadGateRef = useRef(null)
+  const actionGateRef = useRef(null)
+  if (!loadGateRef.current) loadGateRef.current = createAccountOperationGate()
+  if (!actionGateRef.current) actionGateRef.current = createAccountOperationGate()
+  currentContextRef.current = accountContext
   const copy = getCopy(language)
 
   const loadSeries = useCallback(async ({ silent = false } = {}) => {
+    const requestContext = loadGateRef.current.begin(currentContextRef.current)
     if (!silent) {
       setLoading(true)
     }
-    try {
-      const items = await getReminderSeries(petType)
-      setSeriesItems(items.filter((item) => item.status !== 'canceled'))
-      setError('')
-    } catch {
-      setError(copy.loadFailed)
-    } finally {
-      if (!silent) {
-        setLoading(false)
-      }
-    }
-  }, [copy.loadFailed, petType])
+    await runAccountOperation({
+      gate: loadGateRef.current,
+      requestContext,
+      getCurrentContext: () => currentContextRef.current,
+      operation: async () => getReminderSeries(
+        petType,
+        await captureApiOperationContext(requestContext, 'pet'),
+      ),
+      onSuccess: (items) => {
+        setSeriesItems(items.filter((item) => item.status !== 'canceled'))
+        setError('')
+      },
+      onError: () => setError(copy.loadFailed),
+      onFinally: () => {
+        if (!silent) setLoading(false)
+      },
+    })
+  }, [
+    accountContext?.session?.generation,
+    accountContext?.session?.token,
+    accountContext?.userId,
+    accountContext?.epoch,
+    copy.loadFailed,
+    petType,
+  ])
 
   useEffect(() => {
     void loadSeries()
@@ -111,24 +136,43 @@ export function RecurringReminderPanel({ language, petType }) {
     }
   }, [loadSeries])
 
+  useEffect(() => () => {
+    loadGateRef.current.invalidate()
+    actionGateRef.current.invalidate()
+  }, [
+    accountContext?.session?.generation,
+    accountContext?.session?.token,
+    accountContext?.userId,
+    accountContext?.petType,
+    accountContext?.epoch,
+  ])
+
   const updateSeries = async (series, action) => {
     if (savingId !== null) {
       return
     }
     setSavingId(series.id)
     setError('')
-    try {
-      const updated = await action(series.id)
-      setSeriesItems((current) => (
-        updated.status === 'canceled'
-          ? current.filter((item) => item.id !== series.id)
-          : current.map((item) => (item.id === series.id ? updated : item))
-      ))
-    } catch {
-      setError(copy.updateFailed)
-    } finally {
-      setSavingId(null)
-    }
+    const requestContext = actionGateRef.current.begin(accountContext)
+    await runAccountOperation({
+      gate: actionGateRef.current,
+      requestContext,
+      getCurrentContext: () => currentContextRef.current,
+      operation: async () => action(
+        series.id,
+        await captureApiOperationContext(requestContext, 'pet'),
+      ),
+      onSuccess: (updated) => {
+        setSeriesItems((current) => (
+          updated.status === 'canceled'
+            ? current.filter((item) => item.id !== series.id)
+            : current.map((item) => (item.id === series.id ? updated : item))
+        ))
+        onUpdated?.(updated, requestContext)
+      },
+      onError: () => setError(copy.updateFailed),
+      onFinally: () => setSavingId(null),
+    })
   }
 
   const handleCancel = (series) => {

@@ -167,6 +167,10 @@ select {
   transform: translateX(-50%);
 }
 
+.pet-care-toolbar.is-onboarding-highlight {
+  animation: pet-onboarding-care-pulse 760ms ease-out 1;
+}
+
 .pet-care-button {
   width: 30px;
   height: 30px;
@@ -271,6 +275,98 @@ select {
 
 .pet-bubble-pig::after {
   background: rgba(254, 226, 226, 0.95);
+}
+
+.pet-onboarding-guide {
+  position: absolute;
+  z-index: 5;
+  top: 4px;
+  left: 50%;
+  display: grid;
+  gap: 5px;
+  width: 206px;
+  padding: 10px 12px;
+  border: 1px solid rgba(244, 114, 182, 0.34);
+  border-radius: 17px;
+  background: linear-gradient(160deg, rgba(255, 247, 250, 0.98), rgba(255, 228, 235, 0.97));
+  color: #4c0519;
+  box-shadow: 0 16px 36px rgba(136, 19, 55, 0.18);
+  transform: translateX(-50%);
+  animation: pet-onboarding-guide-in 180ms ease-out;
+}
+
+.pet-onboarding-guide-chip {
+  justify-self: start;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.72);
+  color: #be123c;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+}
+
+.pet-onboarding-guide-title {
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.pet-onboarding-guide-body {
+  color: #881337;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.pet-onboarding-guide-action {
+  justify-self: end;
+  min-height: 27px;
+  padding: 5px 11px;
+  border: 1px solid rgba(190, 24, 93, 0.24);
+  border-radius: 999px;
+  background: #be123c;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 800;
+  cursor: pointer;
+  transition: transform 140ms ease, box-shadow 140ms ease;
+}
+
+.pet-onboarding-guide-action:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 14px rgba(190, 24, 93, 0.24);
+}
+
+.pet-onboarding-guide-action:focus-visible {
+  outline: 3px solid rgba(251, 113, 133, 0.42);
+  outline-offset: 2px;
+}
+
+@keyframes pet-onboarding-guide-in {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(7px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0) scale(1);
+  }
+}
+
+@keyframes pet-onboarding-care-pulse {
+  0%, 100% {
+    filter: drop-shadow(0 0 0 rgba(244, 63, 94, 0));
+  }
+  45% {
+    filter: drop-shadow(0 0 8px rgba(244, 63, 94, 0.52));
+    transform: translateX(-50%) scale(1.06);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pet-onboarding-guide,
+  .pet-care-toolbar.is-onboarding-highlight {
+    animation: none;
+  }
 }
 
 .pet-intimacy-feedback {
@@ -1440,4 +1536,134 @@ select {
   font-size: 12px;
   line-height: 1.7;
   color: #475569;
+}
+
+.pet-onboarding-card {
+  margin-top: 14px;
+  padding: 14px;
+  border: 1px solid #fecdd3;
+  border-radius: 16px;
+  background: linear-gradient(145deg, #fff7f8, #fff);
+  box-shadow: 0 10px 24px rgba(190, 24, 93, 0.07);
+}
+
+.pet-onboarding-card.is-reminder_waiting {
+  border-color: #bae6fd;
+  background: linear-gradient(145deg, #f0f9ff, #fff);
+  box-shadow: 0 10px 24px rgba(3, 105, 161, 0.06);
+}
+
+.pet-onboarding-eyebrow {
+  color: #be123c;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.pet-onboarding-title {
+  margin: 6px 0 0;
+  color: #0f172a;
+  font-size: 15px;
+  line-height: 1.35;
+}
+
+.pet-onboarding-body {
+  margin: 7px 0 0;
+  color: #475569;
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+.pet-onboarding-actions {
+  display: grid;
+  gap: 7px;
+  margin-top: 12px;
+}
+
+.pet-onboarding-primary,
+.pet-onboarding-secondary,
+.pet-onboarding-tertiary {
+  min-height: 34px;
+  border-radius: 10px;
+  padding: 7px 10px;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+.pet-onboarding-primary {
+  border: 1px solid #e11d48;
+  background: #e11d48;
+  color: #fff;
+}
+
+.pet-onboarding-secondary {
+  border: 1px solid #cbd5e1;
+  background: #fff;
+  color: #334155;
+}
+
+.pet-onboarding-tertiary {
+  border: none;
+  background: transparent;
+  color: #64748b;
+  font-weight: 600;
+}
+
+.pet-onboarding-primary:hover:not(:disabled),
+.pet-onboarding-primary:focus-visible {
+  background: #be123c;
+  border-color: #be123c;
+}
+
+.pet-onboarding-secondary:hover:not(:disabled),
+.pet-onboarding-secondary:focus-visible,
+.pet-onboarding-tertiary:hover:not(:disabled),
+.pet-onboarding-tertiary:focus-visible {
+  color: #be123c;
+}
+
+.pet-onboarding-primary:focus-visible,
+.pet-onboarding-secondary:focus-visible,
+.pet-onboarding-tertiary:focus-visible {
+  outline: 2px solid #fb7185;
+  outline-offset: 2px;
+}
+
+.pet-onboarding-primary:disabled,
+.pet-onboarding-secondary:disabled,
+.pet-onboarding-tertiary:disabled {
+  cursor: wait;
+  opacity: 0.58;
+}
+
+.pet-onboarding-error {
+  margin-top: 9px;
+  color: #be123c;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.pending-reminder-item.is-onboarding-highlight {
+  margin: 7px -7px;
+  padding: 8px 7px;
+  border: 1px solid #fda4af;
+  border-radius: 12px;
+  background: #fff7f8;
+}
+
+.pending-reminder-onboarding-hint {
+  margin-top: 6px;
+  color: #9f1239;
+  font-size: 10px;
+  font-weight: 650;
+  line-height: 1.45;
+}
+
+.pending-reminder-complete.is-onboarding-highlight {
+  border-color: #e11d48;
+  color: #e11d48;
+  box-shadow: 0 0 0 3px rgba(225, 29, 72, 0.1);
 }

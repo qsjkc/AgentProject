@@ -75,6 +75,9 @@ function buildDesktopVoiceSession(options = {}) {
     onCleanup: options.onCleanup || (() => {}),
   }
   const getPetType = typeof options.getPetType === 'function' ? options.getPetType : () => 'cat'
+  const getOperationContext = typeof options.getOperationContext === 'function'
+    ? options.getOperationContext
+    : async () => null
 
   let settings = normalizeVoiceSettings(options.settings || DEFAULT_VOICE_SETTINGS)
   let engine = null
@@ -407,7 +410,10 @@ function buildDesktopVoiceSession(options = {}) {
 
     if (joined && session?.sessionId) {
       try {
-        const status = await getVoiceDemoSession(session.sessionId)
+        const status = await getVoiceDemoSession(
+          session.sessionId,
+          await getOperationContext(),
+        )
         if (status?.sessionActive && status?.state === 'active') {
           resetInactivityTimer()
           return { session, status, reused: true }
@@ -443,9 +449,10 @@ function buildDesktopVoiceSession(options = {}) {
         throw new Error('当前环境不支持火山 RTC。')
       }
 
-      const createdSession = await createVoiceDemoSession({
-        pet_type: getPetType(),
-      })
+      const createdSession = await createVoiceDemoSession(
+        { pet_type: getPetType() },
+        await getOperationContext(),
+      )
       session = createdSession
       currentSubtitleSequence = null
 
@@ -473,7 +480,10 @@ function buildDesktopVoiceSession(options = {}) {
       localAudioPublished = false
       setCaptureVolume(IDLE_CAPTURE_VOLUME)
 
-      const startedSession = await startVoiceDemoSession(createdSession.sessionId)
+      const startedSession = await startVoiceDemoSession(
+        createdSession.sessionId,
+        await getOperationContext(),
+      )
       emitEvent('voice:session-start', {
         sessionId: createdSession.sessionId,
         state: startedSession?.state ?? createdSession.state ?? null,
@@ -604,7 +614,10 @@ function buildDesktopVoiceSession(options = {}) {
     }
 
     try {
-      const result = await interruptVoiceDemoSession(session.sessionId)
+      const result = await interruptVoiceDemoSession(
+        session.sessionId,
+        await getOperationContext(),
+      )
       emitEvent('voice:interrupt', {
         sessionId: session.sessionId,
         accepted: result?.accepted ?? false,
@@ -645,7 +658,10 @@ function buildDesktopVoiceSession(options = {}) {
 
       if (session?.sessionId) {
         try {
-          const result = await stopVoiceDemoSession(session.sessionId)
+          const result = await stopVoiceDemoSession(
+            session.sessionId,
+            await getOperationContext(),
+          )
           emitEvent('voice:stop', {
             sessionId: session.sessionId,
             cleanupPending: Boolean(result?.cleanupPending),

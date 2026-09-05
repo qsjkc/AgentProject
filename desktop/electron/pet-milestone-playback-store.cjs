@@ -30,7 +30,13 @@ function isValidMilestone(value, petType, claimToken) {
   )
 }
 
-function isValidPetMilestonePlayback(value, petType = 'pig') {
+function isValidPetMilestonePlayback(
+  value,
+  petType = 'pig',
+  { accountUserId = null, allowMissingAccountUserId = false } = {},
+) {
+  const normalizedAccountUserId = Number(accountUserId)
+  const playbackAccountUserId = Number(value?.account_user_id)
   if (
     petType !== 'pig'
     || !isRecord(value)
@@ -40,6 +46,12 @@ function isValidPetMilestonePlayback(value, petType = 'pig') {
     || !Number.isInteger(value.revision)
     || value.revision < 0
     || typeof value.displayed !== 'boolean'
+    || (
+      Number.isInteger(normalizedAccountUserId)
+      && normalizedAccountUserId > 0
+      && !(allowMissingAccountUserId && value.account_user_id === undefined)
+      && playbackAccountUserId !== normalizedAccountUserId
+    )
   ) {
     return false
   }
@@ -57,12 +69,16 @@ function isValidPetMilestonePlayback(value, petType = 'pig') {
   return true
 }
 
-function inspectPetMilestonePlayback(playbackByPet, petType = 'pig') {
+function inspectPetMilestonePlayback(
+  playbackByPet,
+  petType = 'pig',
+  { storageKey = petType, accountUserId = null } = {},
+) {
   const storeIsRecord = isRecord(playbackByPet)
   const normalizedPlaybackByPet = storeIsRecord ? playbackByPet : {}
-  const hasEntry = Object.prototype.hasOwnProperty.call(normalizedPlaybackByPet, petType)
-  const rawPlayback = hasEntry ? normalizedPlaybackByPet[petType] : null
-  const current = isValidPetMilestonePlayback(rawPlayback, petType) ? rawPlayback : null
+  const hasEntry = Object.prototype.hasOwnProperty.call(normalizedPlaybackByPet, storageKey)
+  const rawPlayback = hasEntry ? normalizedPlaybackByPet[storageKey] : null
+  const current = isValidPetMilestonePlayback(rawPlayback, petType, { accountUserId }) ? rawPlayback : null
   return {
     playbackByPet: normalizedPlaybackByPet,
     current,
@@ -77,32 +93,71 @@ function withoutPetEntry(playbackByPet, petType) {
   return nextPlaybackByPet
 }
 
-function readPetMilestonePlaybackEntry(playbackByPet, petType = 'pig') {
-  const snapshot = inspectPetMilestonePlayback(playbackByPet, petType)
-  if (!snapshot.corrupted) {
-    return {
-      playback: snapshot.current,
-      playbackByPet: snapshot.playbackByPet,
-      changed: false,
+function readPetMilestonePlaybackEntry(playbackByPet, petType = 'pig', options = {}) {
+  const snapshot = inspectPetMilestonePlayback(playbackByPet, petType, options)
+  const storageKey = options.storageKey || petType
+  let nextPlaybackByPet = snapshot.corrupted
+    ? withoutPetEntry(snapshot.playbackByPet, storageKey)
+    : snapshot.playbackByPet
+  let playback = snapshot.corrupted ? null : snapshot.current
+  let changed = snapshot.corrupted
+
+  if (
+    storageKey !== petType
+    && Object.prototype.hasOwnProperty.call(nextPlaybackByPet, petType)
+  ) {
+    const legacyPlayback = nextPlaybackByPet[petType]
+    nextPlaybackByPet = withoutPetEntry(nextPlaybackByPet, petType)
+    changed = true
+    const legacyAccountUserId = Number(legacyPlayback?.account_user_id)
+    if (
+      Number.isInteger(legacyAccountUserId)
+      && legacyAccountUserId > 0
+      && isValidPetMilestonePlayback(legacyPlayback, petType, {
+        accountUserId: legacyAccountUserId,
+      })
+    ) {
+      const isolatedStorageKey = `${legacyAccountUserId}:${petType}`
+      if (!Object.prototype.hasOwnProperty.call(nextPlaybackByPet, isolatedStorageKey)) {
+        nextPlaybackByPet = {
+          ...nextPlaybackByPet,
+          [isolatedStorageKey]: legacyPlayback,
+        }
+      }
+      if (isolatedStorageKey === storageKey && !playback) {
+        playback = nextPlaybackByPet[isolatedStorageKey]
+      }
     }
   }
 
   return {
-    playback: null,
-    playbackByPet: withoutPetEntry(snapshot.playbackByPet, petType),
-    changed: true,
+    playback,
+    playbackByPet: nextPlaybackByPet,
+    changed,
   }
 }
 
 function setPetMilestonePlaybackEntry({
   playbackByPet,
   petType = 'pig',
+  storageKey = petType,
+  accountUserId = null,
   playback,
   expectedRevision,
   updatedAt,
 }) {
-  const snapshot = inspectPetMilestonePlayback(playbackByPet, petType)
-  if (!isValidPetMilestonePlayback(playback, petType)) {
+  const migrated = readPetMilestonePlaybackEntry(playbackByPet, petType, {
+    storageKey,
+    accountUserId,
+  })
+  const snapshot = inspectPetMilestonePlayback(migrated.playbackByPet, petType, {
+    storageKey,
+    accountUserId,
+  })
+  if (!isValidPetMilestonePlayback(playback, petType, {
+    accountUserId,
+    allowMissingAccountUserId: true,
+  })) {
     return { ok: false, reason: 'invalid-playback', current: snapshot.current }
   }
   if (
@@ -120,29 +175,41 @@ function setPetMilestonePlaybackEntry({
     revision: snapshot.currentRevision + 1,
     updated_at: updatedAt,
   }
+  if (Number.isInteger(Number(accountUserId)) && Number(accountUserId) > 0) {
+    nextPlayback.account_user_id = Number(accountUserId)
+  }
   return {
     ok: true,
     playback: nextPlayback,
     playbackByPet: {
       ...snapshot.playbackByPet,
-      [petType]: nextPlayback,
+      [storageKey]: nextPlayback,
     },
-    recoveredCorruption: snapshot.corrupted,
+    recoveredCorruption: snapshot.corrupted || migrated.changed,
   }
 }
 
 function clearPetMilestonePlaybackEntry({
   playbackByPet,
   petType = 'pig',
+  storageKey = petType,
+  accountUserId = null,
   claimToken = '',
   expectedRevision,
 }) {
-  const snapshot = inspectPetMilestonePlayback(playbackByPet, petType)
+  const migrated = readPetMilestonePlaybackEntry(playbackByPet, petType, {
+    storageKey,
+    accountUserId,
+  })
+  const snapshot = inspectPetMilestonePlayback(migrated.playbackByPet, petType, {
+    storageKey,
+    accountUserId,
+  })
   if (snapshot.corrupted) {
     return {
       ok: true,
       playback: null,
-      playbackByPet: withoutPetEntry(snapshot.playbackByPet, petType),
+      playbackByPet: withoutPetEntry(snapshot.playbackByPet, storageKey),
       changed: true,
       recoveredCorruption: true,
     }
@@ -152,7 +219,8 @@ function clearPetMilestonePlaybackEntry({
       ok: true,
       playback: null,
       playbackByPet: snapshot.playbackByPet,
-      changed: false,
+      changed: migrated.changed,
+      recoveredCorruption: migrated.changed,
     }
   }
   if (
@@ -167,13 +235,29 @@ function clearPetMilestonePlaybackEntry({
   return {
     ok: true,
     playback: null,
-    playbackByPet: withoutPetEntry(snapshot.playbackByPet, petType),
+    playbackByPet: withoutPetEntry(snapshot.playbackByPet, storageKey),
     changed: true,
   }
 }
 
+function clearPetMilestonePlaybackSnapshot(options = {}) {
+  const migrated = readPetMilestonePlaybackEntry(
+    options.playbackByPet,
+    options.petType,
+    options,
+  )
+  const result = clearPetMilestonePlaybackEntry({
+    ...options,
+    playbackByPet: migrated.playbackByPet,
+  })
+  return result.playbackByPet
+    ? result
+    : { ...result, playbackByPet: migrated.playbackByPet, changed: migrated.changed }
+}
+
 module.exports = {
   clearPetMilestonePlaybackEntry,
+  clearPetMilestonePlaybackSnapshot,
   isValidPetMilestonePlayback,
   readPetMilestonePlaybackEntry,
   setPetMilestonePlaybackEntry,

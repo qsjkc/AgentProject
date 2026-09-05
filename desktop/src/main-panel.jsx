@@ -1,18 +1,22 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import ReactDOM from 'react-dom/client'
 
 import './desktop.css'
+import { PetOnboardingCard } from './components/PetOnboardingCard'
 import { PendingReminderPanel } from './components/PendingReminderPanel'
 import { RecurringReminderPanel } from './components/RecurringReminderPanel'
 import { PetOutfitPanel } from './components/PetOutfitPanel'
 import {
   checkApiConnection,
+  captureApiOperationContext,
+  assertApiOperationContextCurrent,
   clearSessionToken,
   desktopApi,
   getApiBaseUrl,
   getCompanionSettings,
   getLanguage,
   getSessionToken,
+  getSessionSnapshot,
   getVoiceSettings,
   login,
   openQuickChat,
@@ -37,17 +41,38 @@ import {
   normalizePetRelationship,
 } from './shared/pet-relationship'
 import {
+  commitAccountOperation,
+  createAccountOperationGate,
+  adoptRelationshipCapability,
+  createMainPanelRelationshipNullReset,
+  isPetAccountOperationCurrent,
+  isSessionSnapshotCurrent,
+} from './shared/pet-account-context'
+import { createMainPanelIntentConsumerController } from './shared/main-panel-intent-controller'
+import {
   getPetDailySummaryHighlights,
   getPetDailySummaryMessage,
 } from './shared/pet-daily-summary'
 import {
   getPetDailySummary,
   getPetRelationship,
-  refreshPetRelationship,
   rewardPetRelationship,
   updatePetOutfit,
 } from './shared/pet-relationships-api'
 import { getPetVisual } from './shared/pets'
+import {
+  createPetOnboardingContextKey,
+  createPetOnboardingSampleReminderPayload,
+  derivePetOnboardingScene,
+  isPetOnboardingMainPanelIntent,
+  isPetOnboardingReminderMatch,
+  isPetOnboardingStateCurrent,
+  PET_ONBOARDING_CAPABILITIES,
+  PET_ONBOARDING_SCENES,
+  isPetOnboardingStateForContext,
+  selectPetOnboardingStateForContext,
+  unwrapPetOnboardingStateResponse,
+} from './shared/pet-onboarding-main'
 import { parseReminder } from './shared/reminder-parser'
 import {
   getBrowserTimeZone,
@@ -96,7 +121,7 @@ function LanguageSelector({ language, onChange }) {
   )
 }
 
-function PetRelationshipSummary({ language, petType, relationship, loading }) {
+function PetRelationshipSummary({ language, petType, relationship, loading, sectionRef }) {
   const stageLabel = relationship
     ? getRelationshipStageLabel(language, relationship.relationship_stage)
     : language === 'zh-CN'
@@ -114,6 +139,8 @@ function PetRelationshipSummary({ language, petType, relationship, loading }) {
   return (
     <section
       className={`relationship-summary relationship-summary-${petType}`}
+      data-e2e="pet-relationship-summary"
+      ref={sectionRef}
       aria-busy={loading}
       aria-label={language === 'zh-CN' ? '宠物亲密度' : 'Pet intimacy'}
     >
@@ -265,6 +292,7 @@ function LoginView({
         <form onSubmit={handleSubmit} style={{ display: 'grid', gap: 14, marginTop: 24 }}>
           <input
             className="input"
+            data-e2e="login-api-base-url"
             value={apiBaseUrl}
             onChange={(event) => onApiBaseUrlChange(event.target.value)}
             placeholder={t(language, 'serverUrlPlaceholder')}
@@ -276,19 +304,21 @@ function LoginView({
           </div>
           <input
             className="input"
+            data-e2e="login-username"
             value={username}
             onChange={(event) => setUsername(event.target.value)}
             placeholder={t(language, 'usernameOrEmail')}
           />
           <input
             className="input"
+            data-e2e="login-password"
             type="password"
             value={password}
             onChange={(event) => setPassword(event.target.value)}
             placeholder={t(language, 'password')}
           />
           {(error || statusText) && <div style={{ color: error ? '#be123c' : '#475569', fontSize: 14 }}>{error || statusText}</div>}
-          <button className="button-primary" type="submit" disabled={loading}>
+          <button className="button-primary" data-e2e="login-submit" type="submit" disabled={loading}>
             {loading ? t(language, 'signingIn') : t(language, 'signIn')}
           </button>
         </form>
@@ -313,6 +343,7 @@ function PetPreferencePicker({ language, activePetType, onSelect, saving }) {
               key={option}
               type="button"
               className={`pet-option ${isActive ? 'active' : ''}`}
+              data-e2e={`pet-option-${option}`}
               onClick={() => onSelect(option)}
               disabled={saving}
             >
@@ -548,8 +579,43 @@ function MainPanelApp() {
   const [petRelationshipLoading, setPetRelationshipLoading] = useState(false)
   const [petDailySummary, setPetDailySummary] = useState(null)
   const [petDailySummaryLoading, setPetDailySummaryLoading] = useState(false)
+  const [petOnboardingState, setPetOnboardingState] = useState(null)
+  const [petOnboardingBusy, setPetOnboardingBusy] = useState(false)
+  const [petOnboardingError, setPetOnboardingError] = useState('')
+  const [documentVisible, setDocumentVisible] = useState(document.visibilityState === 'visible')
+  const [onboardingClock, setOnboardingClock] = useState(() => Date.now())
+  const [intentOverride, setIntentOverride] = useState(null)
+  const tabRef = useRef('chat')
+  const intentOverrideRef = useRef(null)
+  const intentConsumerRef = useRef(null)
   const relationshipRequestRef = useRef(0)
   const dailySummaryRequestRef = useRef(0)
+  const accountRequestEpochRef = useRef(0)
+  const activeSessionTokenRef = useRef(null)
+  const activeSessionSnapshotRef = useRef(null)
+  const activeAuthoritativeContextRef = useRef(null)
+  const knowledgeSelectGateRef = useRef(null)
+  const knowledgeUploadGateRef = useRef(null)
+  const knowledgeDeleteGateRef = useRef(null)
+  const companionLoadGateRef = useRef(null)
+  if (!knowledgeSelectGateRef.current) knowledgeSelectGateRef.current = createAccountOperationGate()
+  if (!knowledgeUploadGateRef.current) knowledgeUploadGateRef.current = createAccountOperationGate()
+  if (!knowledgeDeleteGateRef.current) knowledgeDeleteGateRef.current = createAccountOperationGate()
+  if (!companionLoadGateRef.current) companionLoadGateRef.current = createAccountOperationGate()
+  const activeUserIdRef = useRef(null)
+  const activePetTypeRef = useRef('cat')
+  const relationshipSummaryRef = useRef(null)
+  const petOnboardingCardRef = useRef(null)
+  const authenticatedRef = useRef(false)
+  const relationshipObservationContextRef = useRef(null)
+  const petOnboardingContextKeyRef = useRef(null)
+  const petOnboardingContextRef = useRef({
+    userId: null,
+    relationshipId: null,
+    petType: 'cat',
+  })
+  const petOnboardingStateRef = useRef(null)
+  tabRef.current = tab
 
   const activeSession = useMemo(
     () => sessions.find((session) => session.id === activeSessionId) ?? null,
@@ -557,35 +623,279 @@ function MainPanelApp() {
   )
   const currentPetType = user?.preferences?.pet_type ?? 'cat'
   const currentPetLabel = useMemo(() => t(language, getPetVisual(currentPetType, 'idle').labelKey), [currentPetType, language])
+  const petOnboardingContextKey = useMemo(() => createPetOnboardingContextKey({
+    userId: user?.id,
+    relationshipId: petRelationship?.id,
+    petType: currentPetType,
+  }), [currentPetType, petRelationship?.id, user?.id])
+  petOnboardingContextKeyRef.current = petOnboardingContextKey
+  petOnboardingContextRef.current = {
+    userId: user?.id,
+    relationshipId: petRelationship?.id,
+    petType: currentPetType,
+  }
+  petOnboardingStateRef.current = petOnboardingState
+  activeUserIdRef.current = user?.id ?? null
+  activePetTypeRef.current = currentPetType
+  authenticatedRef.current = authenticated
+  const intentOverrideIsCurrent = Boolean(
+    intentOverride
+    && authenticated
+    && Number(intentOverride.semantic?.userId) === Number(user?.id)
+    && intentOverride.semantic?.petType === currentPetType
+    && Number(intentOverride.semantic?.relationshipId) === Number(petRelationship?.id)
+  )
+  const effectiveTab = intentOverrideIsCurrent ? 'chat' : tab
+
+  useEffect(() => window.desktopBridge?.e2e?.onSnapshot?.(() => ({
+    authenticated: authenticatedRef.current,
+    userId: activeUserIdRef.current,
+    petType: activePetTypeRef.current,
+    relationshipId: petOnboardingContextRef.current.relationshipId,
+    tab: tabRef.current,
+  })), [])
+
+  if (!intentConsumerRef.current) {
+    intentConsumerRef.current = createMainPanelIntentConsumerController({
+      getState: () => ({
+        authenticated: authenticatedRef.current,
+        userId: activeUserIdRef.current,
+        petType: activePetTypeRef.current,
+        relationshipId: petOnboardingContextRef.current.relationshipId,
+        activeCapabilityId: activeAuthoritativeContextRef.current?.id,
+        tab: tabRef.current,
+      }),
+      validateCapability: (capability, requiredScope, semantic) => (
+        window.desktopBridge?.validateOperationContext?.(capability, requiredScope, semantic)
+      ),
+      showOverride: (payload) => new Promise((resolve) => {
+        intentOverrideRef.current = payload
+        setIntentOverride(payload)
+        window.requestAnimationFrame(() => {
+          resolve(
+            intentOverrideRef.current?.id === payload.id
+              ? (petOnboardingCardRef.current || relationshipSummaryRef.current)
+              : null,
+          )
+        })
+      }),
+      clearOverride: (id) => {
+        if (intentOverrideRef.current?.id !== id) return
+        intentOverrideRef.current = null
+        setIntentOverride((current) => current?.id === id ? null : current)
+      },
+      acknowledge: (id) => window.desktopBridge?.ackMainPanelIntent?.(id),
+      commitTab: (nextTab) => {
+        tabRef.current = nextTab
+        setTab(nextTab)
+      },
+    })
+  }
+
+  const getExpectedOnboardingAccountContext = () => ({
+    hasSession: Boolean(activeSessionTokenRef.current),
+    userId: petOnboardingContextRef.current.userId,
+    relationshipId: petOnboardingContextRef.current.relationshipId,
+    petType: petOnboardingContextRef.current.petType,
+    session: activeSessionSnapshotRef.current,
+    authoritative: activeAuthoritativeContextRef.current,
+  })
+
+  useEffect(() => {
+    setPetOnboardingBusy(false)
+    setPetOnboardingError('')
+    relationshipObservationContextRef.current = null
+  }, [petOnboardingContextKey])
+
+  useEffect(() => {
+    if (
+      petOnboardingState
+      && !isPetOnboardingStateForContext(petOnboardingState, petOnboardingContextRef.current)
+    ) {
+      setPetOnboardingState(null)
+      setPetOnboardingError('')
+    }
+  }, [petOnboardingContextKey, petOnboardingState])
+
+  const petOnboardingIsCurrent = useMemo(() => isPetOnboardingStateCurrent({
+    authenticated,
+    petType: currentPetType,
+    userId: user?.id,
+    relationship: petRelationship,
+    state: petOnboardingState,
+    documentVisible,
+    now: new Date(onboardingClock),
+  }), [
+    authenticated,
+    currentPetType,
+    documentVisible,
+    onboardingClock,
+    petOnboardingState,
+    petRelationship,
+    user?.id,
+  ])
+  const petOnboardingScene = petOnboardingIsCurrent
+    ? derivePetOnboardingScene(petOnboardingState)
+    : null
 
   const updateLanguage = async (nextLanguage) => {
     const savedLanguage = await setLanguage(nextLanguage)
     setLanguageState(normalizeLanguage(savedLanguage))
   }
 
+  const commitPetOnboardingResponse = useCallback((response, expectedContextKey) => {
+    const currentContextKey = petOnboardingContextKeyRef.current
+    if (
+      expectedContextKey !== undefined
+      && expectedContextKey !== currentContextKey
+    ) {
+      return null
+    }
+    const nextState = selectPetOnboardingStateForContext(
+      petOnboardingStateRef.current,
+      response,
+      petOnboardingContextRef.current,
+    )
+    petOnboardingStateRef.current = nextState
+    setPetOnboardingState(nextState)
+    setPetOnboardingError('')
+    setOnboardingClock(Date.now())
+    return nextState
+  }, [])
+
+  const refreshPetOnboardingStateForContext = useCallback(async (expectedContextKey) => {
+    if (
+      !expectedContextKey
+      || expectedContextKey !== petOnboardingContextKeyRef.current
+    ) {
+      return null
+    }
+    try {
+      const state = await window.desktopBridge?.getPetOnboardingState?.(
+        'pig',
+        getExpectedOnboardingAccountContext(),
+      )
+      return commitPetOnboardingResponse(state, expectedContextKey)
+    } catch (error) {
+      await logDesktopDebug({
+        event: 'main-panel-onboarding-state-refresh-failed',
+        reason: error instanceof Error ? error.message : String(error),
+      })
+      return null
+    }
+  }, [commitPetOnboardingResponse])
+
+  const applyPetOnboardingResponse = useCallback((response, expectedContextKey) => {
+    if (response?.ok === false) {
+      void refreshPetOnboardingStateForContext(expectedContextKey)
+      return petOnboardingStateRef.current
+    }
+    return commitPetOnboardingResponse(response, expectedContextKey)
+  }, [commitPetOnboardingResponse, refreshPetOnboardingStateForContext])
+
+  useEffect(() => {
+    if (!petOnboardingContextKey) {
+      return undefined
+    }
+    let active = true
+    const expectedContextKey = petOnboardingContextKey
+    const refreshStateForContext = async () => {
+      try {
+        const state = await window.desktopBridge?.getPetOnboardingState?.(
+          'pig',
+          getExpectedOnboardingAccountContext(),
+        )
+        if (active) {
+          applyPetOnboardingResponse(state, expectedContextKey)
+        }
+      } catch (error) {
+        await logDesktopDebug({
+          event: 'main-panel-onboarding-context-refresh-failed',
+          reason: error instanceof Error ? error.message : String(error),
+        })
+      }
+    }
+    void refreshStateForContext()
+    return () => {
+      active = false
+    }
+  }, [applyPetOnboardingResponse, petOnboardingContextKey])
+
+  const getCurrentMainPanelAccountContext = () => ({
+    hasSession: Boolean(activeSessionTokenRef.current),
+    userId: activeUserIdRef.current,
+    petType: activePetTypeRef.current,
+    session: activeSessionSnapshotRef.current,
+    authoritative: activeAuthoritativeContextRef.current,
+    relationshipId: activeAuthoritativeContextRef.current?.relationshipId
+      ?? petOnboardingContextRef.current.relationshipId
+      ?? null,
+  })
+
+  const isMainPanelAccountRequestCurrent = (requestContext) => (
+    requestContext?.epoch === accountRequestEpochRef.current
+    && isSessionSnapshotCurrent(requestContext?.session, activeSessionSnapshotRef.current)
+    && isPetAccountOperationCurrent(
+      requestContext,
+      getCurrentMainPanelAccountContext(),
+    )
+  )
+
   const loadPetRelationship = async (petType) => {
     const requestId = relationshipRequestRef.current + 1
     relationshipRequestRef.current = requestId
+    const requestContext = {
+      ...getCurrentMainPanelAccountContext(),
+      petType,
+      epoch: accountRequestEpochRef.current,
+      session: activeSessionSnapshotRef.current,
+    }
     setPetRelationshipLoading(true)
 
     let cachedRelationship = null
     try {
       cachedRelationship = normalizePetRelationship(
-        await window.desktopBridge?.getCachedPetRelationship?.(petType),
+        await window.desktopBridge?.getCachedPetRelationship?.(petType, requestContext),
         petType,
       )
-      if (cachedRelationship && relationshipRequestRef.current === requestId) {
+      if (
+        cachedRelationship
+        && relationshipRequestRef.current === requestId
+        && isMainPanelAccountRequestCurrent(requestContext)
+        && Number(cachedRelationship.user_id) === Number(requestContext.userId)
+      ) {
         setPetRelationship(cachedRelationship)
       }
 
-      const remoteRelationship = await getPetRelationship(petType)
-      if (relationshipRequestRef.current !== requestId) {
+      const remoteRelationship = await getPetRelationship(petType, requestContext)
+      if (
+        relationshipRequestRef.current !== requestId
+        || !isMainPanelAccountRequestCurrent(requestContext)
+        || Number(remoteRelationship?.user_id) !== Number(requestContext.userId)
+        || remoteRelationship?.pet_type !== requestContext.petType
+      ) {
         return
       }
       setPetRelationship(remoteRelationship)
-      await window.desktopBridge?.cachePetRelationship?.(remoteRelationship)
+      const cacheResult = await window.desktopBridge?.cachePetRelationship?.(
+        remoteRelationship,
+        requestContext,
+      )
+      if (!cacheResult?.ok || !isMainPanelAccountRequestCurrent(requestContext)) {
+        return
+      }
+      if (
+        !cacheResult.authoritative
+        || Number(cacheResult.relationship?.id) !== Number(remoteRelationship.id)
+        || Number(cacheResult.relationship?.user_id) !== Number(requestContext.userId)
+      ) return
+      activeAuthoritativeContextRef.current = cacheResult.authoritative
     } catch (error) {
-      if (!cachedRelationship && relationshipRequestRef.current === requestId) {
+      if (
+        !cachedRelationship
+        && relationshipRequestRef.current === requestId
+        && isMainPanelAccountRequestCurrent(requestContext)
+      ) {
         setPetRelationship(null)
       }
       await logDesktopDebug({
@@ -594,23 +904,42 @@ function MainPanelApp() {
         reason: error instanceof Error ? error.message : String(error),
       })
     } finally {
-      if (relationshipRequestRef.current === requestId) {
+      if (
+        relationshipRequestRef.current === requestId
+        && isMainPanelAccountRequestCurrent(requestContext)
+      ) {
         setPetRelationshipLoading(false)
       }
     }
   }
 
+  useEffect(() => window.desktopBridge?.e2e?.onRelationshipRefresh?.(() => (
+    loadPetRelationship(activePetTypeRef.current)
+  )), [])
+
   const loadPetDailySummary = async (petType) => {
     const requestId = dailySummaryRequestRef.current + 1
     dailySummaryRequestRef.current = requestId
+    const requestContext = {
+      ...getCurrentMainPanelAccountContext(),
+      petType,
+      epoch: accountRequestEpochRef.current,
+      session: activeSessionSnapshotRef.current,
+    }
     setPetDailySummaryLoading(true)
     try {
-      const summary = await getPetDailySummary(petType)
-      if (dailySummaryRequestRef.current === requestId) {
+      const summary = await getPetDailySummary(petType, requestContext)
+      if (
+        dailySummaryRequestRef.current === requestId
+        && isMainPanelAccountRequestCurrent(requestContext)
+      ) {
         setPetDailySummary(summary)
       }
     } catch (error) {
-      if (dailySummaryRequestRef.current === requestId) {
+      if (
+        dailySummaryRequestRef.current === requestId
+        && isMainPanelAccountRequestCurrent(requestContext)
+      ) {
         setPetDailySummary(null)
       }
       await logDesktopDebug({
@@ -619,19 +948,40 @@ function MainPanelApp() {
         reason: error instanceof Error ? error.message : String(error),
       })
     } finally {
-      if (dailySummaryRequestRef.current === requestId) {
+      if (
+        dailySummaryRequestRef.current === requestId
+        && isMainPanelAccountRequestCurrent(requestContext)
+      ) {
         setPetDailySummaryLoading(false)
       }
     }
   }
 
   const loadDashboard = async () => {
+    const requestEpoch = accountRequestEpochRef.current + 1
+    accountRequestEpochRef.current = requestEpoch
+    const operationContext = await captureApiOperationContext({ epoch: requestEpoch }, 'account')
+    const expectedToken = operationContext?.session?.token
+    if (!expectedToken) {
+      return false
+    }
     const [me, sessionList, documentList] = await Promise.all([
-      desktopApi.me(),
-      desktopApi.getSessions(),
-      desktopApi.getDocuments(),
+      desktopApi.me(operationContext),
+      desktopApi.getSessions(operationContext),
+      desktopApi.getDocuments(operationContext),
     ])
+    const currentSession = await getSessionSnapshot()
+    if (
+      accountRequestEpochRef.current !== requestEpoch
+      || !isSessionSnapshotCurrent(operationContext.session, currentSession)
+    ) {
+      return false
+    }
 
+    activeSessionTokenRef.current = expectedToken
+    activeSessionSnapshotRef.current = operationContext.session
+    activeUserIdRef.current = me?.id ?? null
+    activePetTypeRef.current = me?.preferences?.pet_type || 'cat'
     setUser(me)
     setSessions(sessionList)
     setDocuments(documentList)
@@ -643,20 +993,35 @@ function MainPanelApp() {
       setMessages([])
     }
     setAuthenticated(true)
-    void loadPetRelationship(me?.preferences?.pet_type || 'cat')
-    void loadPetDailySummary(me?.preferences?.pet_type || 'cat')
-    await window.desktopBridge?.syncPetState?.({
+    const synchronizedState = await window.desktopBridge?.syncPetState?.({
       source: 'main-panel',
       hasSession: true,
+      userId: me?.id ?? null,
       petType: me?.preferences?.pet_type || 'cat',
       preferences: me?.preferences || {},
       language,
+      expectedSession: operationContext.session,
+      expectedContext: operationContext.authoritative,
     })
+    const synchronizedCapability = synchronizedState?.authoritative
+    if (
+      !synchronizedState?.ok
+      || !synchronizedCapability
+      ||
+      accountRequestEpochRef.current !== requestEpoch
+      || !isSessionSnapshotCurrent(operationContext.session, activeSessionSnapshotRef.current)
+    ) {
+      return false
+    }
+    activeAuthoritativeContextRef.current = synchronizedCapability
+    void loadPetRelationship(me?.preferences?.pet_type || 'cat')
+    void loadPetDailySummary(me?.preferences?.pet_type || 'cat')
     await logDesktopDebug({
       event: 'main-panel-load-dashboard',
       petType: me?.preferences?.pet_type || 'cat',
       sessionCount: sessionList.length,
     })
+    return true
   }
 
   const handleSaveApiBaseUrl = async () => {
@@ -706,10 +1071,7 @@ function MainPanelApp() {
         }
 
         await loadDashboard()
-        await logDesktopDebug({
-          event: 'main-panel-runtime-state-initial',
-          runtimeState: await window.desktopBridge?.getRuntimeState?.(),
-        })
+        await logDesktopDebug({ event: 'main-panel-runtime-ready' })
       } catch (error) {
         if (active) {
           setAuthenticated(false)
@@ -730,12 +1092,192 @@ function MainPanelApp() {
   }, [])
 
   useEffect(() => {
+    const handleVisibilityChange = () => {
+      setDocumentVisible(document.visibilityState === 'visible')
+      setOnboardingClock(Date.now())
+    }
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange)
+  }, [])
+
+  useEffect(() => {
+    // A mounted renderer is not yet ready to consume account-bound navigation.
+    // Register after dashboard hydration so a reload cannot discard the pending
+    // intent while authentication/relationship state is still empty.
+    if (
+      !authenticated
+      || !user?.id
+      || !petRelationship?.id
+      || Number(petRelationship.user_id) !== Number(user.id)
+      || petRelationship.pet_type !== currentPetType
+    ) return undefined
+    const unsubscribe = window.desktopBridge?.onMainPanelIntent?.((payload) => {
+      if (!isPetOnboardingMainPanelIntent(payload)) {
+        return false
+      }
+      return intentConsumerRef.current.consume(payload)
+    })
+    return () => unsubscribe?.()
+  }, [authenticated, user?.id, currentPetType, petRelationship?.id, petRelationship?.user_id, petRelationship?.pet_type])
+
+  useEffect(() => {
+    intentConsumerRef.current.cancel()
+  }, [authenticated, user?.id, currentPetType, petRelationship?.id])
+
+  useEffect(() => {
+    let active = true
+    const unsubscribe = window.desktopBridge?.onPetOnboardingChanged?.((state) => {
+      if (active) {
+        const currentContextKey = petOnboardingContextKeyRef.current
+        const nextState = unwrapPetOnboardingStateResponse(state)
+        if (nextState && isPetOnboardingStateForContext(nextState, petOnboardingContextRef.current)) {
+          applyPetOnboardingResponse(nextState, currentContextKey)
+        } else if (!nextState && !currentContextKey) {
+          setPetOnboardingState(null)
+        }
+      }
+    })
+    return () => {
+      active = false
+      unsubscribe?.()
+    }
+  }, [applyPetOnboardingResponse])
+
+  useEffect(() => {
+    const snoozedUntil = Date.parse(petOnboardingState?.snoozed_until || '')
+    if (!Number.isFinite(snoozedUntil) || snoozedUntil <= Date.now()) {
+      return undefined
+    }
+    const delay = Math.min(snoozedUntil - Date.now() + 25, 2_147_483_647)
+    const timer = window.setTimeout(() => setOnboardingClock(Date.now()), delay)
+    return () => window.clearTimeout(timer)
+  }, [petOnboardingState?.snoozed_until])
+
+  useEffect(() => {
+    if (
+      !petOnboardingIsCurrent
+      || effectiveTab !== 'chat'
+      || petOnboardingScene !== PET_ONBOARDING_SCENES.RELATIONSHIP
+      || !relationshipSummaryRef.current
+      || relationshipObservationContextRef.current === petOnboardingContextKey
+    ) {
+      return undefined
+    }
+
+    let observer = null
+    let disposed = false
+    const recordRelationshipViewed = async () => {
+      if (
+        disposed
+        || relationshipObservationContextRef.current === petOnboardingContextKey
+      ) {
+        return
+      }
+      relationshipObservationContextRef.current = petOnboardingContextKey
+      const expectedContextKey = petOnboardingContextKeyRef.current
+      try {
+        const result = await window.desktopBridge?.recordPetOnboardingObservation?.(
+          'pig',
+          PET_ONBOARDING_CAPABILITIES.RELATIONSHIP_VIEWED,
+          {},
+          getExpectedOnboardingAccountContext(),
+        )
+        if (result === undefined) {
+          throw new Error('onboarding_bridge_unavailable')
+        }
+        if (result?.ok === false) {
+          applyPetOnboardingResponse(result, expectedContextKey)
+          throw new Error(result.reason || 'relationship_observation_rejected')
+        }
+        applyPetOnboardingResponse(result, expectedContextKey)
+      } catch (error) {
+        await logDesktopDebug({
+          event: 'main-panel-onboarding-relationship-observation-failed',
+          reason: error instanceof Error ? error.message : String(error),
+        })
+      } finally {
+        if (
+          petOnboardingContextKeyRef.current !== expectedContextKey
+          || !petOnboardingStateRef.current?.observed_capability_ids?.includes(
+            PET_ONBOARDING_CAPABILITIES.RELATIONSHIP_VIEWED,
+          )
+        ) {
+          relationshipObservationContextRef.current = null
+        }
+      }
+    }
+
+    if (typeof window.IntersectionObserver === 'function') {
+      observer = new window.IntersectionObserver((entries) => {
+        if (entries.some((entry) => entry.isIntersecting && entry.intersectionRatio > 0)) {
+          observer?.disconnect()
+          void recordRelationshipViewed()
+        }
+      })
+      observer.observe(relationshipSummaryRef.current)
+    } else {
+      void recordRelationshipViewed()
+    }
+
+    return () => {
+      disposed = true
+      observer?.disconnect()
+    }
+  }, [
+    applyPetOnboardingResponse,
+    petOnboardingIsCurrent,
+    petOnboardingContextKey,
+    petOnboardingScene,
+    petRelationship,
+    effectiveTab,
+  ])
+
+  useEffect(() => {
     const unsubscribe = window.desktopBridge?.onPetRelationshipChanged?.((payload) => {
-      const relationship = normalizePetRelationship(payload, currentPetType)
-      if (relationship?.pet_type === currentPetType) {
+      if (payload === null || payload === undefined) {
+        const runtimeReset = createMainPanelRelationshipNullReset()
+        accountRequestEpochRef.current += 1
+        relationshipRequestRef.current += 1
+        dailySummaryRequestRef.current += 1
+        activeSessionTokenRef.current = null
+        activeSessionSnapshotRef.current = null
+        activeAuthoritativeContextRef.current = null
+        activeUserIdRef.current = null
+        activePetTypeRef.current = 'cat'
+        setAuthenticated(false)
+        setUser(null)
+        setSessions([])
+        setActiveSessionId(null)
+        setMessages([])
+        setDocuments([])
+        setLoading(false)
+        setSavingPet(runtimeReset.savingPet)
+        setSavingOutfit(runtimeReset.savingOutfit)
+        setSavingCompanionSettings(runtimeReset.savingCompanionSettings)
+        setPetRelationshipLoading(runtimeReset.petRelationshipLoading)
+        setPetDailySummaryLoading(runtimeReset.petDailySummaryLoading)
+        setPetOnboardingBusy(runtimeReset.petOnboardingBusy)
+        setPetOnboardingError(runtimeReset.petOnboardingError)
+        setCompanionState(DEFAULT_COMPANION_STATE)
+        setPetRelationship(null)
+        setPetDailySummary(null)
+        setPetOnboardingState(null)
+        return
+      }
+      void (async () => {
+        const adopted = await adoptRelationshipCapability({
+          payload,
+          currentContext: getCurrentMainPanelAccountContext(),
+          validateCapability: (capability, requiredScope, semantic) => (
+            window.desktopBridge?.renewOperationContext?.(capability, requiredScope, semantic)
+          ),
+        })
+        if (!adopted) return
+        const relationship = normalizePetRelationship(adopted.relationship, currentPetType)
+        activeAuthoritativeContextRef.current = adopted.authoritative
         setPetRelationship(relationship)
         void loadPetDailySummary(currentPetType)
-      }
+      })()
     })
     return () => unsubscribe?.()
   }, [currentPetType])
@@ -754,24 +1296,50 @@ function MainPanelApp() {
     let mounted = true
     const loadCompanionState = async () => {
       try {
-        const savedState = await window.desktopBridge?.getCompanionState?.(currentPetType)
-        if (mounted) {
-          setCompanionState(normalizeCompanionState(savedState))
-        }
-      } catch (error) {
-        await logDesktopDebug({
-          event: 'main-panel-companion-state-load-failed',
-          petType: currentPetType,
-          reason: error instanceof Error ? error.message : String(error),
+        const operationContext = await captureApiOperationContext(
+          getCurrentMainPanelAccountContext(),
+          'pet',
+        )
+        const requestContext = companionLoadGateRef.current.begin(operationContext)
+        await runAccountOperation({
+          gate: companionLoadGateRef.current,
+          requestContext,
+          getCurrentContext: () => mounted ? getCurrentMainPanelAccountContext() : null,
+          operation: () => window.desktopBridge?.getCompanionState?.(
+            currentPetType,
+            operationContext,
+          ),
+          onSuccess: (savedState) => setCompanionState(normalizeCompanionState(savedState)),
+          onError: (error) => {
+            void logDesktopDebug({
+              event: 'main-panel-companion-state-load-failed',
+              petType: currentPetType,
+              reason: error instanceof Error ? error.message : String(error),
+            })
+          },
         })
+      } catch (error) {
+        if (mounted) {
+          await logDesktopDebug({
+            event: 'main-panel-companion-state-load-failed',
+            petType: currentPetType,
+            reason: error instanceof Error ? error.message : String(error),
+          })
+        }
       }
     }
 
     void loadCompanionState()
     return () => {
       mounted = false
+      companionLoadGateRef.current.invalidate()
     }
-  }, [currentPetType])
+  }, [
+    currentPetType,
+    user?.id,
+    activeSessionSnapshotRef.current?.generation,
+    accountRequestEpochRef.current,
+  ])
 
   useEffect(() => {
     const unsubscribeSettings = window.desktopBridge?.onCompanionSettingsChanged?.((payload) => {
@@ -782,7 +1350,10 @@ function MainPanelApp() {
         setCompanionState(DEFAULT_COMPANION_STATE)
         return
       }
-      if (payload?.pet_type === currentPetType) {
+      if (
+        payload?.pet_type === currentPetType
+        && Number(payload?.user_id) === Number(activeUserIdRef.current)
+      ) {
         setCompanionState(normalizeCompanionState(payload.state))
       }
     })
@@ -849,6 +1420,14 @@ function MainPanelApp() {
     const outgoingMessage = prompt.trim()
     const parsedReminder = parseReminder(outgoingMessage)
     if (parsedReminder.ok) {
+      const reminderUserIdAtSend = user?.id
+      const reminderPetTypeAtSend = currentPetType
+      const reminderRequestContext = {
+        ...getCurrentMainPanelAccountContext(),
+        relationshipId: petOnboardingContextRef.current.relationshipId,
+        epoch: accountRequestEpochRef.current,
+        session: activeSessionSnapshotRef.current,
+      }
       setPrompt('')
       setLoading(true)
       setStatusText(t(language, 'waitingResponse'))
@@ -856,7 +1435,7 @@ function MainPanelApp() {
       setKnowledgeSources([])
       try {
         const reminder = await createReminder({
-          pet_type: currentPetType,
+          pet_type: reminderPetTypeAtSend,
           title: parsedReminder.title,
           source_text: parsedReminder.sourceText,
           remind_at: parsedReminder.remindAt.toISOString(),
@@ -864,18 +1443,67 @@ function MainPanelApp() {
           recurrence_timezone: parsedReminder.recurrenceType === 'once'
             ? null
             : getBrowserTimeZone(),
-        })
+        }, reminderRequestContext)
+        if (
+          !isMainPanelAccountRequestCurrent(reminderRequestContext)
+          || Number(reminder.user_id) !== Number(reminderRequestContext.userId)
+        ) {
+          return
+        }
         if (reminder.series_id) {
           window.dispatchEvent(new Event('detachym:reminder-series-changed'))
         }
-        void refreshPetRelationship(currentPetType).catch((error) => {
+        if (
+          reminderPetTypeAtSend === 'pig'
+          && petOnboardingContextRef.current.petType === reminderPetTypeAtSend
+          && Number(petOnboardingContextRef.current.userId) === Number(reminderUserIdAtSend)
+          && Number(reminder.user_id) === Number(reminderUserIdAtSend)
+        ) {
+          const expectedContextKey = petOnboardingContextKeyRef.current
+          const onboardingResult = await window.desktopBridge?.recordPetOnboardingObservation?.(
+            'pig',
+            PET_ONBOARDING_CAPABILITIES.REMINDER_CREATED,
+            { reminderId: reminder.id },
+            reminderRequestContext,
+          )
+          if (!isMainPanelAccountRequestCurrent(reminderRequestContext)) {
+            return
+          }
+          if (onboardingResult !== undefined) {
+            applyPetOnboardingResponse(onboardingResult, expectedContextKey)
+          }
+          if (onboardingResult === undefined || onboardingResult?.ok === false) {
+            await logDesktopDebug({
+              event: 'main-panel-onboarding-reminder-observation-rejected',
+              reason: onboardingResult?.reason || 'onboarding_bridge_unavailable',
+              reminderId: reminder.id,
+            })
+            if (!isMainPanelAccountRequestCurrent(reminderRequestContext)) {
+              return
+            }
+          }
+        }
+        void getPetRelationship(reminderPetTypeAtSend, reminderRequestContext).then(async (nextRelationship) => {
+          if (
+            isMainPanelAccountRequestCurrent(reminderRequestContext)
+            &&
+            petOnboardingContextRef.current.petType === reminderPetTypeAtSend
+            && Number(petOnboardingContextRef.current.userId) === Number(reminderUserIdAtSend)
+            && Number(nextRelationship?.user_id) === Number(reminderUserIdAtSend)
+          ) {
+            await window.desktopBridge?.cachePetRelationship?.(nextRelationship, reminderRequestContext)
+          }
+        }).catch((error) => {
           void logDesktopDebug({
             event: 'main-panel-relationship-refresh-failed',
             source: 'reminder-created',
             reason: error instanceof Error ? error.message : String(error),
           })
         })
-        void loadPetDailySummary(currentPetType)
+        if (!isMainPanelAccountRequestCurrent(reminderRequestContext)) {
+          return
+        }
+        void loadPetDailySummary(reminderPetTypeAtSend)
         const confirmedRemindAt = new Date(reminder.remind_at)
         const timeText = confirmedRemindAt.toLocaleString(language === 'zh-CN' ? 'zh-CN' : 'en-US', {
           month: 'numeric',
@@ -883,7 +1511,7 @@ function MainPanelApp() {
           hour: '2-digit',
           minute: '2-digit',
         })
-        const copy = getPetReminderCopy(currentPetType).createdReminder(
+        const copy = getPetReminderCopy(reminderPetTypeAtSend).createdReminder(
           reminder.title,
           timeText,
           reminder.email_enabled,
@@ -901,14 +1529,22 @@ function MainPanelApp() {
         setStatusText(copy)
         await window.desktopBridge?.notifyPetReminderEvent?.({
           type: 'created',
-          petType: currentPetType,
+          petType: reminderPetTypeAtSend,
           title: reminder.title,
           message: copy,
-        })
+          reminderId: reminder.id,
+        }, reminderRequestContext)
+        if (!isMainPanelAccountRequestCurrent(reminderRequestContext)) {
+          return
+        }
       } catch (error) {
-        setStatusText(formatError(error, t(language, 'messageDeliveryFailed')))
+        if (isMainPanelAccountRequestCurrent(reminderRequestContext)) {
+          setStatusText(formatError(error, t(language, 'messageDeliveryFailed')))
+        }
       } finally {
-        setLoading(false)
+        if (isMainPanelAccountRequestCurrent(reminderRequestContext)) {
+          setLoading(false)
+        }
       }
       return
     }
@@ -925,7 +1561,7 @@ function MainPanelApp() {
         type: 'parse_failed',
         petType: currentPetType,
         message: copy,
-      })
+      }, getCurrentMainPanelAccountContext())
       return
     }
 
@@ -935,6 +1571,11 @@ function MainPanelApp() {
     setKnowledgeStatusText('')
     setKnowledgeSources([])
     setMessages((current) => [...current, { role: 'user', content: outgoingMessage }])
+    const messageRequestContext = {
+      ...getCurrentMainPanelAccountContext(),
+      epoch: accountRequestEpochRef.current,
+      session: activeSessionSnapshotRef.current,
+    }
 
     try {
       const response = await desktopApi.sendMessage({
@@ -943,13 +1584,19 @@ function MainPanelApp() {
         use_rag: useRag,
         pet_type: currentPetType,
         compact_response: false,
-      })
+      }, messageRequestContext)
+      if (!isMainPanelAccountRequestCurrent(messageRequestContext)) {
+        return
+      }
       const nextSessionId = response.session_id
       void loadPetRelationship(currentPetType)
       void loadPetDailySummary(currentPetType)
       setActiveSessionId(nextSessionId)
       setMessages((current) => [...current, { role: 'assistant', content: response.content }])
-      const nextSessions = await desktopApi.getSessions()
+      const nextSessions = await desktopApi.getSessions(messageRequestContext)
+      if (!isMainPanelAccountRequestCurrent(messageRequestContext)) {
+        return
+      }
       setSessions(nextSessions)
       const currentSession = nextSessions.find((session) => session.id === nextSessionId)
       if (currentSession) {
@@ -971,9 +1618,191 @@ function MainPanelApp() {
         setStatusText(t(language, 'latestResponseReceived'))
       }
     } catch (error) {
-      setStatusText(formatError(error, t(language, 'messageDeliveryFailed')))
+      if (isMainPanelAccountRequestCurrent(messageRequestContext)) {
+        setStatusText(formatError(error, t(language, 'messageDeliveryFailed')))
+      }
     } finally {
-      setLoading(false)
+      if (isMainPanelAccountRequestCurrent(messageRequestContext)) {
+        setLoading(false)
+      }
+    }
+  }
+
+  const handleCreateOnboardingReminder = async () => {
+    if (petOnboardingBusy || currentPetType !== 'pig') {
+      return
+    }
+    setPetOnboardingBusy(true)
+    setPetOnboardingError('')
+    const expectedContextKey = petOnboardingContextKeyRef.current
+    const onboardingRequestContext = {
+      ...getCurrentMainPanelAccountContext(),
+      relationshipId: petOnboardingContextRef.current.relationshipId,
+      epoch: accountRequestEpochRef.current,
+    }
+    try {
+      const reminder = await createReminder(
+        createPetOnboardingSampleReminderPayload(language),
+        onboardingRequestContext,
+      )
+      if (
+        !isMainPanelAccountRequestCurrent(onboardingRequestContext)
+        ||
+        expectedContextKey !== petOnboardingContextKeyRef.current
+        || Number(reminder.user_id) !== Number(petOnboardingContextRef.current.userId)
+        || petOnboardingContextRef.current.petType !== 'pig'
+      ) {
+        throw new Error('onboarding_context_changed')
+      }
+      const result = await window.desktopBridge?.recordPetOnboardingObservation?.(
+        'pig',
+        PET_ONBOARDING_CAPABILITIES.REMINDER_CREATED,
+        { reminderId: reminder.id },
+        onboardingRequestContext,
+      )
+      if (!isMainPanelAccountRequestCurrent(onboardingRequestContext)) {
+        return
+      }
+      const nextState = applyPetOnboardingResponse(result, expectedContextKey)
+      if (
+        result === undefined
+        || result?.ok === false
+        || !isPetOnboardingReminderMatch(nextState?.reminder_id, reminder.id)
+      ) {
+        throw new Error(
+          language === 'zh-CN'
+            ? '提醒已经创建，但引导状态没有同步；请不要重复创建。'
+            : 'The reminder was created, but the guide did not sync. Please do not create it again.',
+        )
+      }
+      const copy = getPetReminderCopy('pig').createdReminder(
+        reminder.title,
+        new Date(reminder.remind_at).toLocaleString(language === 'zh-CN' ? 'zh-CN' : 'en-US', {
+          month: 'numeric',
+          day: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit',
+        }),
+        reminder.email_enabled,
+        '',
+      )
+      await window.desktopBridge?.notifyPetReminderEvent?.({
+        type: 'created',
+        petType: 'pig',
+        title: reminder.title,
+        message: copy,
+        reminderId: reminder.id,
+      }, onboardingRequestContext)
+      if (
+        !isMainPanelAccountRequestCurrent(onboardingRequestContext)
+        || expectedContextKey !== petOnboardingContextKeyRef.current
+      ) {
+        return
+      }
+      void getPetRelationship('pig', onboardingRequestContext).then(async (nextRelationship) => {
+        if (
+          isMainPanelAccountRequestCurrent(onboardingRequestContext)
+          && expectedContextKey === petOnboardingContextKeyRef.current
+          && Number(nextRelationship?.user_id) === Number(petOnboardingContextRef.current.userId)
+        ) {
+          setPetRelationship(nextRelationship)
+          await window.desktopBridge?.cachePetRelationship?.(nextRelationship, onboardingRequestContext)
+        }
+      }).catch((error) => {
+        void logDesktopDebug({
+          event: 'main-panel-onboarding-relationship-refresh-failed',
+          reason: error instanceof Error ? error.message : String(error),
+        })
+      })
+      void loadPetDailySummary('pig')
+      setStatusText(copy)
+    } catch (error) {
+      if (
+        isMainPanelAccountRequestCurrent(onboardingRequestContext)
+        && expectedContextKey === petOnboardingContextKeyRef.current
+      ) {
+        setPetOnboardingError(
+          formatError(
+            error,
+            language === 'zh-CN'
+              ? '提醒没有创建成功，请稍后再试。'
+              : 'The reminder was not created. Try again later.',
+          ),
+        )
+      }
+    } finally {
+      if (
+        isMainPanelAccountRequestCurrent(onboardingRequestContext)
+        && expectedContextKey === petOnboardingContextKeyRef.current
+      ) {
+        setPetOnboardingBusy(false)
+      }
+    }
+  }
+
+  const handleSnoozePetOnboarding = async () => {
+    if (petOnboardingBusy) {
+      return
+    }
+    setPetOnboardingBusy(true)
+    setPetOnboardingError('')
+    const expectedContextKey = petOnboardingContextKeyRef.current
+    try {
+      const result = await window.desktopBridge?.snoozePetOnboarding?.(
+        'pig',
+        getExpectedOnboardingAccountContext(),
+      )
+      if (result === undefined || result?.ok === false) {
+        if (result !== undefined) {
+          applyPetOnboardingResponse(result, expectedContextKey)
+        }
+        throw new Error(result?.reason || 'onboarding_snooze_rejected')
+      }
+      applyPetOnboardingResponse(result, expectedContextKey)
+    } catch (error) {
+      if (expectedContextKey === petOnboardingContextKeyRef.current) {
+        setPetOnboardingError(formatError(
+          error,
+          language === 'zh-CN' ? '暂时隐藏失败，请稍后再试。' : 'Could not hide this for now. Try again later.',
+        ))
+      }
+    } finally {
+      if (expectedContextKey === petOnboardingContextKeyRef.current) {
+        setPetOnboardingBusy(false)
+      }
+    }
+  }
+
+  const handleDismissPetOnboarding = async () => {
+    if (petOnboardingBusy) {
+      return
+    }
+    setPetOnboardingBusy(true)
+    setPetOnboardingError('')
+    const expectedContextKey = petOnboardingContextKeyRef.current
+    try {
+      const result = await window.desktopBridge?.dismissPetOnboarding?.(
+        'pig',
+        getExpectedOnboardingAccountContext(),
+      )
+      if (result === undefined || result?.ok === false) {
+        if (result !== undefined) {
+          applyPetOnboardingResponse(result, expectedContextKey)
+        }
+        throw new Error(result?.reason || 'onboarding_dismiss_rejected')
+      }
+      applyPetOnboardingResponse(result, expectedContextKey)
+    } catch (error) {
+      if (expectedContextKey === petOnboardingContextKeyRef.current) {
+        setPetOnboardingError(formatError(
+          error,
+          language === 'zh-CN' ? '关闭提示失败，请稍后再试。' : 'Could not dismiss this. Try again later.',
+        ))
+      }
+    } finally {
+      if (expectedContextKey === petOnboardingContextKeyRef.current) {
+        setPetOnboardingBusy(false)
+      }
     }
   }
 
@@ -985,14 +1814,34 @@ function MainPanelApp() {
   }
 
   const handleSelectSession = async (sessionId) => {
+    let requestContext = null
     try {
-      const session = await desktopApi.getSession(sessionId)
-      setActiveSessionId(session.id)
-      setMessages(session.messages || [])
-      setKnowledgeStatusText('')
-      setKnowledgeSources([])
+      const operationContext = await captureApiOperationContext(
+        getCurrentMainPanelAccountContext(),
+        'account',
+      )
+      requestContext = knowledgeSelectGateRef.current.begin(operationContext)
+      const session = await desktopApi.getSession(sessionId, operationContext)
+      await assertApiOperationContextCurrent(operationContext)
+      commitAccountOperation(
+        knowledgeSelectGateRef.current,
+        requestContext,
+        getCurrentMainPanelAccountContext(),
+        () => {
+          setActiveSessionId(session.id)
+          setMessages(session.messages || [])
+          setKnowledgeStatusText('')
+          setKnowledgeSources([])
+        },
+      )
     } catch (error) {
-      setStatusText(formatError(error, t(language, 'unableToLoadSession')))
+      if (!requestContext) return
+      commitAccountOperation(
+        knowledgeSelectGateRef.current,
+        requestContext,
+        getCurrentMainPanelAccountContext(),
+        () => setStatusText(formatError(error, t(language, 'unableToLoadSession'))),
+      )
     }
   }
 
@@ -1002,24 +1851,76 @@ function MainPanelApp() {
       return
     }
 
+    let requestContext = null
     try {
-      await desktopApi.uploadDocument(file)
-      setDocuments(await desktopApi.getDocuments())
-      setStatusText(t(language, 'documentUploadedIndexed'))
+      const operationContext = await captureApiOperationContext(
+        getCurrentMainPanelAccountContext(),
+        'account',
+      )
+      requestContext = knowledgeUploadGateRef.current.begin(operationContext)
+      await desktopApi.uploadDocument(file, operationContext)
+      await assertApiOperationContextCurrent(operationContext)
+      if (!knowledgeUploadGateRef.current.isCurrent(requestContext, getCurrentMainPanelAccountContext())) return
+      const nextDocuments = await desktopApi.getDocuments(operationContext)
+      await assertApiOperationContextCurrent(operationContext)
+      commitAccountOperation(
+        knowledgeUploadGateRef.current,
+        requestContext,
+        getCurrentMainPanelAccountContext(),
+        () => {
+          setDocuments(nextDocuments)
+          setStatusText(t(language, 'documentUploadedIndexed'))
+        },
+      )
     } catch (error) {
-      setStatusText(formatError(error, t(language, 'uploadFailed')))
+      if (!requestContext) return
+      commitAccountOperation(
+        knowledgeUploadGateRef.current,
+        requestContext,
+        getCurrentMainPanelAccountContext(),
+        () => setStatusText(formatError(error, t(language, 'uploadFailed'))),
+      )
     } finally {
-      event.target.value = ''
+      if (!requestContext) {
+        event.target.value = ''
+        return
+      }
+      commitAccountOperation(
+        knowledgeUploadGateRef.current,
+        requestContext,
+        getCurrentMainPanelAccountContext(),
+        () => { event.target.value = '' },
+      )
     }
   }
 
   const handleDeleteDocument = async (documentId) => {
+    let requestContext = null
     try {
-      await desktopApi.deleteDocument(documentId)
-      setDocuments((current) => current.filter((item) => item.id !== documentId))
-      setStatusText(t(language, 'documentDeleted'))
+      const operationContext = await captureApiOperationContext(
+        getCurrentMainPanelAccountContext(),
+        'account',
+      )
+      requestContext = knowledgeDeleteGateRef.current.begin(operationContext)
+      await desktopApi.deleteDocument(documentId, operationContext)
+      await assertApiOperationContextCurrent(operationContext)
+      commitAccountOperation(
+        knowledgeDeleteGateRef.current,
+        requestContext,
+        getCurrentMainPanelAccountContext(),
+        () => {
+          setDocuments((current) => current.filter((item) => item.id !== documentId))
+          setStatusText(t(language, 'documentDeleted'))
+        },
+      )
     } catch (error) {
-      setStatusText(formatError(error, t(language, 'deleteFailed')))
+      if (!requestContext) return
+      commitAccountOperation(
+        knowledgeDeleteGateRef.current,
+        requestContext,
+        getCurrentMainPanelAccountContext(),
+        () => setStatusText(formatError(error, t(language, 'deleteFailed'))),
+      )
     }
   }
 
@@ -1029,8 +1930,25 @@ function MainPanelApp() {
     }
 
     setSavingPet(true)
+    const initiatingUserId = user.id
+    const initiatingContext = {
+      ...getCurrentMainPanelAccountContext(),
+      epoch: accountRequestEpochRef.current,
+    }
+    const isInitiatingSessionCurrent = () => (
+      activeUserIdRef.current === initiatingUserId
+      && accountRequestEpochRef.current === initiatingContext.epoch
+      && isSessionSnapshotCurrent(
+        initiatingContext.session,
+        activeSessionSnapshotRef.current,
+      )
+    )
+    let switchCommitted = false
     try {
-      const summary = await getPendingReminderSummary(currentPetType)
+      const summary = await getPendingReminderSummary(currentPetType, initiatingContext)
+      if (!isMainPanelAccountRequestCurrent(initiatingContext)) {
+        return
+      }
       if (summary.pending_count > 0) {
         const confirmed = window.confirm(
           language === 'zh-CN'
@@ -1038,6 +1956,9 @@ function MainPanelApp() {
             : `${currentPetLabel} has ${summary.pending_count} pending reminders. They will not trigger after switching. Continue?`,
         )
         if (!confirmed) {
+          return
+        }
+        if (!isMainPanelAccountRequestCurrent(initiatingContext)) {
           return
         }
       }
@@ -1052,10 +1973,13 @@ function MainPanelApp() {
           pet_type: nextPetType,
           quick_chat_enabled: user?.preferences?.quick_chat_enabled ?? true,
           bubble_frequency: user?.preferences?.bubble_frequency ?? 120,
-        }),
+        }, initiatingContext),
         12000,
         'update_preferences_timeout',
       )
+      if (!isMainPanelAccountRequestCurrent(initiatingContext)) {
+        return
+      }
       await logDesktopDebug({
         event: 'main-panel-switch-phase',
         phase: 'preferences-updated',
@@ -1068,6 +1992,10 @@ function MainPanelApp() {
           preferences: nextPreferences,
           language,
           hasSession: true,
+          expectedUserId: initiatingUserId,
+          expectedSession: initiatingContext.session,
+          expectedFromPet: initiatingContext.petType,
+          expectedContext: initiatingContext.authoritative,
         }),
         5000,
         'desktop_switch_timeout',
@@ -1082,6 +2010,31 @@ function MainPanelApp() {
       if (!switchedResult?.ok) {
         throw new Error(switchedResult?.reason || t(language, 'messageDeliveryFailed'))
       }
+      if (
+        activeUserIdRef.current !== initiatingUserId
+        || !isSessionSnapshotCurrent(
+          initiatingContext.session,
+          activeSessionSnapshotRef.current,
+        )
+      ) {
+        throw new Error('account-context-changed')
+      }
+      switchCommitted = true
+      accountRequestEpochRef.current += 1
+      activePetTypeRef.current = nextPetType
+      const switchedCapability = switchedResult.authoritative
+      if (
+        !switchedCapability
+        ||
+        activeUserIdRef.current !== initiatingUserId
+        || !isSessionSnapshotCurrent(
+          initiatingContext.session,
+          activeSessionSnapshotRef.current,
+        )
+      ) {
+        throw new Error('account-context-changed')
+      }
+      activeAuthoritativeContextRef.current = switchedCapability
       setUser((current) => (current ? { ...current, preferences: nextPreferences } : current))
       void loadPetRelationship(nextPetType)
       void loadPetDailySummary(nextPetType)
@@ -1092,13 +2045,19 @@ function MainPanelApp() {
       })
       setStatusText(t(language, 'petPreferenceSaved'))
     } catch (error) {
-      await logDesktopDebug({
-        event: 'main-panel-switch-failed',
-        reason: error instanceof Error ? error.message : String(error),
-      })
-      setStatusText(formatError(error, t(language, 'messageDeliveryFailed')))
+      if (isInitiatingSessionCurrent()) {
+        await logDesktopDebug({
+          event: 'main-panel-switch-failed',
+          reason: error instanceof Error ? error.message : String(error),
+        })
+        if (isInitiatingSessionCurrent()) {
+          setStatusText(formatError(error, t(language, 'messageDeliveryFailed')))
+        }
+      }
     } finally {
-      setSavingPet(false)
+      if (switchCommitted || isInitiatingSessionCurrent()) {
+        setSavingPet(false)
+      }
     }
   }
 
@@ -1112,22 +2071,65 @@ function MainPanelApp() {
     }
 
     setSavingOutfit(true)
+    const initiatingOutfitContext = {
+      ...getCurrentMainPanelAccountContext(),
+      relationshipId: petRelationship.id,
+      epoch: accountRequestEpochRef.current,
+    }
+    let outfitRequestContext = null
     try {
-      let nextRelationship = await updatePetOutfit(currentPetType, slot, itemId)
+      outfitRequestContext = await captureApiOperationContext(
+        initiatingOutfitContext,
+        'relationship',
+      )
+      if (!isMainPanelAccountRequestCurrent(initiatingOutfitContext)) return
+      let nextRelationship = await updatePetOutfit(
+        outfitRequestContext.petType,
+        slot,
+        itemId,
+        outfitRequestContext,
+      )
+      const postOutfitCapability = nextRelationship?.__operation_authoritative
+      if (
+        !isMainPanelAccountRequestCurrent(outfitRequestContext)
+        || !postOutfitCapability
+        || Number(nextRelationship?.id) !== Number(initiatingOutfitContext.relationshipId)
+        || Number(nextRelationship?.user_id) !== Number(initiatingOutfitContext.userId)
+        || nextRelationship?.pet_type !== initiatingOutfitContext.petType
+      ) {
+        return
+      }
+      outfitRequestContext = { ...outfitRequestContext, authoritative: postOutfitCapability }
+      activeAuthoritativeContextRef.current = postOutfitCapability
       setPetRelationship(nextRelationship)
 
       try {
         const reward = await rewardPetRelationship(
-          currentPetType,
+          outfitRequestContext.petType,
           'dress_up',
-          createRewardIdempotencyKey(currentPetType, 'dress_up'),
+          createRewardIdempotencyKey(outfitRequestContext.petType, 'dress_up'),
+          outfitRequestContext,
         )
+        if (!isMainPanelAccountRequestCurrent(outfitRequestContext)) {
+          return
+        }
         if (reward.relationship) {
           nextRelationship = reward.relationship
           setPetRelationship(nextRelationship)
-          await window.desktopBridge?.cachePetRelationship?.(nextRelationship)
+          const cacheResult = await window.desktopBridge?.cachePetRelationship?.(
+            nextRelationship,
+            outfitRequestContext,
+          )
+          if (!cacheResult?.ok || !isMainPanelAccountRequestCurrent(outfitRequestContext)) {
+            return
+          }
+          outfitRequestContext = {
+            ...outfitRequestContext,
+            authoritative: cacheResult.authoritative,
+          }
+          activeAuthoritativeContextRef.current = cacheResult.authoritative
         }
-        void loadPetDailySummary(currentPetType)
+        void loadPetDailySummary(outfitRequestContext.petType)
         setStatusText(
           language === 'zh-CN'
             ? reward.awarded_xp > 0
@@ -1138,6 +2140,9 @@ function MainPanelApp() {
               : 'Outfit saved.',
         )
       } catch (rewardError) {
+        if (!isMainPanelAccountRequestCurrent(outfitRequestContext)) {
+          return
+        }
         setStatusText(language === 'zh-CN' ? '装扮已保存。' : 'Outfit saved.')
         await logDesktopDebug({
           event: 'main-panel-outfit-reward-failed',
@@ -1145,36 +2150,123 @@ function MainPanelApp() {
         })
       }
     } catch (error) {
-      setStatusText(
+      if (outfitRequestContext && isMainPanelAccountRequestCurrent(outfitRequestContext)) {
+        setStatusText(
         formatError(
           error,
           language === 'zh-CN' ? '保存装扮失败。' : 'Failed to save outfit.',
         ),
-      )
+        )
+      }
     } finally {
-      setSavingOutfit(false)
+      if (outfitRequestContext && isMainPanelAccountRequestCurrent(outfitRequestContext)) {
+        setSavingOutfit(false)
+      }
     }
   }
 
-  const handleReminderCompleted = async () => {
+  const handleReminderCompleted = async (completedReminder, providedRequestContext = null) => {
+    let completionRequestContext = providedRequestContext || {
+      ...getCurrentMainPanelAccountContext(),
+      epoch: accountRequestEpochRef.current,
+    }
+    if (!isMainPanelAccountRequestCurrent(completionRequestContext)) {
+      return
+    }
+    const completionUserId = completionRequestContext.userId
+    const completionPetType = completionRequestContext.petType
+    const isOnboardingCompletion = completionPetType === 'pig'
+      && petOnboardingContextRef.current.petType === 'pig'
+      && Number(petOnboardingContextRef.current.userId) === Number(completionUserId)
+      && Number(completedReminder?.user_id) === Number(completionUserId)
+      && isPetOnboardingReminderMatch(completedReminder?.id, petOnboardingState?.reminder_id)
+    let onboardingRecorded = false
+
+    if (isOnboardingCompletion) {
+      const expectedContextKey = petOnboardingContextKeyRef.current
+      try {
+        const result = await window.desktopBridge?.recordPetOnboardingObservation?.(
+          'pig',
+          PET_ONBOARDING_CAPABILITIES.REMINDER_COMPLETED,
+          { reminderId: completedReminder.id },
+          completionRequestContext,
+        )
+        if (!isMainPanelAccountRequestCurrent(completionRequestContext)) {
+          return
+        }
+        if (result === undefined || result?.ok === false) {
+          if (result !== undefined) {
+            applyPetOnboardingResponse(result, expectedContextKey)
+          }
+          throw new Error(result?.reason || 'onboarding_reminder_completion_rejected')
+        }
+        applyPetOnboardingResponse(result, expectedContextKey)
+        onboardingRecorded = result !== undefined
+      } catch (error) {
+        if (!isMainPanelAccountRequestCurrent(completionRequestContext)) {
+          return
+        }
+        await logDesktopDebug({
+          event: 'main-panel-onboarding-reminder-completion-failed',
+          reminderId: completedReminder.id,
+          reason: error instanceof Error ? error.message : String(error),
+        })
+      }
+    }
+
     try {
-      const nextRelationship = await refreshPetRelationship(currentPetType)
+      const nextRelationship = await getPetRelationship(
+        completionPetType,
+        completionRequestContext,
+      )
+      if (
+        !isMainPanelAccountRequestCurrent(completionRequestContext)
+        || petOnboardingContextRef.current.petType !== completionPetType
+        || Number(petOnboardingContextRef.current.userId) !== Number(completionUserId)
+        || Number(nextRelationship?.user_id) !== Number(completionUserId)
+      ) {
+        return
+      }
       setPetRelationship(nextRelationship)
-      void loadPetDailySummary(currentPetType)
+      const cacheResult = await window.desktopBridge?.cachePetRelationship?.(
+        nextRelationship,
+        completionRequestContext,
+      )
+      if (!cacheResult?.ok || !cacheResult.authoritative) {
+        return
+      }
+      completionRequestContext = {
+        ...completionRequestContext,
+        relationshipId: nextRelationship.id,
+        authoritative: cacheResult.authoritative,
+      }
+      activeAuthoritativeContextRef.current = cacheResult.authoritative
+      if (!isMainPanelAccountRequestCurrent(completionRequestContext)) return
+      void loadPetDailySummary(completionPetType)
       setStatusText(
-        language === 'zh-CN'
-          ? '提醒已完成，亲密度已更新。'
-          : 'Reminder completed. Intimacy updated.',
+        onboardingRecorded
+          ? language === 'zh-CN'
+            ? '这次配合完成了。以后有需要，再叫我提醒你。'
+            : 'We wrapped that up together. Ask me whenever you need another reminder.'
+          : language === 'zh-CN'
+            ? '提醒已完成，亲密度已更新。'
+            : 'Reminder completed. Intimacy updated.',
       )
     } catch (error) {
-      setStatusText(
+      if (isMainPanelAccountRequestCurrent(completionRequestContext)) {
+        setStatusText(
         formatError(
           error,
-          language === 'zh-CN'
-            ? '提醒已完成，但亲密度同步失败。'
-            : 'Reminder completed, but intimacy sync failed.',
+          onboardingRecorded
+            ? language === 'zh-CN'
+              ? '这次配合已经完成，但亲密度同步失败。'
+              : 'We wrapped that up, but intimacy sync failed.'
+            : language === 'zh-CN'
+              ? '提醒已完成，但亲密度同步失败。'
+              : 'Reminder completed, but intimacy sync failed.',
         ),
-      )
+        )
+      }
     }
   }
 
@@ -1262,6 +2354,14 @@ function MainPanelApp() {
   }
 
   const handleLogout = async () => {
+    accountRequestEpochRef.current += 1
+    activeSessionTokenRef.current = null
+    activeSessionSnapshotRef.current = null
+    activeAuthoritativeContextRef.current = null
+    activeUserIdRef.current = null
+    activePetTypeRef.current = 'cat'
+    relationshipRequestRef.current += 1
+    dailySummaryRequestRef.current += 1
     await clearSessionToken()
     setAuthenticated(false)
     setUser(null)
@@ -1271,13 +2371,13 @@ function MainPanelApp() {
     setDocuments([])
     setKnowledgeStatusText('')
     setKnowledgeSources([])
-    relationshipRequestRef.current += 1
-    dailySummaryRequestRef.current += 1
     setPetRelationship(null)
     setPetDailySummary(null)
+    setPetOnboardingState(null)
     await window.desktopBridge?.syncPetState?.({
       source: 'main-panel',
       hasSession: false,
+      userId: null,
       petType: 'cat',
       preferences: {
         pet_type: 'cat',
@@ -1291,6 +2391,14 @@ function MainPanelApp() {
   }
 
   const handleServerSetup = async () => {
+    accountRequestEpochRef.current += 1
+    activeSessionTokenRef.current = null
+    activeSessionSnapshotRef.current = null
+    activeAuthoritativeContextRef.current = null
+    activeUserIdRef.current = null
+    activePetTypeRef.current = 'cat'
+    relationshipRequestRef.current += 1
+    dailySummaryRequestRef.current += 1
     await clearSessionToken()
     setAuthenticated(false)
     setUser(null)
@@ -1300,10 +2408,21 @@ function MainPanelApp() {
     setDocuments([])
     setKnowledgeStatusText('')
     setKnowledgeSources([])
-    relationshipRequestRef.current += 1
-    dailySummaryRequestRef.current += 1
     setPetRelationship(null)
     setPetDailySummary(null)
+    setPetOnboardingState(null)
+    await window.desktopBridge?.syncPetState?.({
+      source: 'main-panel',
+      hasSession: false,
+      userId: null,
+      petType: 'cat',
+      preferences: {
+        pet_type: 'cat',
+        quick_chat_enabled: true,
+        bubble_frequency: 120,
+      },
+      language,
+    })
     await logDesktopDebug({ event: 'main-panel-change-server' })
     setStatusText(t(language, 'updateServerUrlHint'))
   }
@@ -1350,7 +2469,7 @@ function MainPanelApp() {
   }
 
   return (
-    <div className="window-shell">
+    <div className="window-shell" data-e2e="main-dashboard">
       <div className="window-card window-card-main" style={{ gap: 18 }}>
         <div className="panel" style={{ padding: 18 }}>
           <div className="toolbar" style={{ alignItems: 'flex-start' }}>
@@ -1368,16 +2487,23 @@ function MainPanelApp() {
               <button
                 type="button"
                 className="button-secondary"
-                style={{ background: tab === 'chat' ? '#cbd5e1' : '#e2e8f0' }}
-                onClick={() => setTab('chat')}
+                style={{ background: effectiveTab === 'chat' ? '#cbd5e1' : '#e2e8f0' }}
+                onClick={() => {
+                  intentConsumerRef.current.cancel()
+                  setTab('chat')
+                }}
               >
                 {t(language, 'chat')}
               </button>
               <button
                 type="button"
                 className="button-secondary"
-                style={{ background: tab === 'knowledge' ? '#cbd5e1' : '#e2e8f0' }}
-                onClick={() => setTab('knowledge')}
+                style={{ background: effectiveTab === 'knowledge' ? '#cbd5e1' : '#e2e8f0' }}
+                data-e2e="main-tab-knowledge"
+                onClick={() => {
+                  intentConsumerRef.current.cancel()
+                  setTab('knowledge')
+                }}
               >
                 {t(language, 'knowledgeBase')}
               </button>
@@ -1399,7 +2525,7 @@ function MainPanelApp() {
               <button type="button" className="button-secondary" onClick={handleHideWindow}>
                 {t(language, 'hideWindow')}
               </button>
-              <button type="button" className="button-primary" onClick={handleLogout}>
+              <button type="button" className="button-primary" data-e2e="logout" onClick={handleLogout}>
                 {t(language, 'signOut')}
               </button>
             </div>
@@ -1407,7 +2533,7 @@ function MainPanelApp() {
           {statusText && <div style={{ marginTop: 12, fontSize: 13, color: '#475569' }}>{statusText}</div>}
         </div>
 
-        {tab === 'chat' ? (
+        {effectiveTab === 'chat' ? (
           <div style={{ display: 'grid', gridTemplateColumns: '280px 1fr', gap: 18, flex: 1, minHeight: 0 }}>
             <aside className="panel" style={{ padding: 18, overflow: 'auto' }}>
               <PetPreferencePicker
@@ -1423,7 +2549,27 @@ function MainPanelApp() {
                 petType={currentPetType}
                 relationship={petRelationship}
                 loading={petRelationshipLoading}
+                sectionRef={relationshipSummaryRef}
               />
+              {petOnboardingScene && (
+                <PetOnboardingCard
+                  sectionRef={petOnboardingCardRef}
+                  language={language}
+                  scene={petOnboardingScene}
+                  relationship={petRelationship}
+                  busy={petOnboardingBusy}
+                  error={petOnboardingError}
+                  onCreateSampleReminder={() => {
+                    void handleCreateOnboardingReminder()
+                  }}
+                  onSnooze={() => {
+                    void handleSnoozePetOnboarding()
+                  }}
+                  onDismiss={() => {
+                    void handleDismissPetOnboarding()
+                  }}
+                />
+              )}
               <PetDailySummaryPanel
                 language={language}
                 petType={currentPetType}
@@ -1450,15 +2596,28 @@ function MainPanelApp() {
                 }}
               />
               <PendingReminderPanel
-                key={currentPetType}
+                key={`${user?.id || 'anonymous'}:${currentPetType}:${activeSessionSnapshotRef.current?.generation ?? 'none'}`}
                 language={language}
                 petType={currentPetType}
+                accountContext={{
+                  ...getCurrentMainPanelAccountContext(),
+                  relationshipId: petRelationship?.id ?? null,
+                  epoch: accountRequestEpochRef.current,
+                }}
                 onCompleted={handleReminderCompleted}
+                highlightReminderId={petOnboardingIsCurrent
+                  ? petOnboardingState?.reminder_id
+                  : null}
               />
               <RecurringReminderPanel
-                key={`recurring-${currentPetType}`}
+                key={`recurring-${user?.id || 'anonymous'}:${currentPetType}:${activeSessionSnapshotRef.current?.generation ?? 'none'}:${accountRequestEpochRef.current}`}
                 language={language}
                 petType={currentPetType}
+                accountContext={{
+                  ...getCurrentMainPanelAccountContext(),
+                  relationshipId: petRelationship?.id ?? null,
+                  epoch: accountRequestEpochRef.current,
+                }}
               />
               <VoiceSettingsPanel
                 language={language}
