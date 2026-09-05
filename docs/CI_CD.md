@@ -2,9 +2,9 @@
 
 ## 目标
 
-本文档描述仓库当前已经落地并跑通的 GitHub Actions 自动化流程，覆盖：
+本文档描述仓库中的 GitHub Actions 自动化流程。2026-09-05 新增 PostgreSQL 与 Windows Electron 检查，相关脚本已本地验证，新增 job 尚未在远端 Actions 运行。覆盖：
 
-- `CI`：后端测试、前端检查、桌面端 renderer 构建检查
+- `CI`：后端测试、PostgreSQL 迁移恢复检查、前端检查、桌面 renderer 与 Windows Electron 检查
 - `CD`：桌面安装包构建、可选 Docker 镜像推送、可选服务器部署
 
 当前实现以仓库中的以下文件为准：
@@ -35,12 +35,14 @@
 python -m pip install --upgrade pip
 pip install -r requirements.txt
 pytest -q -p no:cacheprovider tests
+python scripts/verify_postgres_release.py --report ../P1L-postgres-verification.json
 ```
 
 说明：
 
 - 测试运行时使用 `tests/.runtime/` 作为隔离目录
 - 使用 `-p no:cacheprovider` 避免 CI 写入 pytest cache
+- PostgreSQL 检查自行创建并销毁无宿主挂载的本地容器；使用合成旧版本数据，不连接业务数据库。报告上传为 `postgres-release-verification`。
 
 ### 2. Frontend Checks
 
@@ -83,8 +85,16 @@ npm run build:renderer
 
 说明：
 
-- `CI` 只检查 `renderer` 构建，不在常规门禁里打 Windows 安装包
-- 真正的安装包构建放到 `CD`
+- 此 Linux job 检查 renderer 构建；Windows job 检查 Electron 行为。
+- NSIS 安装包构建仍放到 `CD`。
+
+### 5. Windows Electron E2E
+
+- Runner：`windows-latest`；Node.js：`22`；工作目录：`desktop/`。
+- 依次运行 `npm ci`、`npm run test:e2e:runner`、`npm run build:renderer`、`npm run test:e2e`、`npm run pack`、`npm run test:packaged`。
+- 九场景使用本机 stub 服务，包含新用户主链、权限续租、重载、账号切换、销毁重建、ACK 拒绝/超时和快捷聊天。
+- packaged smoke 运行 `win-unpacked/Detachym.exe`，检查三个 renderer、E2E 控制关闭、登录与聊天、重启恢复和退出登录持久化。
+- `desktop/artifacts/e2e/` 上传为 `desktop-e2e`，保存七天；不等于 NSIS 安装、真实服务或睡眠唤醒验收。
 
 ## CD 流程
 
@@ -125,7 +135,7 @@ npm run build
 
 产物：
 
-- `desktop/dist/releases/DetachymAgentPet1.0.exe`
+- `desktop/dist/releases/Detachym-<version>-x64.exe`（当前候选版本 `1.1.0-rc.1`）
 
 并上传为 GitHub Actions Artifact：
 

@@ -114,7 +114,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: agentproject-desktop-win
-          path: desktop/dist/releases/DetachymAgentPet1.0.exe
+          path: desktop/dist/releases/Detachym-*-x64.exe
+          if-no-files-found: error
           retention-days: 7
 
   docker-publish:

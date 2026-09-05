@@ -90,6 +90,9 @@ Thumbs.db
 .coverage
 htmlcov/
 .pytest_cache/
+desktop/artifacts/e2e/
+/Detachym-*-x64.exe
+/P1L-release-manifest.json
 
 # MyPy
 .mypy_cache/

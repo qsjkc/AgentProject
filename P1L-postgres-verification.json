@@ -1,0 +1,20 @@
+{
+  "status": "passed",
+  "image": "postgres:14-alpine",
+  "checks": {
+    "empty_to_head": true,
+    "010_to_014_preserves_data": true,
+    "synthetic_upgrade_downgrade_upgrade": true,
+    "postgres_services": {
+      "schema_revision": "014",
+      "orm_columns_present": true,
+      "old_relationship_readable": true,
+      "reward_write": true,
+      "concurrent_milestone_winners": 1,
+      "ack_idempotent": true,
+      "weekly_summary_and_funnel_readable": true
+    },
+    "backup_restore_read_write": true
+  },
+  "container_removed": true
+}

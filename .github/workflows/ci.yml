@@ -53,6 +53,16 @@ jobs:
       - name: Run backend tests
         run: pytest -q -p no:cacheprovider tests
 
+      - name: Verify PostgreSQL migrations, services and restore
+        run: python scripts/verify_postgres_release.py --report ../P1L-postgres-verification.json
+
+      - name: Upload PostgreSQL verification
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: postgres-release-verification
+          path: P1L-postgres-verification.json
+
   frontend-checks:
     name: Frontend Checks
     runs-on: ubuntu-latest
@@ -137,3 +147,31 @@ jobs:
 
       - name: Build renderer
         run: npm run build:renderer
+
+  desktop-e2e:
+    name: Windows Electron E2E (stub backend)
+    runs-on: windows-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - run: npm ci
+      - run: npm run test:e2e:runner
+      - run: npm run build:renderer
+      - run: npm run test:e2e
+      - run: npm run pack
+      - run: npm run test:packaged
+      - name: Upload Electron evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-e2e
+          path: desktop/artifacts/e2e/
+          retention-days: 7
