@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.logging import logger
 from app.core.security import get_current_user
 from app.core.time import utc_now
 from app.models.database import Reminder, get_db
@@ -18,9 +19,34 @@ from app.schemas.reminder import (
     ReminderUpdate,
     normalize_reminder_datetime,
 )
+from app.services.pet_relationships import award_pet_relationship
 
 
 router = APIRouter(prefix="/reminders", tags=["reminders"])
+
+
+async def reward_reminder_action(
+    db: AsyncSession,
+    *,
+    current_user: User,
+    reminder: Reminder,
+    action: str,
+) -> None:
+    try:
+        await award_pet_relationship(
+            db,
+            user_id=current_user.id,
+            pet_type=reminder.pet_type,
+            action=action,
+            idempotency_key=f"reminder:{reminder.id}:{action}",
+        )
+    except Exception:
+        logger.exception(
+            "Failed to award reminder intimacy user_id=%s reminder_id=%s action=%s",
+            current_user.id,
+            reminder.id,
+            action,
+        )
 
 
 async def get_owned_reminder(reminder_id: int, current_user: User, db: AsyncSession) -> Reminder:
@@ -48,6 +74,12 @@ async def create_reminder(
     db.add(reminder)
     await db.commit()
     await db.refresh(reminder)
+    await reward_reminder_action(
+        db,
+        current_user=current_user,
+        reminder=reminder,
+        action="reminder_created",
+    )
     return reminder
 
 
@@ -56,6 +88,7 @@ async def list_reminders(
     pet_type: Optional[PetType] = Query(default=None),
     status: Optional[ReminderStatus] = Query(default=None),
     due_before: Optional[datetime] = Query(default=None),
+    triggered: Optional[bool] = Query(default=None),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -66,6 +99,12 @@ async def list_reminders(
         query = query.where(Reminder.status == status)
     if due_before:
         query = query.where(Reminder.remind_at <= normalize_reminder_datetime(due_before))
+    if triggered is not None:
+        query = query.where(
+            Reminder.triggered_at.is_not(None)
+            if triggered
+            else Reminder.triggered_at.is_(None)
+        )
     query = query.order_by(Reminder.remind_at.asc(), Reminder.id.asc())
     result = await db.execute(query)
     return result.scalars().all()
@@ -105,6 +144,13 @@ async def update_reminder(
             reminder.completed_at = utc_now()
     await db.commit()
     await db.refresh(reminder)
+    if payload.status == "completed":
+        await reward_reminder_action(
+            db,
+            current_user=current_user,
+            reminder=reminder,
+            action="reminder_completed",
+        )
     return reminder
 
 
@@ -115,10 +161,37 @@ async def complete_reminder(
     db: AsyncSession = Depends(get_db),
 ):
     reminder = await get_owned_reminder(reminder_id, current_user, db)
+    if reminder.status == "completed":
+        return reminder
+    if reminder.status == "canceled":
+        raise HTTPException(status_code=409, detail="Canceled reminder cannot be completed")
+
     now = utc_now()
     reminder.status = "completed"
-    reminder.triggered_at = now
+    reminder.triggered_at = reminder.triggered_at or now
     reminder.completed_at = now
     await db.commit()
     await db.refresh(reminder)
+    await reward_reminder_action(
+        db,
+        current_user=current_user,
+        reminder=reminder,
+        action="reminder_completed",
+    )
+    return reminder
+
+
+@router.post("/{reminder_id}/trigger", response_model=ReminderResponse)
+async def trigger_reminder(
+    reminder_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    reminder = await get_owned_reminder(reminder_id, current_user, db)
+    if reminder.status != "pending":
+        raise HTTPException(status_code=409, detail="Only pending reminders can be triggered")
+    if reminder.triggered_at is None:
+        reminder.triggered_at = utc_now()
+        await db.commit()
+        await db.refresh(reminder)
     return reminder

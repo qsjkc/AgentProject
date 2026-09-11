@@ -4,7 +4,19 @@ from typing import AsyncGenerator
 
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    Column,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    JSON,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy import inspect
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import declarative_base, relationship
@@ -23,6 +35,8 @@ LEGACY_APP_TABLES = {
     "chat_messages",
     "documents",
     "reminders",
+    "pet_relationships",
+    "pet_intimacy_events",
 }
 
 engine = create_async_engine(
@@ -130,6 +144,16 @@ async def ensure_legacy_sqlite_schema(conn) -> None:
             "UPDATE documents SET updated_at = created_at WHERE updated_at IS NULL"
         )
 
+    relationship_columns = await get_sqlite_table_columns(conn, "pet_relationships")
+    if relationship_columns and "unlocked_outfits" not in relationship_columns:
+        await conn.exec_driver_sql(
+            "ALTER TABLE pet_relationships ADD COLUMN unlocked_outfits JSON NOT NULL DEFAULT '[]'"
+        )
+    if relationship_columns and "equipped_outfits" not in relationship_columns:
+        await conn.exec_driver_sql(
+            "ALTER TABLE pet_relationships ADD COLUMN equipped_outfits JSON NOT NULL DEFAULT '{}'"
+        )
+
 
 class User(Base):
     __tablename__ = "users"
@@ -149,6 +173,8 @@ class User(Base):
     documents = relationship("Document", back_populates="user", cascade="all, delete-orphan")
     preferences = relationship("UserPreference", back_populates="user", uselist=False, cascade="all, delete-orphan")
     reminders = relationship("Reminder", back_populates="user", cascade="all, delete-orphan")
+    pet_relationships = relationship("PetRelationship", back_populates="user", cascade="all, delete-orphan")
+    pet_intimacy_events = relationship("PetIntimacyEvent", back_populates="user", cascade="all, delete-orphan")
 
 
 class UserPreference(Base):
@@ -237,3 +263,56 @@ class Reminder(Base):
     updated_at = Column(DateTime, default=utc_now, onupdate=utc_now, nullable=False)
 
     user = relationship("User", back_populates="reminders")
+
+
+class PetRelationship(Base):
+    __tablename__ = "pet_relationships"
+    __table_args__ = (
+        UniqueConstraint("user_id", "pet_type", name="uq_pet_relationships_user_pet"),
+        CheckConstraint("intimacy_xp >= 0", name="ck_pet_relationships_intimacy_xp_nonnegative"),
+        CheckConstraint("level >= 1 AND level <= 5", name="ck_pet_relationships_level_range"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    pet_type = Column(String(20), nullable=False, index=True)
+    intimacy_xp = Column(Integer, nullable=False, default=0)
+    level = Column(Integer, nullable=False, default=1)
+    relationship_stage = Column(String(32), nullable=False, default="new_friend")
+    current_mood = Column(String(20), nullable=False, default="idle")
+    unlocked_outfits = Column(JSON, nullable=False, default=list)
+    equipped_outfits = Column(JSON, nullable=False, default=dict)
+    last_active_at = Column(DateTime, nullable=True)
+    last_greeting_at = Column(DateTime, nullable=True)
+    last_level_up_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=utc_now, nullable=False)
+    updated_at = Column(DateTime, default=utc_now, onupdate=utc_now, nullable=False)
+
+    user = relationship("User", back_populates="pet_relationships")
+    intimacy_events = relationship("PetIntimacyEvent", back_populates="relationship", cascade="all, delete-orphan")
+
+
+class PetIntimacyEvent(Base):
+    __tablename__ = "pet_intimacy_events"
+    __table_args__ = (
+        UniqueConstraint("user_id", "idempotency_key", name="uq_pet_intimacy_events_user_key"),
+        CheckConstraint("xp_awarded > 0", name="ck_pet_intimacy_events_xp_positive"),
+        Index("ix_pet_intimacy_events_daily", "relationship_id", "awarded_at"),
+        Index("ix_pet_intimacy_events_action_daily", "relationship_id", "action", "awarded_at"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    relationship_id = Column(
+        Integer,
+        ForeignKey("pet_relationships.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    pet_type = Column(String(20), nullable=False)
+    action = Column(String(32), nullable=False)
+    xp_awarded = Column(Integer, nullable=False)
+    idempotency_key = Column(String(128), nullable=False)
+    awarded_at = Column(DateTime, default=utc_now, nullable=False)
+
+    user = relationship("User", back_populates="pet_intimacy_events")
+    relationship = relationship("PetRelationship", back_populates="intimacy_events")

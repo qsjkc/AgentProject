@@ -1,20 +1,24 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 
-import { getPetAnimationFrames } from '../shared/pet-animation-config'
+import { getPetAnimation } from '../shared/pet-animation-config'
+import { isLoopingPetAnimation } from '../shared/pet-animation-state'
 
 export function PetAnimator({ petType, action, alt, onCycleComplete }) {
-  const frames = useMemo(() => getPetAnimationFrames(petType, action), [petType, action])
+  const animation = useMemo(() => getPetAnimation(petType, action), [petType, action])
+  const { frameCount, frameDuration } = animation
   const [index, setIndex] = useState(0)
   const previousIndexRef = useRef(0)
+  const resettingAnimationRef = useRef(false)
 
   useEffect(() => {
+    resettingAnimationRef.current = true
     previousIndexRef.current = 0
     setIndex(0)
   }, [action, petType])
 
   useEffect(() => {
-    if (frames.length <= 1) {
-      if (action === 'idle') {
+    if (frameCount <= 1) {
+      if (isLoopingPetAnimation(action)) {
         return undefined
       }
       const timer = window.setTimeout(() => {
@@ -24,22 +28,55 @@ export function PetAnimator({ petType, action, alt, onCycleComplete }) {
     }
 
     const timer = window.setInterval(() => {
-      setIndex((current) => (current + 1) % frames.length)
-    }, 110)
+      setIndex((current) => (current + 1) % frameCount)
+    }, frameDuration)
 
     return () => window.clearInterval(timer)
-  }, [action, frames.length, onCycleComplete])
+  }, [action, frameCount, frameDuration, onCycleComplete])
 
   useEffect(() => {
-    if (frames.length <= 1 || action === 'idle') {
+    if (resettingAnimationRef.current) {
+      if (index === 0) {
+        resettingAnimationRef.current = false
+      }
+      return
+    }
+    if (frameCount <= 1 || isLoopingPetAnimation(action)) {
       previousIndexRef.current = index
       return
     }
-    if (index === 0 && previousIndexRef.current === frames.length - 1) {
+    if (index === 0 && previousIndexRef.current === frameCount - 1) {
       onCycleComplete?.(action)
     }
     previousIndexRef.current = index
-  }, [action, frames.length, index, onCycleComplete])
+  }, [action, frameCount, index, onCycleComplete])
 
-  return <img className="pet-image" src={frames[index] || frames[0]} alt={alt} draggable="false" />
+  if (animation.type === 'sprite') {
+    const column = index % animation.columns
+    const row = Math.floor(index / animation.columns)
+    const x = animation.columns > 1 ? (column / (animation.columns - 1)) * 100 : 0
+    const y = animation.rows > 1 ? (row / (animation.rows - 1)) * 100 : 0
+
+    return (
+      <div
+        className="pet-image pet-sprite"
+        role="img"
+        aria-label={alt}
+        style={{
+          backgroundImage: `url(${animation.src})`,
+          backgroundPosition: `${x}% ${y}%`,
+          backgroundSize: `${animation.columns * 100}% ${animation.rows * 100}%`,
+        }}
+      />
+    )
+  }
+
+  return (
+    <img
+      className="pet-image"
+      src={animation.frames[index] || animation.frames[0]}
+      alt={alt}
+      draggable="false"
+    />
+  )
 }

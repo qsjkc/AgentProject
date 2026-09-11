@@ -14,6 +14,8 @@ contextBridge.exposeInMainWorld('desktopBridge', {
   switchPetFromMainPanel: (payload) => ipcRenderer.invoke('desktop:switch-pet-from-main-panel', payload),
   syncPetState: (payload) => ipcRenderer.invoke('desktop:sync-pet-state', payload),
   notifyPetReminderEvent: (payload) => ipcRenderer.invoke('desktop:notify-pet-reminder-event', payload),
+  getCachedPetRelationship: (petType) => ipcRenderer.invoke('desktop:get-cached-pet-relationship', petType),
+  cachePetRelationship: (payload) => ipcRenderer.invoke('desktop:cache-pet-relationship', payload),
   onPetStateChanged: (callback) => {
     const listener = (_event, payload) => callback(payload)
     ipcRenderer.on('desktop:pet-state-changed', listener)
@@ -23,6 +25,11 @@ contextBridge.exposeInMainWorld('desktopBridge', {
     const listener = (_event, payload) => callback(payload)
     ipcRenderer.on('desktop:pet-reminder-event', listener)
     return () => ipcRenderer.removeListener('desktop:pet-reminder-event', listener)
+  },
+  onPetRelationshipChanged: (callback) => {
+    const listener = (_event, payload) => callback(payload)
+    ipcRenderer.on('desktop:pet-relationship-changed', listener)
+    return () => ipcRenderer.removeListener('desktop:pet-relationship-changed', listener)
   },
   toggleAutoLaunch: (enabled) => ipcRenderer.invoke('desktop:toggle-auto-launch', enabled),
   getAppVersion: () => ipcRenderer.invoke('desktop:get-app-version'),

@@ -40,8 +40,13 @@ import pigSleeping03 from '../../../frontend/src/assets/pets/pig/animations/slee
 import pigSleeping04 from '../../../frontend/src/assets/pets/pig/animations/sleeping/frame-04.png'
 import pigSleeping05 from '../../../frontend/src/assets/pets/pig/animations/sleeping/frame-05.png'
 import pigSleeping06 from '../../../frontend/src/assets/pets/pig/animations/sleeping/frame-06.png'
+import pigPatSprite from '../../../frontend/src/assets/pets/pig/animations/pat/sprite.png'
+import pigEatSprite from '../../../frontend/src/assets/pets/pig/animations/eat/sprite.png'
+import pigCleanSprite from '../../../frontend/src/assets/pets/pig/animations/clean/sprite.png'
 
 import { getPetVisual } from './pets'
+
+const DEFAULT_FRAME_DURATION_MS = 110
 
 const pigAnimations = {
   idle: [pigIdle01, pigIdle02, pigIdle03, pigIdle04, pigIdle05, pigIdle06],
@@ -51,6 +56,32 @@ const pigAnimations = {
   confused: [pigConfused01, pigConfused02, pigConfused03, pigConfused04, pigConfused05, pigConfused06],
   reminding: [pigReminding01, pigReminding02, pigReminding03, pigReminding04, pigReminding05, pigReminding06],
   sleeping: [pigSleeping01, pigSleeping02, pigSleeping03, pigSleeping04, pigSleeping05, pigSleeping06],
+  wake: [pigHappy01, pigHappy02, pigHappy03, pigHappy04, pigHappy05, pigHappy06],
+  poke: [pigJump01, pigJump02, pigJump03, pigJump04, pigJump05, pigJump06],
+  drag: [pigWalk01, pigWalk02, pigWalk03, pigWalk04, pigWalk05, pigWalk06],
+  dress_up: [pigIdle01, pigIdle02, pigIdle03, pigIdle04, pigIdle05, pigIdle06],
+  level_up: [pigJump01, pigJump02, pigJump03, pigJump04, pigJump05, pigJump06],
+}
+
+const pigSpriteAnimations = {
+  pat: {
+    src: pigPatSprite,
+    columns: 3,
+    rows: 2,
+    frameCount: 6,
+  },
+  eat: {
+    src: pigEatSprite,
+    columns: 3,
+    rows: 2,
+    frameCount: 6,
+  },
+  clean: {
+    src: pigCleanSprite,
+    columns: 3,
+    rows: 2,
+    frameCount: 6,
+  },
 }
 
 export function getPetAnimationFrames(petType, action) {
@@ -60,4 +91,23 @@ export function getPetAnimationFrames(petType, action) {
 
   const fallbackMood = action === 'happy' || action === 'jump' ? 'happy' : action === 'confused' ? 'sad' : 'idle'
   return [getPetVisual(petType, fallbackMood).image]
+}
+
+export function getPetAnimation(petType, action) {
+  const sprite = petType === 'pig' ? pigSpriteAnimations[action] : null
+  if (sprite) {
+    return {
+      type: 'sprite',
+      frameDuration: DEFAULT_FRAME_DURATION_MS,
+      ...sprite,
+    }
+  }
+
+  const frames = getPetAnimationFrames(petType, action)
+  return {
+    type: 'frames',
+    frames,
+    frameCount: frames.length,
+    frameDuration: DEFAULT_FRAME_DURATION_MS,
+  }
 }

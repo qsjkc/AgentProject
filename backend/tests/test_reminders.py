@@ -90,6 +90,13 @@ async def test_reminders_are_scoped_by_user_pet_and_status(client: AsyncClient):
     assert created.json()["pet_type"] == "pig"
     assert created.json()["status"] == "pending"
 
+    relationship_after_create = await client.get(
+        "/api/v1/pets/pig/relationship",
+        headers=headers,
+    )
+    assert relationship_after_create.status_code == 200
+    assert relationship_after_create.json()["intimacy_xp"] == 4
+
     pig_list = await client.get("/api/v1/reminders?pet_type=pig&status=pending", headers=headers)
     assert pig_list.status_code == 200
     assert [item["id"] for item in pig_list.json()] == [reminder_id]
@@ -102,10 +109,54 @@ async def test_reminders_are_scoped_by_user_pet_and_status(client: AsyncClient):
     assert summary.status_code == 200
     assert summary.json() == {"pet_type": "pig", "pending_count": 1}
 
+    triggered = await client.post(f"/api/v1/reminders/{reminder_id}/trigger", headers=headers)
+    assert triggered.status_code == 200
+    assert triggered.json()["status"] == "pending"
+    assert triggered.json()["triggered_at"] is not None
+
+    relationship_after_trigger = await client.get(
+        "/api/v1/pets/pig/relationship",
+        headers=headers,
+    )
+    assert relationship_after_trigger.status_code == 200
+    assert relationship_after_trigger.json()["intimacy_xp"] == 4
+
+    undelivered = await client.get(
+        "/api/v1/reminders?pet_type=pig&status=pending&triggered=false",
+        headers=headers,
+    )
+    assert undelivered.status_code == 200
+    assert undelivered.json() == []
+
+    awaiting_completion = await client.get(
+        "/api/v1/reminders?pet_type=pig&status=pending&triggered=true",
+        headers=headers,
+    )
+    assert awaiting_completion.status_code == 200
+    assert [item["id"] for item in awaiting_completion.json()] == [reminder_id]
+
     completed = await client.post(f"/api/v1/reminders/{reminder_id}/complete", headers=headers)
     assert completed.status_code == 200
     assert completed.json()["status"] == "completed"
     assert completed.json()["triggered_at"] is not None
+
+    relationship_after_complete = await client.get(
+        "/api/v1/pets/pig/relationship",
+        headers=headers,
+    )
+    assert relationship_after_complete.status_code == 200
+    assert relationship_after_complete.json()["intimacy_xp"] == 14
+
+    completed_again = await client.post(
+        f"/api/v1/reminders/{reminder_id}/complete",
+        headers=headers,
+    )
+    assert completed_again.status_code == 200
+    relationship_after_duplicate = await client.get(
+        "/api/v1/pets/pig/relationship",
+        headers=headers,
+    )
+    assert relationship_after_duplicate.json()["intimacy_xp"] == 14
 
     empty = await client.get("/api/v1/reminders?pet_type=pig&status=pending", headers=headers)
     assert empty.status_code == 200
@@ -151,6 +202,13 @@ async def test_reminders_require_auth_and_can_be_canceled(client: AsyncClient):
     assert canceled.json()["status"] == "canceled"
     assert canceled.json()["completed_at"] is not None
 
+    relationship = await client.get(
+        "/api/v1/pets/cat/relationship",
+        headers=headers,
+    )
+    assert relationship.status_code == 200
+    assert relationship.json()["intimacy_xp"] == 4
+
     pending = await client.get("/api/v1/reminders?pet_type=cat&status=pending", headers=headers)
     assert pending.status_code == 200
     assert pending.json() == []
@@ -172,7 +230,7 @@ async def test_due_before_accepts_z_timestamp(client: AsyncClient):
     assert created.status_code == 200
 
     due = await client.get(
-        "/api/v1/reminders?pet_type=pig&status=pending&due_before=2026-07-06T07:00:01Z",
+        "/api/v1/reminders?pet_type=pig&status=pending&due_before=2026-07-06T07:00:01Z&triggered=false",
         headers=headers,
     )
     assert due.status_code == 200

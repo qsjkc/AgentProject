@@ -54,6 +54,7 @@ class Settings(BaseSettings):
     DESKTOP_RELEASE_VERSION: str = "DetachymAgentPet1.0"
     DESKTOP_RELEASE_FILE: str = "DetachymAgentPet1.0.exe"
     DESKTOP_DOWNLOAD_BASE: str = "/download"
+    PET_REWARD_TIMEZONE: str = "Asia/Shanghai"
 
     VOLC_AI_RTC_APP_ID: Optional[str] = None
     VOLC_AI_RTC_APP_KEY: Optional[str] = None

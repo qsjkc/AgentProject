@@ -2,6 +2,8 @@ from app.models.database import (
     ChatMessage,
     ChatSession,
     Document,
+    PetIntimacyEvent,
+    PetRelationship,
     User,
     UserPreference,
     VerificationCode,
@@ -14,4 +16,6 @@ __all__ = [
     "ChatSession",
     "ChatMessage",
     "Document",
+    "PetIntimacyEvent",
+    "PetRelationship",
 ]

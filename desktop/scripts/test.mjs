@@ -5,8 +5,22 @@ import { getPetMessagePool, normalizeLanguage, t } from '../src/shared/i18n.js'
 import {
   ANIMATION_ACTIONS,
   createInitialPetAnimationState,
+  isLoopingPetAnimation,
   petAnimationReducer,
 } from '../src/shared/pet-animation-state.js'
+import { getPetCareActions, getPetCareToolbarLabel } from '../src/shared/pet-care-actions.js'
+import { getPetRelationshipEventCopy } from '../src/shared/pet-personality.js'
+import {
+  createRewardIdempotencyKey,
+  didEquippedOutfitChange,
+  getRelationshipStageLabel,
+  normalizePetRelationship,
+} from '../src/shared/pet-relationship.js'
+import {
+  getPetOutfitCatalog,
+  getPetOutfitSlotLabel,
+  normalizePetOutfitState,
+} from '../src/shared/pet-outfits.js'
 import { parseOneTimeReminder } from '../src/shared/reminder-parser.js'
 import {
   decodeRtsSubtitlePayload,
@@ -179,6 +193,29 @@ assert.equal(isVoiceAuthError(new Error('other error')), false)
 
 const initialPetAnimation = createInitialPetAnimationState()
 assert.equal(initialPetAnimation.action, ANIMATION_ACTIONS.IDLE)
+assert.deepEqual(
+  new Set(Object.values(ANIMATION_ACTIONS)),
+  new Set([
+    'idle',
+    'walk',
+    'jump',
+    'happy',
+    'confused',
+    'reminding',
+    'sleeping',
+    'wake',
+    'poke',
+    'drag',
+    'pat',
+    'eat',
+    'clean',
+    'dress_up',
+    'level_up',
+  ]),
+)
+assert.equal(isLoopingPetAnimation(ANIMATION_ACTIONS.IDLE), true)
+assert.equal(isLoopingPetAnimation(ANIMATION_ACTIONS.SLEEPING), true)
+assert.equal(isLoopingPetAnimation(ANIMATION_ACTIONS.WAKE), false)
 
 const remindingPetAnimation = petAnimationReducer(initialPetAnimation, {
   type: 'REMINDER_DUE',
@@ -196,6 +233,141 @@ assert.equal(released.locked, false)
 
 const confused = petAnimationReducer(initialPetAnimation, { type: 'REMINDER_PARSE_FAILED' })
 assert.equal(confused.action, ANIMATION_ACTIONS.CONFUSED)
+
+const normalizedRelationship = normalizePetRelationship({
+  pet_type: 'pig',
+  intimacy_xp: 145,
+  level: 2,
+  relationship_stage: 'getting_familiar',
+  current_mood: 'idle',
+  progress: {
+    current: 45,
+    required: 160,
+    percent: 28.12,
+  },
+})
+assert.equal(normalizedRelationship.pet_type, 'pig')
+assert.equal(normalizedRelationship.level, 2)
+assert.deepEqual(normalizedRelationship.progress, {
+  current: 45,
+  required: 160,
+  percent: 28.12,
+})
+assert.equal(getRelationshipStageLabel('zh-CN', 'getting_familiar'), '有点熟')
+assert.equal(getRelationshipStageLabel('en', 'deep_bond'), 'Deeply bonded')
+assert.match(createRewardIdempotencyKey('pig', 'poke'), /^pet:pig:poke:/)
+assert.deepEqual(
+  getPetOutfitCatalog('pig', 'zh-CN').map(({ id, slot, unlockLevel, label }) => ({
+    id,
+    slot,
+    unlockLevel,
+    label,
+  })),
+  [
+    { id: 'pig_basic_scarf', slot: 'neck', unlockLevel: 1, label: '基础小围巾' },
+    { id: 'pig_sleep_cap', slot: 'head', unlockLevel: 2, label: '软绵睡帽' },
+    { id: 'pig_bell', slot: 'side', unlockLevel: 3, label: '提醒铃铛' },
+    { id: 'pig_work_badge', slot: 'side', unlockLevel: 4, label: '搭档工作牌' },
+    { id: 'pig_star_hat', slot: 'head', unlockLevel: 5, label: '星星小帽' },
+  ],
+)
+assert.equal(getPetOutfitSlotLabel('neck', 'en'), 'Neck')
+assert.deepEqual(
+  normalizePetOutfitState(
+    {
+      unlocked_outfit_ids: ['pig_basic_scarf', 'unknown'],
+      equipped_outfits: {
+        neck: 'pig_basic_scarf',
+        head: 'pig_star_hat',
+      },
+    },
+    'pig',
+    2,
+  ),
+  {
+    unlocked_outfit_ids: ['pig_basic_scarf', 'pig_sleep_cap'],
+    equipped_outfits: {
+      neck: 'pig_basic_scarf',
+    },
+  },
+)
+
+const levelUpAnimation = petAnimationReducer(initialPetAnimation, { type: 'LEVEL_UP' })
+assert.equal(levelUpAnimation.action, ANIMATION_ACTIONS.LEVEL_UP)
+assert.equal(levelUpAnimation.locked, true)
+
+const draggingAnimation = petAnimationReducer(initialPetAnimation, { type: 'PET_DRAG_START' })
+assert.equal(draggingAnimation.action, ANIMATION_ACTIONS.DRAG)
+const dragReleasedAnimation = petAnimationReducer(draggingAnimation, { type: 'PET_DRAG_RELEASE' })
+assert.equal(dragReleasedAnimation.action, ANIMATION_ACTIONS.HAPPY)
+
+assert.equal(
+  petAnimationReducer(initialPetAnimation, { type: 'PET_CLICK' }).action,
+  ANIMATION_ACTIONS.POKE,
+)
+assert.equal(
+  petAnimationReducer(initialPetAnimation, { type: 'PET_DRESS_UP' }).action,
+  ANIMATION_ACTIONS.DRESS_UP,
+)
+const sleepingAnimation = petAnimationReducer(initialPetAnimation, { type: 'SLEEP' })
+assert.equal(
+  petAnimationReducer(sleepingAnimation, { type: 'WAKE' }).action,
+  ANIMATION_ACTIONS.WAKE,
+)
+assert.equal(
+  petAnimationReducer(initialPetAnimation, { type: 'WAKE' }).action,
+  ANIMATION_ACTIONS.IDLE,
+)
+
+assert.equal(
+  petAnimationReducer(initialPetAnimation, { type: 'PET_PAT' }).action,
+  ANIMATION_ACTIONS.PAT,
+)
+assert.equal(
+  petAnimationReducer(initialPetAnimation, { type: 'PET_FEED' }).action,
+  ANIMATION_ACTIONS.EAT,
+)
+assert.equal(
+  petAnimationReducer(initialPetAnimation, { type: 'PET_CLEAN' }).action,
+  ANIMATION_ACTIONS.CLEAN,
+)
+
+const pigCareActions = getPetCareActions('zh-CN', 'pig')
+assert.deepEqual(
+  pigCareActions.map(({ id, animationEvent, rewardAction }) => ({
+    id,
+    animationEvent,
+    rewardAction,
+  })),
+  [
+    { id: 'pat', animationEvent: 'PET_PAT', rewardAction: 'pat' },
+    { id: 'feed', animationEvent: 'PET_FEED', rewardAction: 'feed' },
+    { id: 'clean', animationEvent: 'PET_CLEAN', rewardAction: 'clean' },
+  ],
+)
+assert.equal(pigCareActions[0].label, '摸摸')
+assert.match(pigCareActions[1].message, /小饼干/)
+assert.equal(getPetCareActions('zh-CN', 'cat').length, 0)
+assert.equal(getPetCareToolbarLabel('en'), 'Care for pig')
+assert.match(getPetRelationshipEventCopy('pig', 'zh-CN', 'wake'), /醒啦/)
+assert.match(
+  getPetRelationshipEventCopy('pig', 'zh-CN', 'level_up', { level: 4 }),
+  /Lv\.4/,
+)
+assert.equal(
+  didEquippedOutfitChange(
+    { outfit: { equipped_outfits: { neck: 'pig_basic_scarf' } } },
+    { outfit: { equipped_outfits: { neck: 'pig_basic_scarf' } } },
+  ),
+  false,
+)
+assert.equal(
+  didEquippedOutfitChange(
+    { outfit: { equipped_outfits: { neck: 'pig_basic_scarf' } } },
+    { outfit: { equipped_outfits: { head: 'pig_sleep_cap' } } },
+  ),
+  true,
+)
 
 const fixedNow = new Date('2026-07-06T10:00:00+08:00')
 
