@@ -1,0 +1,28 @@
+{
+  "origin": "https://detachym.top",
+  "readiness": {
+    "status": "ready",
+    "checks": {
+      "database": "ok",
+      "storage": {
+        "uploads": true,
+        "chroma": true,
+        "downloads": true
+      }
+    }
+  },
+  "release": {
+    "platform": "win-x64",
+    "version": "1.1.0-rc.1",
+    "filename": "Detachym-1.1.0-rc.1-x64.exe",
+    "download_url": "/download/Detachym-1.1.0-rc.1-x64.exe",
+    "available": true,
+    "published_at": "2026-09-11T12:01:20.229466"
+  },
+  "web_assets_checked": 2,
+  "status": "passed",
+  "download_bytes": 128674973,
+  "download_sha256": "80f542484348d9a2cf45d7cf6d82450a540f89b1cb9ca3266660df136596d571",
+  "verified_at_utc": "2026-09-11T12:07:41.822427+00:00",
+  "source_commit": "91afaf2bf3c35a6ff8a4860697f0fa115261cc5c"
+}

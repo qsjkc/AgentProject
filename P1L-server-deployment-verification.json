@@ -1,0 +1,20 @@
+{
+  "origin": "https://detachym.top",
+  "status": "passed",
+  "checks": {
+    "schema_014": true,
+    "login_preferences_and_account_isolation": true,
+    "reward_idempotency_concurrent_claim_and_ack": true,
+    "reminder_persist_trigger_complete_and_isolation": true,
+    "summaries_recurrence_and_admin_boundary": true
+  },
+  "test_users_removed": true,
+  "release": {
+    "version": "1.1.0-rc.1",
+    "filename": "Detachym-1.1.0-rc.1-x64.exe",
+    "available": true
+  },
+  "deployed_at_utc": "2026-09-11T12:01:34.356923+00:00",
+  "source_commit": "91afaf2bf3c35a6ff8a4860697f0fa115261cc5c",
+  "ci_run": "https://github.com/qsjkc/AgentProject/actions/runs/33958435466"
+}
