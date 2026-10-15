@@ -14,6 +14,8 @@ import { REQUIRED_SELECTORS as S } from './e2e/p1k-scenarios.mjs'
 const root = fileURLToPath(new URL('../..', import.meta.url))
 const desktop = join(root, 'desktop')
 const packaged = process.argv.includes('--packaged')
+const timeZoneOverride = process.argv.find((value) => value.startsWith('--timezone='))?.slice('--timezone='.length)
+if (timeZoneOverride) new Intl.DateTimeFormat('en', { timeZone: timeZoneOverride })
 const expectedVersion = JSON.parse(await readFile(join(desktop, 'package.json'), 'utf8')).version
 const runtime = await mkdtemp(join(tmpdir(), 'detachym-e2e-real-'))
 const userData = await mkdtemp(join(tmpdir(), 'detachym-e2e-user-'))
@@ -102,6 +104,7 @@ async function launchDesktop() {
     const client = await CdpClient.connect(target.webSocketDebuggerUrl)
     pages[entry] = client
     await client.enable()
+    if (timeZoneOverride) await client.send('Emulation.setTimezoneOverride', { timezoneId: timeZoneOverride })
     await client.waitForReady()
     assert(await client.evaluate('!!window.desktopBridge && !window.desktopBridge.e2e'), 'No test-control bridge allowed')
     if (packaged) assert(target.url.includes('app.asar'), 'Must load packaged renderer')
@@ -200,16 +203,19 @@ try {
   await record('quick chat creates recurring reminder with Chinese minutes', async () => {
     await pages['pet.html'].evaluate('window.desktopBridge.openQuickChat()')
     const quick = pages['quick-chat.html']
+    const deviceTimeZone = await quick.evaluate('Intl.DateTimeFormat().resolvedOptions().timeZone')
     await quick.input(S.quickChatInput, '每天上午九点十五分提醒我喝水')
     await quick.click(S.quickChatSend)
     const recurring = await waitFor(async () => (await api('/reminders?pet_type=pig', tokenA))
       .find((row) => row.series_id), { description: 'real recurring reminder from quick chat' })
     assert(recurring.title === '喝水' && recurring.recurrence_type === 'daily', 'Incorrect recurring reminder')
-    const localTime = new Date(recurring.remind_at).toLocaleTimeString('en-GB', { timeZone: 'Asia/Shanghai' })
+    const series = (await api('/reminder-series?pet_type=pig', tokenA)).find((item) => item.id === recurring.series_id)
+    assert(series?.timezone === deviceTimeZone, `Recurring reminder did not retain the desktop timezone: ${series?.timezone} / ${deviceTimeZone}`)
+    const localTime = new Date(recurring.remind_at).toLocaleTimeString('en-GB', { timeZone: deviceTimeZone })
     assert(localTime === '09:15:00', `Chinese minutes lost: ${localTime}`)
     await quick.screenshot(join(artifacts, 'recurring-reminder.png'))
     await pages['pet.html'].evaluate('window.desktopBridge.openMainPanel()')
-    return { reminderId: recurring.id, seriesId: recurring.series_id, localTime }
+    return { reminderId: recurring.id, seriesId: recurring.series_id, localTime, deviceTimeZone }
   })
   await record('relative reminder correction and real persistence', async () => {
     const main = pages['main-panel.html']
