@@ -1,66 +1,53 @@
-import { useEffect, useState } from 'react'
+import { useDesktopRelease } from '../hooks/useDesktopRelease'
+import { resolveDownloadUrl } from '../services'
 
-import { publicApi, resolveDownloadUrl } from '../services'
-import type { DesktopRelease } from '../types'
+const steps = [
+  { title: '安装到 Windows 电脑', description: '下载安装包，打开文件，按照安装向导完成安装。' },
+  { title: '登录你的 Detachym 账号', description: '打开客户端并登录。还没有账号的话，可以先在网站注册。' },
+  { title: '和桌面上的伙伴打个招呼', description: '新账号默认由小猪陪伴。已有账号会保留原来的选择，也可以在偏好中换成小猪。从一次摸摸开始熟悉彼此。' },
+]
 
 export default function Download() {
-  const [release, setRelease] = useState<DesktopRelease | null>(null)
-  const [loading, setLoading] = useState(true)
-
-  useEffect(() => {
-    publicApi
-      .getWindowsRelease()
-      .then(setRelease)
-      .finally(() => setLoading(false))
-  }, [])
+  const { release, loading, error, retry } = useDesktopRelease()
 
   return (
-    <div className="grid gap-8 lg:grid-cols-[1fr_0.85fr]">
-      <section className="rounded-[2rem] border border-slate-200 bg-white/90 p-8 shadow-[0_24px_80px_rgba(15,23,42,0.08)]">
-        <div className="text-xs uppercase tracking-[0.3em] text-slate-500">Release Channel</div>
-        <h1 className="mt-4 text-4xl font-semibold text-slate-950">Detachym Windows 桌宠客户端下载</h1>
-        <p className="mt-4 max-w-2xl text-sm leading-7 text-slate-600">
-          第一版安装包名称固定为 <code>DetachymAgentPet1.0</code>，面向 Windows x64，包含透明桌宠、快捷聊天、主面板、托盘菜单和云端账号接入。
-        </p>
-
-        <div className="mt-8 rounded-[1.75rem] bg-slate-950 p-6 text-white">
+    <div className="download-page">
+      <section aria-labelledby="download-title">
+        <span className="home-eyebrow">BRING A LITTLE FRIEND HOME</span>
+        <h1 id="download-title">把小猪，<br />带到你的桌面。</h1>
+        <p className="download-intro">一个安静的角落，一点有回应的陪伴。<br />下载 Detachym，让今天的相处从这里开始。</p>
+        <div className="download-release">
+          <span className="download-platform"><span aria-hidden="true">⊞</span> Windows x64</span>
           {loading ? (
-            <div className="text-sm text-slate-300">正在检查发布状态...</div>
-          ) : release ? (
-            <div className="space-y-4">
-              <div className="text-sm text-slate-300">当前版本</div>
-              <div className="text-3xl font-semibold">{release.version}</div>
-              <div className="text-sm text-slate-400">{release.filename}</div>
-              <div className="text-sm text-slate-400">
-                {release.published_at
-                  ? `发布时间：${new Date(release.published_at).toLocaleString()}`
-                  : '尚未检测到发布时间'}
-              </div>
-              <a
-                href={release.available ? resolveDownloadUrl(release) : '#'}
-                className={`inline-flex rounded-full px-6 py-3 text-sm font-medium transition ${
-                  release.available
-                    ? 'bg-white text-slate-950 hover:bg-slate-200'
-                    : 'cursor-not-allowed bg-slate-700 text-slate-300'
-                }`}
-              >
-                {release.available ? '下载 Windows 安装包' : '安装包暂未发布'}
-              </a>
+            <p role="status" className="download-release-status">正在检查发布状态...</p>
+          ) : release && !error ? (
+            <div className="download-release-content">
+              <div className="download-version-label">当前版本</div>
+              <h2>{release.version}</h2>
+              <p className="download-filename">{release.filename}</p>
+              <p className="download-published">{release.published_at ? `发布时间：${new Date(release.published_at).toLocaleString()}` : '尚未检测到发布时间'}</p>
+              {release.available ? (
+                <a href={resolveDownloadUrl(release)} className="companion-button companion-button-primary">下载 Windows 安装包 <span aria-hidden="true">↓</span></a>
+              ) : (
+                <span role="status" aria-disabled="true" className="download-unavailable">安装包暂未发布</span>
+              )}
+              <p className="download-footnote">请在 Windows 64 位电脑上安装。当前不提供 macOS 或手机版本。</p>
             </div>
           ) : (
-            <div className="text-sm text-slate-300">无法获取版本信息，请稍后重试。</div>
+            <div className="download-release-content">
+              <p role="alert" className="download-release-status">无法获取版本信息，请稍后重试。</p>
+              <button type="button" onClick={() => void retry()} className="companion-button companion-button-primary">重新检查 <span aria-hidden="true">↻</span></button>
+            </div>
           )}
         </div>
       </section>
-
-      <section className="rounded-[2rem] border border-slate-200 bg-white/90 p-8">
-        <div className="text-xs uppercase tracking-[0.3em] text-slate-500">Install Notes</div>
-        <ul className="mt-6 space-y-4 text-sm leading-7 text-slate-600">
-          <li>安装包格式为 NSIS，适用于 Windows x64。</li>
-          <li>首次启动需要登录 Detachym 云端账号，桌宠偏好会从服务器同步。</li>
-          <li>桌宠位置、静音、开机启动等本机设置保存在客户端本地。</li>
-          <li>版本更新策略为“检查更新并提示下载”，首版不做静默自动更新。</li>
-        </ul>
+      <section className="download-guide" aria-labelledby="download-guide-title">
+        <span className="home-eyebrow">YOUR FIRST HELLO</span>
+        <h2 id="download-guide-title">很快，就能见面。</h2>
+        <ol className="download-steps">
+          {steps.map((step, index) => <li key={step.title}><span className="download-step-number" aria-hidden="true">0{index + 1}</span><div><h3>{step.title}</h3><p>{step.description}</p></div></li>)}
+        </ol>
+        <div className="download-good-to-know"><h3>按照你的节奏相处</h3><p>静音、开机启动和桌宠位置可以在客户端调整。想专心时，也可以先把桌宠收起来。</p><p>使用同一账号时，桌宠偏好会与云端同步。新版本会在本页提供，何时下载和安装由你决定。</p></div>
       </section>
     </div>
   )

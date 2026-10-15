@@ -2,6 +2,7 @@ import { FormEvent, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 
 import { useCooldownTimer } from '../hooks/useCooldownTimer'
+import { useAuthFormOperations } from '../hooks/useAuthFormOperations'
 import { getErrorMessage } from '../lib/errors'
 import { authApi } from '../services'
 import { useAuthStore } from '../stores'
@@ -26,7 +27,7 @@ function translateRegisterError(message: string) {
 
 export default function Register() {
   const navigate = useNavigate()
-  const { setToken, setUser } = useAuthStore()
+  const { setToken } = useAuthStore()
   const [form, setForm] = useState({
     username: '',
     email: '',
@@ -35,36 +36,42 @@ export default function Register() {
   })
   const [message, setMessage] = useState('')
   const [error, setError] = useState('')
-  const [loading, setLoading] = useState(false)
-  const [sendingCode, setSendingCode] = useState(false)
+  const [createdAccount, setCreatedAccount] = useState<{ username: string; password: string } | null>(null)
+  const { begin, busy } = useAuthFormOperations()
+  const loading = busy === 'submit'
+  const sendingCode = busy === 'code'
   const { isCountingDown, formattedTime, start } = useCooldownTimer(180)
 
   const updateField = (field: keyof typeof form, value: string) =>
     setForm((current) => ({ ...current, [field]: value }))
 
   const handleSendCode = async () => {
+    if (createdAccount || isCountingDown) return
     if (!form.email.trim()) {
       setError('请先输入邮箱，再发送验证码。')
       setMessage('')
       return
     }
 
-    setSendingCode(true)
+    const operation = begin('code')
+    if (!operation) return
     setError('')
     setMessage('')
     try {
       await authApi.sendVerificationCode(form.email)
+      if (!operation.isCurrent()) return
       setMessage('验证码已发送，请检查邮箱。')
       start()
     } catch (err) {
-      setError(translateRegisterError(getErrorMessage(err, '验证码发送失败，请稍后重试。')))
+      if (operation.isCurrent()) setError(translateRegisterError(getErrorMessage(err, '验证码发送失败，请稍后重试。')))
     } finally {
-      setSendingCode(false)
+      operation.finish()
     }
   }
 
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault()
+    if (createdAccount) return
 
     if (form.password.trim().length < 8 || form.password.length > 72) {
       setError('密码需为 8 到 72 位字符。')
@@ -72,39 +79,85 @@ export default function Register() {
       return
     }
 
-    setLoading(true)
+    const operation = begin('submit')
+    if (!operation) return
+    const submittedForm = { ...form }
+    let registered = false
     setError('')
     setMessage('')
     try {
-      await authApi.register(form)
+      await authApi.register(submittedForm)
+      registered = true
+      if (!operation.isCurrent()) return
+      setCreatedAccount({ username: submittedForm.username, password: submittedForm.password })
+      setForm((current) => ({ ...current, password: '', verification_code: '' }))
+      setMessage('账号已创建，正在为你登录。')
       const token = await authApi.login({
-        username: form.username,
-        password: form.password,
+        username: submittedForm.username,
+        password: submittedForm.password,
       })
+      if (!operation.isCurrent()) return
       setToken(token.access_token)
-      const user = await authApi.getMe()
-      setUser(user)
-      navigate('/account')
+      navigate('/account', { replace: true })
     } catch (err) {
-      setToken(null)
-      setUser(null)
-      setError(translateRegisterError(getErrorMessage(err, '注册失败，请检查输入信息和验证码。')))
+      if (!operation.isCurrent()) return
+      if (registered) {
+        setMessage('账号已创建，无需重新注册。')
+        setError(getErrorMessage(err, '暂时未能自动登录，请重试登录。'))
+      } else {
+        setError(translateRegisterError(getErrorMessage(err, '注册失败，请检查输入信息和验证码。')))
+      }
     } finally {
-      setLoading(false)
+      operation.finish()
+    }
+  }
+
+  const handleRetryLogin = async () => {
+    if (!createdAccount) return
+    const operation = begin('submit')
+    if (!operation) return
+    setError('')
+    setMessage('账号已创建，正在为你登录。')
+    try {
+      const token = await authApi.login(createdAccount)
+      if (!operation.isCurrent()) return
+      setToken(token.access_token)
+      navigate('/account', { replace: true })
+    } catch (err) {
+      if (!operation.isCurrent()) return
+      setMessage('账号已创建，无需重新注册。')
+      setError(getErrorMessage(err, '暂时无法登录，请稍后重试。'))
+    } finally {
+      operation.finish()
     }
   }
 
   return (
-    <div className="mx-auto max-w-3xl rounded-[2rem] border border-slate-200 bg-white/90 p-8 shadow-[0_24px_80px_rgba(15,23,42,0.08)]">
+    <div className="consumer-auth mx-auto max-w-3xl rounded-[2rem] border border-slate-200 bg-white/90 p-8 shadow-[0_24px_80px_rgba(15,23,42,0.08)]">
       <div className="mb-8">
-        <div className="text-xs uppercase tracking-[0.3em] text-slate-500">Account Register</div>
-        <h1 className="mt-4 text-4xl font-semibold text-slate-950">创建 Detachym 账号</h1>
+        <div className="text-xs uppercase tracking-[0.3em] text-slate-500">YOUR FIRST HELLO</div>
+        <h1 className="mt-4 text-4xl font-semibold text-slate-950">从认识彼此开始</h1>
         <p className="mt-3 max-w-2xl text-sm leading-7 text-slate-600">
-          注册完成后会自动进入用户中心，你可以继续配置桌宠偏好并下载 Windows 安装包。
+          创建账号后，小猪会先来陪你。下载 Windows 客户端并登录，就能在桌面见面；也可以在账户里换成喜欢的猫咪或小狗。
         </p>
       </div>
 
-      <form onSubmit={handleSubmit} className="grid gap-4 md:grid-cols-2">
+      {createdAccount ? (
+        <section className="space-y-5 rounded-[1.5rem] border border-emerald-200 bg-emerald-50 p-6">
+          <h2 className="text-xl font-semibold text-slate-950">账号已创建</h2>
+          <p className="text-sm leading-6 text-slate-700">欢迎，{createdAccount.username}。你的账号已经准备好了。</p>
+          <p role="status" className="text-sm text-emerald-800">{message}</p>
+          {error && <p role="alert" className="rounded-2xl bg-rose-50 px-4 py-3 text-sm text-rose-700">{error}</p>}
+          <div className="flex flex-wrap items-center gap-4">
+            <button type="button" onClick={() => void handleRetryLogin()} disabled={Boolean(busy)} className="rounded-2xl bg-slate-950 px-6 py-3 text-sm font-medium text-white transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-60">
+              {loading ? '登录中...' : '重试登录'}
+            </button>
+            <Link to="/login" className="text-sm font-medium text-slate-950">前往登录页</Link>
+          </div>
+        </section>
+      ) : <form onSubmit={handleSubmit} className="grid gap-4 md:grid-cols-2">
+        <fieldset disabled={Boolean(busy)} className="contents">
+        <legend className="sr-only">创建账号</legend>
         <label className="block md:col-span-1">
           <span className="mb-2 block text-sm text-slate-600">用户名</span>
           <input
@@ -146,7 +199,7 @@ export default function Register() {
             <button
               type="button"
               onClick={handleSendCode}
-              disabled={sendingCode || isCountingDown}
+              disabled={Boolean(busy) || isCountingDown}
               className="w-full rounded-2xl border border-slate-300 px-4 py-3 text-sm text-slate-700 transition hover:border-slate-950 hover:text-slate-950 disabled:cursor-not-allowed disabled:opacity-60"
             >
               {sendingCode ? '发送中...' : isCountingDown ? `${formattedTime} 后重试` : '发送验证码'}
@@ -172,8 +225,8 @@ export default function Register() {
           <p className="mt-2 text-xs leading-6 text-slate-500">建议使用字母、数字和符号组合，方便后续长期使用。</p>
         </label>
 
-        {error && <div className="rounded-2xl bg-rose-50 px-4 py-3 text-sm text-rose-700 md:col-span-2">{error}</div>}
-        {message && <div className="rounded-2xl bg-emerald-50 px-4 py-3 text-sm text-emerald-700 md:col-span-2">{message}</div>}
+        {error && <div role="alert" className="rounded-2xl bg-rose-50 px-4 py-3 text-sm text-rose-700 md:col-span-2">{error}</div>}
+        {message && <div role="status" className="rounded-2xl bg-emerald-50 px-4 py-3 text-sm text-emerald-700 md:col-span-2">{message}</div>}
 
         <div className="md:col-span-2 flex flex-wrap items-center justify-between gap-4 pt-2">
           <p className="text-sm text-slate-500">
@@ -184,13 +237,14 @@ export default function Register() {
           </p>
           <button
             type="submit"
-            disabled={loading}
+            disabled={Boolean(busy)}
             className="rounded-2xl bg-slate-950 px-6 py-3 font-medium text-white transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-60"
           >
-            {loading ? '注册中...' : '注册并进入控制台'}
+            {loading ? '注册中...' : '创建账号，开始认识'}
           </button>
         </div>
-      </form>
+        </fieldset>
+      </form>}
     </div>
   )
 }

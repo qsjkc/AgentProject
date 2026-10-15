@@ -2,15 +2,86 @@
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Detachym</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <meta name="description" content="Detachym 是住在 Windows 桌面上的小小伙伴。摸摸小猪、安排轻提醒、积累亲密度，让普通的一天多一点陪伴。" />
+    <meta name="theme-color" content="#fcfaf6" />
+    <title>Detachym · 日常里的小小陪伴</title>
+    <style>
+      body { margin: 0; background: #fcfaf6; }
+      #app-startup { box-sizing: border-box; min-height: 100vh; padding: 64px 24px; color: #263c32; font-family: 'PingFang SC', 'Microsoft YaHei UI', system-ui, sans-serif; }
+      #app-startup section { box-sizing: border-box; max-width: 768px; margin: auto; padding: 32px; border: 1px solid #e4e8dd; border-radius: 24px; background: #fffdfa; }
+      #app-startup .startup-brand { color: #697d67; font-size: 12px; letter-spacing: 2px; }
+      #app-startup h1 { margin: 16px 0; font-size: 24px; line-height: 1.5; }
+      #app-startup p { color: #71786d; font-size: 14px; line-height: 2; }
+      #startup-actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 32px; }
+      #app-startup [hidden] { display: none; }
+      #app-startup a, #app-startup button { box-sizing: border-box; display: inline-flex; align-items: center; justify-content: center; min-height: 52px; padding: 14px 24px; border: 1px solid #dfe5d7; border-radius: 30px; color: #263c32; font: 600 13px 'PingFang SC', 'Microsoft YaHei UI', system-ui, sans-serif; text-decoration: none; cursor: pointer; }
+      #app-startup button { color: #fff; background: #365b43; border-color: #365b43; }
+      #app-startup a:focus-visible, #app-startup button:focus-visible { outline: 3px solid #56745c; outline-offset: 4px; }
+    </style>
+    <script>
+      // Install before Vite's module script: a failed download can arrive while
+      // the document is still parsing. No bundle or stylesheet is needed here.
+      (() => {
+        let failed = false
+        let reloadButton
+        const reloadPage = () => window.location.reload()
+        const showFailure = () => {
+          failed = true
+          if (!document.getElementById('app-startup')) return
+          document.getElementById('startup-title').textContent = '页面暂时没有打开'
+          document.getElementById('startup-description').hidden = false
+          document.getElementById('startup-actions').hidden = false
+        }
+        const handleError = (event) => {
+          // Ignore unrelated image failures; React owns errors after startup.
+          if (event.target === window || event.target?.tagName === 'SCRIPT') showFailure()
+        }
+        const stopListening = () => {
+          window.removeEventListener('error', handleError, true)
+          window.removeEventListener('unhandledrejection', showFailure)
+          reloadButton?.removeEventListener('click', reloadPage)
+        }
+        window.addEventListener('error', handleError, true)
+        window.addEventListener('unhandledrejection', showFailure)
+        document.addEventListener('DOMContentLoaded', () => {
+          const root = document.getElementById('root')
+          const startup = document.getElementById('app-startup')
+          if (!root || !startup) {
+            stopListening()
+            return
+          }
+          reloadButton = document.getElementById('startup-reload')
+          reloadButton.addEventListener('click', reloadPage)
+          if (failed) showFailure()
+          // React replaces this one panel on mount; discard the startup guard.
+          const observer = new MutationObserver(() => {
+            if (!root.contains(startup)) {
+              stopListening()
+              observer.disconnect()
+            }
+          })
+          observer.observe(root, { childList: true })
+        }, { once: true })
+      })()
+    </script>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <main id="app-startup" aria-labelledby="startup-title">
+        <section>
+          <div class="startup-brand">Detachym</div>
+          <h1 id="startup-title" role="status">正在加载页面...</h1>
+          <p id="startup-description" hidden>页面加载遇到了问题。请检查网络连接后刷新页面，也可以返回首页。</p>
+          <div id="startup-actions" hidden>
+            <button id="startup-reload" type="button">刷新页面</button>
+            <a href="/">返回首页</a>
+          </div>
+          <noscript><p>请启用 JavaScript 后刷新页面，即可打开你的陪伴空间。</p></noscript>
+        </section>
+      </main>
+    </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

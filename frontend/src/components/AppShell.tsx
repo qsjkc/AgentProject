@@ -1,95 +1,44 @@
-import { NavLink, Outlet, useNavigate } from 'react-router-dom'
+import { useEffect } from 'react'
+import { Link, NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 
 import { useAuthStore } from '../stores'
 
-const navClass = ({ isActive }: { isActive: boolean }) =>
-  [
-    'rounded-full px-4 py-2 text-sm transition-colors',
-    isActive ? 'bg-slate-900 text-white' : 'text-slate-700 hover:bg-white/70',
-  ].join(' ')
+const navClass = ({ isActive }: { isActive: boolean }) => `portal-nav-link ${isActive ? 'is-active' : ''}`
 
 export default function AppShell() {
   const navigate = useNavigate()
+  const { pathname, hash } = useLocation()
   const { user, logout } = useAuthStore()
 
+  useEffect(() => {
+    if (!hash) window.scrollTo({ top: 0, left: 0, behavior: 'instant' })
+  }, [pathname, hash])
+
   return (
-    <div className="min-h-screen bg-[radial-gradient(circle_at_top_left,_rgba(243,244,246,0.95),_rgba(255,255,255,0.88)_40%,_rgba(224,242,254,0.75)_100%)]">
-      <header className="sticky top-0 z-20 border-b border-slate-200/70 bg-white/75 backdrop-blur-xl">
-        <div className="mx-auto flex w-full max-w-7xl items-center justify-between gap-4 px-6 py-4">
-          <button type="button" onClick={() => navigate('/')} className="text-left">
-            <div className="font-mono text-xl font-semibold text-slate-950">Detachym</div>
-            <div className="text-xs uppercase tracking-[0.25em] text-slate-500">桌宠云端平台</div>
-          </button>
-
-          <nav className="flex items-center gap-2 rounded-full border border-slate-200 bg-slate-50/90 p-1">
-            <NavLink to="/" className={navClass} end>
-              首页
-            </NavLink>
-            <NavLink to="/download" className={navClass}>
-              下载
-            </NavLink>
-            {user && (
-              <NavLink to="/account" className={navClass}>
-                用户中心
-              </NavLink>
-            )}
-            {user?.is_superuser && (
-              <NavLink to="/admin" className={navClass}>
-                管理后台
-              </NavLink>
-            )}
+    <div className="portal-shell">
+      <a href="#main-content" className="skip-to-content">跳转到正文</a>
+      <header className="portal-header">
+        <div className="portal-header-inner">
+          <Link to="/" className="portal-brand" aria-label="Detachym 首页"><span className="brand-symbol" aria-hidden="true">d.</span><span>Detachym<small>日常里的小小陪伴</small></span></Link>
+          <nav className="portal-nav" aria-label="主导航">
+            <NavLink to="/" className={navClass} end>首页</NavLink>
+            <NavLink to="/download" className={navClass}>下载桌宠</NavLink>
+            {user && <NavLink to="/account" className={navClass}>用户中心</NavLink>}
+            {user?.is_superuser && <NavLink to="/admin" className={navClass}>管理后台</NavLink>}
           </nav>
-
-          <div className="flex items-center gap-3">
-            {user ? (
-              <>
-                <div className="hidden text-right sm:block">
-                  <div className="text-sm font-medium text-slate-900">{user.username}</div>
-                  <div className="text-xs text-slate-500">{user.email}</div>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => navigate('/account')}
-                  className="rounded-full bg-slate-900 px-4 py-2 text-sm text-white transition hover:bg-slate-700"
-                >
-                  控制台
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    logout()
-                    navigate('/login')
-                  }}
-                  className="rounded-full border border-slate-300 px-4 py-2 text-sm text-slate-700 transition hover:border-slate-950 hover:text-slate-950"
-                >
-                  退出
-                </button>
-              </>
-            ) : (
-              <>
-                <button
-                  type="button"
-                  onClick={() => navigate('/login')}
-                  className="rounded-full border border-slate-300 px-4 py-2 text-sm text-slate-700 transition hover:border-slate-950 hover:text-slate-950"
-                >
-                  登录
-                </button>
-                <button
-                  type="button"
-                  onClick={() => navigate('/register')}
-                  className="rounded-full bg-slate-900 px-4 py-2 text-sm text-white transition hover:bg-slate-700"
-                >
-                  注册
-                </button>
-              </>
-            )}
+          <div className="portal-account-actions">
+            {user ? <>
+              <Link to="/account" className="portal-user-name" title={user.username}>{user.username}</Link>
+              <button type="button" onClick={() => { logout(); navigate('/login') }} className="portal-login">退出</button>
+            </> : <>
+              <Link to="/login" className="portal-login">登录</Link>
+              <Link to="/register" className="portal-register">加入陪伴 <span aria-hidden="true">↗</span></Link>
+            </>}
           </div>
         </div>
       </header>
-
-      <main className="mx-auto w-full max-w-7xl px-6 py-10">
-        <Outlet />
-      </main>
+      <main id="main-content" tabIndex={-1} className="portal-main"><Outlet /></main>
+      <footer className="portal-footer"><Link to="/" className="portal-footer-brand">Detachym<span>陪你，把普通的一天过好。</span></Link><div><Link to="/download">下载桌宠</Link><Link to={user ? '/account' : '/login'}>账户管理</Link><span>为 Windows 桌面上的日常而做</span></div></footer>
     </div>
   )
 }

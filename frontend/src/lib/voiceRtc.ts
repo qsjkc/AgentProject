@@ -1,14 +1,54 @@
-import VERTC, {
-  AudioProfileType,
-  ConnectionState,
+import type {
+  ConnectionStateChangeEvent,
+  IRTCEngine,
   MediaType,
-  StreamIndex,
-  type ConnectionStateChangeEvent,
-  type IRTCEngine,
-  type RemoteAudioPropertiesInfo,
-  type onUserJoinedEvent,
-  type onUserLeaveEvent,
+  RemoteAudioPropertiesInfo,
+  onUserJoinedEvent,
+  onUserLeaveEvent,
 } from '@volcengine/rtc'
+import { VoiceConnectionCancelledError } from './voiceSessionController.js'
+
+type RtcSdk = Pick<typeof import('@volcengine/rtc'), 'AudioProfileType' | 'ConnectionState' | 'MediaType' | 'StreamIndex'> & {
+  default: Pick<typeof import('@volcengine/rtc').default, 'createEngine' | 'destroyEngine' | 'events' | 'isSupported'>
+}
+let sdkPromise: Promise<RtcSdk> | null = null
+
+function sdkRecord(value: unknown): Record<string, unknown> {
+  return value && (typeof value === 'object' || typeof value === 'function') ? value as Record<string, unknown> : {}
+}
+
+function normalizeRtcSdk(value: unknown): RtcSdk {
+  const module = sdkRecord(value)
+  const defaultModule = sdkRecord(module.default)
+  // Vite loads the package's ESM entry; NodeNext sees the CommonJS namespace.
+  // Resolve and validate both shapes instead of relying on an import assertion.
+  const engine = typeof defaultModule.createEngine === 'function' ? defaultModule : sdkRecord(defaultModule.default)
+  const enums = module.MediaType ? module : defaultModule
+  if (
+    typeof engine.createEngine !== 'function' || typeof engine.destroyEngine !== 'function'
+    || typeof engine.isSupported !== 'function' || !engine.events
+    || !enums.AudioProfileType || !enums.ConnectionState || !enums.MediaType || !enums.StreamIndex
+  ) {
+    throw new Error('RTC SDK 加载结果无效，请刷新后重试。')
+  }
+  return {
+    default: engine as RtcSdk['default'],
+    AudioProfileType: enums.AudioProfileType as RtcSdk['AudioProfileType'],
+    ConnectionState: enums.ConnectionState as RtcSdk['ConnectionState'],
+    MediaType: enums.MediaType as RtcSdk['MediaType'],
+    StreamIndex: enums.StreamIndex as RtcSdk['StreamIndex'],
+  }
+}
+
+function loadRtcSdk(): Promise<RtcSdk> {
+  if (sdkPromise) return sdkPromise
+  const pending = import('@volcengine/rtc').then(normalizeRtcSdk).catch((error) => {
+    sdkPromise = null
+    throw error
+  })
+  sdkPromise = pending
+  return pending
+}
 
 export interface VoiceRtcSessionConfig {
   appId: string
@@ -17,6 +57,7 @@ export interface VoiceRtcSessionConfig {
   aiUserId: string
   token: string
   feedbackProtectionEnabled?: boolean
+  isCurrent?: () => boolean
   onConnectionStateChange: (state: string) => void
   onRoomStateChange: (state: string) => void
   onRemoteAudioTrack: (track: MediaStreamTrack | null) => void
@@ -40,31 +81,29 @@ export interface VoiceRtcSessionHandle {
   isFeedbackProtectionEnabled: () => boolean
 }
 
-const audioFlag = Number(MediaType.AUDIO)
 const AI_SPEAKING_THRESHOLD = 35
 const AI_QUIET_HOLD_MS = 1200
 const ACTIVE_CAPTURE_VOLUME = 100
 const MUTED_CAPTURE_VOLUME = 0
 const AI_REMOTE_PLAYBACK_VOLUME = 85
 
-function hasAudio(mediaType: MediaType | number) {
-  return (Number(mediaType) & audioFlag) === audioFlag
-}
-
 async function waitForRemoteAudioTrack(
   engine: IRTCEngine,
   aiUserId: string,
+  streamIndex: Parameters<IRTCEngine['getRemoteStreamTrack']>[1],
   onRemoteAudioTrack: (track: MediaStreamTrack | null) => void,
+  isCurrent: () => boolean,
 ) {
   for (let attempt = 0; attempt < 10; attempt += 1) {
-    const track = engine.getRemoteStreamTrack(aiUserId, StreamIndex.STREAM_INDEX_MAIN, 'audio')
+    if (!isCurrent()) return
+    const track = engine.getRemoteStreamTrack(aiUserId, streamIndex, 'audio')
     if (track) {
       onRemoteAudioTrack(track)
       return
     }
     await new Promise((resolve) => window.setTimeout(resolve, 200))
   }
-  onRemoteAudioTrack(null)
+  if (isCurrent()) onRemoteAudioTrack(null)
 }
 
 function extractAiLinearVolume(event: RemoteAudioPropertiesInfo[], aiUserId: string) {
@@ -73,17 +112,30 @@ function extractAiLinearVolume(event: RemoteAudioPropertiesInfo[], aiUserId: str
 }
 
 export async function isRtcSupported() {
+  const { default: VERTC } = await loadRtcSdk()
   return VERTC.isSupported()
 }
 
-export async function createVoiceRtcSession(config: VoiceRtcSessionConfig): Promise<VoiceRtcSessionHandle> {
+export async function createVoiceRtcSession(config: VoiceRtcSessionConfig, sdkOverride?: RtcSdk): Promise<VoiceRtcSessionHandle> {
+  const { default: VERTC, AudioProfileType, ConnectionState, MediaType, StreamIndex } = sdkOverride ?? await loadRtcSdk()
+  if (config.isCurrent?.() === false) throw new VoiceConnectionCancelledError()
   const engine = VERTC.createEngine(config.appId)
+  const audioFlag = Number(MediaType.AUDIO)
   let joined = false
+  let closed = false
+  let destroyed = false
+  let joining: Promise<void> | null = null
+  let leaving: Promise<void> | null = null
   let manuallyMuted = false
   let aiSpeaking = false
   let inputSuppressed = false
   let feedbackProtectionEnabled = config.feedbackProtectionEnabled ?? true
   let quietTimer: number | null = null
+
+  const isCurrent = () => !closed && !destroyed && config.isCurrent?.() !== false
+  const assertCurrent = () => {
+    if (!isCurrent()) throw new VoiceConnectionCancelledError()
+  }
 
   const clearQuietTimer = () => {
     if (quietTimer !== null) {
@@ -102,6 +154,7 @@ export async function createVoiceRtcSession(config: VoiceRtcSessionConfig): Prom
   }
 
   const applyCapturePolicy = () => {
+    if (!isCurrent()) return
     const shouldSuppress = joined && feedbackProtectionEnabled && aiSpeaking && !manuallyMuted
     const volume = manuallyMuted || shouldSuppress ? MUTED_CAPTURE_VOLUME : ACTIVE_CAPTURE_VOLUME
 
@@ -119,12 +172,14 @@ export async function createVoiceRtcSession(config: VoiceRtcSessionConfig): Prom
   }
 
   const handleConnectionStateChanged = (event: ConnectionStateChangeEvent) => {
+    if (!isCurrent()) return
     const label = ConnectionState[event.state] ?? String(event.state)
     config.onConnectionStateChange(label)
     config.onLog(`RTC 连接状态 -> ${label}`)
   }
 
   const handleUserJoined = (event: onUserJoinedEvent) => {
+    if (!isCurrent()) return
     if (event.userInfo.userId === config.aiUserId) {
       config.onLog('AI 用户已加入房间。')
     }
@@ -139,6 +194,7 @@ export async function createVoiceRtcSession(config: VoiceRtcSessionConfig): Prom
   }
 
   const handleUserLeave = (event: onUserLeaveEvent) => {
+    if (!isCurrent()) return
     if (event.userInfo.userId === config.aiUserId) {
       config.onRemoteAudioTrack(null)
       resetAiSpeechState()
@@ -147,20 +203,22 @@ export async function createVoiceRtcSession(config: VoiceRtcSessionConfig): Prom
   }
 
   const handleUserPublishStream = async (event: { userId: string; mediaType: MediaType | number }) => {
-    if (event.userId !== config.aiUserId || !hasAudio(event.mediaType)) {
+    if (!isCurrent() || event.userId !== config.aiUserId || (Number(event.mediaType) & audioFlag) !== audioFlag) {
       return
     }
     try {
       await engine.subscribeStream(event.userId, MediaType.AUDIO)
+      if (!isCurrent()) return
       engine.setPlaybackVolume(config.aiUserId, StreamIndex.STREAM_INDEX_MAIN, AI_REMOTE_PLAYBACK_VOLUME)
       config.onLog('已订阅 AI 远端音频。')
-      await waitForRemoteAudioTrack(engine, config.aiUserId, config.onRemoteAudioTrack)
+      await waitForRemoteAudioTrack(engine, config.aiUserId, StreamIndex.STREAM_INDEX_MAIN, config.onRemoteAudioTrack, isCurrent)
     } catch (error) {
-      config.onError(`订阅 AI 音频失败：${String(error)}`)
+      if (isCurrent()) config.onError(`订阅 AI 音频失败：${String(error)}`)
     }
   }
 
   const handleUserUnpublishStream = (event: { userId: string }) => {
+    if (!isCurrent()) return
     if (event.userId === config.aiUserId) {
       config.onRemoteAudioTrack(null)
       resetAiSpeechState()
@@ -169,6 +227,7 @@ export async function createVoiceRtcSession(config: VoiceRtcSessionConfig): Prom
   }
 
   const handleRemoteAudioPropertiesReport = (event: RemoteAudioPropertiesInfo[]) => {
+    if (!isCurrent()) return
     const aiVolume = extractAiLinearVolume(event, config.aiUserId)
     if (aiVolume >= AI_SPEAKING_THRESHOLD) {
       clearQuietTimer()
@@ -183,24 +242,43 @@ export async function createVoiceRtcSession(config: VoiceRtcSessionConfig): Prom
 
     quietTimer = window.setTimeout(() => {
       quietTimer = null
+      if (!isCurrent()) return
       emitAiSpeaking(false)
       applyCapturePolicy()
     }, AI_QUIET_HOLD_MS)
   }
 
   const handleRtcError = (event: { errorCode?: string | number }) => {
+    if (!isCurrent()) return
     config.onError(`RTC 错误：${String(event.errorCode ?? 'unknown')}`)
   }
 
-  engine.on(VERTC.events.onConnectionStateChanged, handleConnectionStateChanged)
-  engine.on(VERTC.events.onUserJoined, handleUserJoined)
-  engine.on(VERTC.events.onUserLeave, handleUserLeave)
-  engine.on(VERTC.events.onUserPublishStream, handleUserPublishStream)
-  engine.on(VERTC.events.onUserUnpublishStream, handleUserUnpublishStream)
-  engine.on(VERTC.events.onRemoteAudioPropertiesReport, handleRemoteAudioPropertiesReport)
-  engine.on(VERTC.events.onError, handleRtcError)
+  try {
+    engine.on(VERTC.events.onConnectionStateChanged, handleConnectionStateChanged)
+    engine.on(VERTC.events.onUserJoined, handleUserJoined)
+    engine.on(VERTC.events.onUserLeave, handleUserLeave)
+    engine.on(VERTC.events.onUserPublishStream, handleUserPublishStream)
+    engine.on(VERTC.events.onUserUnpublishStream, handleUserUnpublishStream)
+    engine.on(VERTC.events.onRemoteAudioPropertiesReport, handleRemoteAudioPropertiesReport)
+    engine.on(VERTC.events.onError, handleRtcError)
+  } catch (error) {
+    closed = true
+    VERTC.destroyEngine(engine)
+    throw error
+  }
 
-  const leave = async () => {
+  const performLeave = async () => {
+    clearQuietTimer()
+    try {
+      engine.setCaptureVolume(StreamIndex.STREAM_INDEX_MAIN, MUTED_CAPTURE_VOLUME)
+      await engine.stopAudioCapture()
+    } catch (error) {
+      config.onLog(`清理时停止音频采集失败：${String(error)}`)
+    }
+    // An SDK join/capture may already be in flight. Its continuation checks
+    // closed before doing more work, then this cleanup closes the settled room.
+    if (joining) await joining.catch(() => undefined)
+    if (destroyed) return
     config.onRoomStateChange('leaving')
     clearQuietTimer()
     try {
@@ -231,34 +309,50 @@ export async function createVoiceRtcSession(config: VoiceRtcSessionConfig): Prom
     }
   }
 
-  return {
-    async joinAndPublish() {
-      config.onRoomStateChange('joining')
-      await engine.setAudioProfile(AudioProfileType.fluent)
-      engine.enableAudioPropertiesReport({ interval: 300, enableInBackground: true })
-      await engine.joinRoom(
-        config.token,
-        config.roomId,
-        { userId: config.userId },
-        {
-          isAutoPublish: false,
-          isAutoSubscribeAudio: false,
-          isAutoSubscribeVideo: false,
-        },
-      )
-      joined = true
-      config.onRoomStateChange('joined')
-      config.onLog('已加入 RTC 房间。')
+  const leave = () => {
+    closed = true
+    clearQuietTimer()
+    if (!leaving) leaving = performLeave()
+    return leaving
+  }
 
-      await engine.startAudioCapture()
-      await engine.publishStream(MediaType.AUDIO)
-      manuallyMuted = false
-      applyCapturePolicy()
-      config.onLog('本地麦克风已开始采集并发布。')
+  return {
+    joinAndPublish() {
+      if (joining) return joining
+      joining = (async () => {
+        assertCurrent()
+        config.onRoomStateChange('joining')
+        await engine.setAudioProfile(AudioProfileType.fluent)
+        assertCurrent()
+        engine.enableAudioPropertiesReport({ interval: 300, enableInBackground: true })
+        await engine.joinRoom(
+          config.token,
+          config.roomId,
+          { userId: config.userId },
+          {
+            isAutoPublish: false,
+            isAutoSubscribeAudio: false,
+            isAutoSubscribeVideo: false,
+          },
+        )
+        joined = true
+        assertCurrent()
+        config.onRoomStateChange('joined')
+        config.onLog('已加入 RTC 房间。')
+
+        await engine.startAudioCapture()
+        assertCurrent()
+        await engine.publishStream(MediaType.AUDIO)
+        assertCurrent()
+        manuallyMuted = false
+        applyCapturePolicy()
+        config.onLog('本地麦克风已开始采集并发布。')
+      })().finally(() => { joining = null })
+      return joining
     },
 
     async mute() {
-      if (!joined || manuallyMuted) {
+      if (!isCurrent() || !joined || manuallyMuted) {
         return
       }
       manuallyMuted = true
@@ -267,7 +361,7 @@ export async function createVoiceRtcSession(config: VoiceRtcSessionConfig): Prom
     },
 
     async unmute() {
-      if (!joined || !manuallyMuted) {
+      if (!isCurrent() || !joined || !manuallyMuted) {
         return
       }
       manuallyMuted = false
@@ -282,19 +376,26 @@ export async function createVoiceRtcSession(config: VoiceRtcSessionConfig): Prom
     leave,
 
     destroy() {
+      if (destroyed) return
+      destroyed = true
+      closed = true
+      joined = false
       clearQuietTimer()
-      engine.off(VERTC.events.onConnectionStateChanged, handleConnectionStateChanged)
-      engine.off(VERTC.events.onUserJoined, handleUserJoined)
-      engine.off(VERTC.events.onUserLeave, handleUserLeave)
-      engine.off(VERTC.events.onUserPublishStream, handleUserPublishStream)
-      engine.off(VERTC.events.onUserUnpublishStream, handleUserUnpublishStream)
-      engine.off(VERTC.events.onRemoteAudioPropertiesReport, handleRemoteAudioPropertiesReport)
-      engine.off(VERTC.events.onError, handleRtcError)
-      VERTC.destroyEngine(engine)
+      try {
+        engine.off(VERTC.events.onConnectionStateChanged, handleConnectionStateChanged)
+        engine.off(VERTC.events.onUserJoined, handleUserJoined)
+        engine.off(VERTC.events.onUserLeave, handleUserLeave)
+        engine.off(VERTC.events.onUserPublishStream, handleUserPublishStream)
+        engine.off(VERTC.events.onUserUnpublishStream, handleUserUnpublishStream)
+        engine.off(VERTC.events.onRemoteAudioPropertiesReport, handleRemoteAudioPropertiesReport)
+        engine.off(VERTC.events.onError, handleRtcError)
+      } finally {
+        VERTC.destroyEngine(engine)
+      }
     },
 
     isJoined() {
-      return joined
+      return joined && !closed && !destroyed
     },
 
     isMuted() {
@@ -310,6 +411,7 @@ export async function createVoiceRtcSession(config: VoiceRtcSessionConfig): Prom
     },
 
     setFeedbackProtectionEnabled(enabled: boolean) {
+      if (!isCurrent()) return
       feedbackProtectionEnabled = enabled
       applyCapturePolicy()
       config.onLog(

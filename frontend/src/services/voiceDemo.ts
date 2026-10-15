@@ -1,40 +1,17 @@
-import api from './api'
-import type {
-  VoiceDemoSessionActionResponse,
-  VoiceDemoSessionCreateResponse,
-  VoiceDemoSessionStatusResponse,
-  VoiceDemoStopResponse,
-} from '../types'
+import { AUTH_EXPIRED_EVENT } from '../lib/auth'
+import { createVoiceSessionApi } from '../lib/voiceSessionApi'
+import { apiBaseUrl, apiOrigin } from './api'
 
-export async function createVoiceDemoSession(): Promise<VoiceDemoSessionCreateResponse> {
-  const response = await api.post('/rtc/voice-demo/session')
-  return response.data
-}
-
-export async function startVoiceDemoSession(sessionId: string): Promise<VoiceDemoSessionActionResponse> {
-  const response = await api.post(`/rtc/voice-demo/session/${sessionId}/start`)
-  return response.data
-}
-
-export async function getVoiceDemoSession(sessionId: string): Promise<VoiceDemoSessionStatusResponse> {
-  const response = await api.get(`/rtc/voice-demo/session/${sessionId}`)
-  return response.data
-}
-
-export async function interruptVoiceDemoSession(sessionId: string): Promise<VoiceDemoSessionActionResponse> {
-  const response = await api.post(`/rtc/voice-demo/session/${sessionId}/interrupt`)
-  return response.data
-}
-
-export async function stopVoiceDemoSession(sessionId: string): Promise<VoiceDemoStopResponse> {
-  const response = await api.post(`/rtc/voice-demo/session/${sessionId}/stop`)
-  return response.data
-}
-
-export const voiceDemoApi = {
-  createVoiceDemoSession,
-  startVoiceDemoSession,
-  getVoiceDemoSession,
-  interruptVoiceDemoSession,
-  stopVoiceDemoSession,
+export function captureVoiceDemoApi(token: string, isCurrent: () => boolean) {
+  const baseUrl = new URL(apiBaseUrl, apiOrigin).toString()
+  return createVoiceSessionApi({
+    baseUrl,
+    token,
+    isCurrent: () => isCurrent() && localStorage.getItem('token') === token,
+    onUnauthorized: () => {
+      if (localStorage.getItem('token') !== token) return
+      localStorage.removeItem('token')
+      window.dispatchEvent(new Event(AUTH_EXPIRED_EVENT))
+    },
+  })
 }

@@ -1,9 +1,12 @@
-import { FormEvent, useEffect, useState } from 'react'
+import { FormEvent, useCallback, useEffect, useRef, useState } from 'react'
 
 import AdminWeeklyReviewFunnel from '../components/AdminWeeklyReviewFunnel'
 import MetricCard from '../components/MetricCard'
 import StatusBadge from '../components/StatusBadge'
 import { getErrorMessage } from '../lib/errors'
+import { createAdminOperations } from '../lib/adminOperations'
+import { matchingUiSession } from '../lib/apiSession'
+import { formatApiDateTime } from '../lib/apiTime'
 import { adminApi } from '../services'
 import { useAuthStore } from '../stores'
 import type {
@@ -32,6 +35,18 @@ const emptyEditForm: AdminUserUpdateInput = {
 
 const pageSizeOptions = [10, 20, 50]
 
+interface UserQuery {
+  search: string
+  status: UserStatus | 'all'
+  page: number
+  pageSize: number
+}
+
+interface PendingMutation {
+  kind: 'create' | 'update' | 'status' | 'delete'
+  userId?: number
+}
+
 function roleLabel(isSuperuser: boolean) {
   return isSuperuser ? '管理员' : '普通用户'
 }
@@ -40,11 +55,11 @@ function formatLastLogin(value?: string | null) {
   if (!value) {
     return '从未登录'
   }
-  return new Date(value).toLocaleString()
+  return formatApiDateTime(value)
 }
 
 export default function Admin() {
-  const { user: currentUser, setUser } = useAuthStore()
+  const { token, user: currentUser, setUser } = useAuthStore()
 
   const [overview, setOverview] = useState<AdminOverview | null>(null)
   const [users, setUsers] = useState<AdminUserListItem[]>([])
@@ -54,51 +69,81 @@ export default function Admin() {
   const [pageSize, setPageSize] = useState(20)
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(true)
-  const [submitting, setSubmitting] = useState(false)
+  const [pendingMutation, setPendingMutation] = useState<PendingMutation | null>(null)
+  const [listError, setListError] = useState('')
   const [error, setError] = useState('')
   const [message, setMessage] = useState('')
   const [createForm, setCreateForm] = useState<AdminUserCreateInput>(emptyCreateForm)
   const [editingUserId, setEditingUserId] = useState<number | null>(null)
   const [editForm, setEditForm] = useState<AdminUserUpdateInput>(emptyEditForm)
+  const appliedQuery = useRef<UserQuery>({ search: '', status: 'all', page: 1, pageSize: 20 })
+  const createRevision = useRef(0)
+  const editRevision = useRef(0)
+  const editingUser = useRef<number | null>(null)
+  const visibleSession = useRef({ token, userId: currentUser?.id ?? null })
+  visibleSession.current = { token, userId: currentUser?.id ?? null }
+  const [operations] = useState(() => createAdminOperations(() => {
+    const state = useAuthStore.getState()
+    return matchingUiSession(visibleSession.current, {
+      token: state.token, userId: state.user?.id ?? null,
+    }, localStorage.getItem('token'))
+  }))
 
   const totalPages = Math.max(1, Math.ceil(total / pageSize))
 
-  const loadData = async (
-    currentSearch = search,
-    currentStatus = status,
-    currentPage = page,
-    currentPageSize = pageSize,
-  ) => {
+  const loadData = useCallback(async (query = appliedQuery.current): Promise<void> => {
+    const request = operations.beginRead()
+    if (!request.isCurrent()) return
+    appliedQuery.current = query
     setLoading(true)
-    setError('')
+    setListError('')
     try {
       const [overviewData, usersData] = await Promise.all([
         adminApi.getOverview(),
-        adminApi.getUsers(currentSearch, currentStatus, currentPage, currentPageSize),
+        adminApi.getUsers(query.search, query.status, query.page, query.pageSize),
       ])
+      if (!request.isCurrent()) return
+      const lastPage = Math.max(1, Math.ceil(usersData.total / usersData.page_size))
+      if (usersData.page > lastPage) {
+        await loadData({ ...query, page: lastPage })
+        return
+      }
       setOverview(overviewData)
       setUsers(usersData.items)
       setTotal(usersData.total)
       setPage(usersData.page)
       setPageSize(usersData.page_size)
     } catch (err) {
-      setError(getErrorMessage(err, '加载后台数据失败。'))
+      if (request.isCurrent()) setListError(getErrorMessage(err, '加载后台数据失败。'))
     } finally {
-      setLoading(false)
+      if (request.isCurrent()) setLoading(false)
     }
-  }
+  }, [operations])
 
   useEffect(() => {
+    operations.mount()
+    const unsubscribe = useAuthStore.subscribe((next, previous) => {
+      if (next.token !== previous.token || next.user?.id !== previous.user?.id) {
+        operations.invalidate()
+      }
+    })
     void loadData()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+    return () => {
+      unsubscribe()
+      operations.unmount()
+    }
+  }, [loadData, operations])
 
   const resetEditing = () => {
+    editRevision.current += 1
+    editingUser.current = null
     setEditingUserId(null)
     setEditForm(emptyEditForm)
   }
 
   const startEditing = (user: AdminUserListItem) => {
+    editRevision.current += 1
+    editingUser.current = user.id
     setEditingUserId(user.id)
     setEditForm({
       username: user.username,
@@ -111,58 +156,85 @@ export default function Admin() {
     setMessage('')
   }
 
+  const updateCreateForm = (patch: Partial<AdminUserCreateInput>) => {
+    createRevision.current += 1
+    setCreateForm((current) => ({ ...current, ...patch }))
+  }
+
+  const updateEditForm = (patch: Partial<AdminUserUpdateInput>) => {
+    editRevision.current += 1
+    setEditForm((current) => ({ ...current, ...patch }))
+  }
+
   const handleSearchSubmit = async (event: FormEvent) => {
     event.preventDefault()
-    setPage(1)
-    await loadData(search, status, 1, pageSize)
+    await loadData({ search: search.trim(), status, page: 1, pageSize })
   }
 
   const handlePageSizeChange = async (value: number) => {
-    setPage(1)
     setPageSize(value)
-    await loadData(search, status, 1, value)
+    await loadData({ ...appliedQuery.current, page: 1, pageSize: value })
   }
 
   const handleToggleStatus = async (user: AdminUserListItem) => {
+    const operation = operations.beginMutation()
+    if (!operation) return
+    const draftRevision = editRevision.current
+    setPendingMutation({ kind: 'status', userId: user.id })
     const nextStatus: UserStatus = user.status === 'active' ? 'disabled' : 'active'
     try {
       setError('')
       setMessage('')
       await adminApi.updateStatus(user.id, nextStatus)
+      if (!operation.isCurrent()) return
       setMessage(`已将 ${user.username} 设置为${nextStatus === 'active' ? '启用' : '禁用'}。`)
-      await loadData(search, status, page, pageSize)
-      if (editingUserId === user.id) {
+      if (editingUser.current === user.id && editRevision.current === draftRevision) {
         setEditForm((current) => ({ ...current, status: nextStatus }))
       }
+      await loadData()
     } catch (err) {
-      setError(getErrorMessage(err, '更新用户状态失败。'))
+      if (operation.isCurrent()) setError(getErrorMessage(err, '更新用户状态失败。'))
+    } finally {
+      if (operation.isCurrent()) setPendingMutation(null)
+      operation.finish()
     }
   }
 
   const handleCreateUser = async (event: FormEvent) => {
     event.preventDefault()
-    setSubmitting(true)
+    const operation = operations.beginMutation()
+    if (!operation) return
+    const draftRevision = createRevision.current
+    const payload = { ...createForm }
+    setPendingMutation({ kind: 'create' })
     setError('')
     setMessage('')
     try {
-      await adminApi.createUser(createForm)
-      setCreateForm(emptyCreateForm)
-      setMessage('用户已创建。')
-      await loadData(search, status, page, pageSize)
+      await adminApi.createUser(payload)
+      if (!operation.isCurrent()) return
+      const draftUnchanged = createRevision.current === draftRevision
+      if (draftUnchanged) {
+        createRevision.current += 1
+        setCreateForm(emptyCreateForm)
+      }
+      setMessage(`用户 ${payload.username} 已创建。${draftUnchanged ? '' : '当前表单中的新内容尚未提交。'}`)
+      await loadData()
     } catch (err) {
-      setError(getErrorMessage(err, '创建用户失败。'))
+      if (operation.isCurrent()) setError(getErrorMessage(err, '创建用户失败。'))
     } finally {
-      setSubmitting(false)
+      if (operation.isCurrent()) setPendingMutation(null)
+      operation.finish()
     }
   }
 
   const handleUpdateUser = async (event: FormEvent) => {
     event.preventDefault()
-    if (!editingUserId) {
-      return
-    }
-
-    setSubmitting(true)
+    const userId = editingUser.current
+    if (!userId) return
+    const operation = operations.beginMutation()
+    if (!operation) return
+    const draftRevision = editRevision.current
+    setPendingMutation({ kind: 'update', userId })
     setError('')
     setMessage('')
     try {
@@ -170,44 +242,56 @@ export default function Admin() {
         ...editForm,
         password: editForm.password?.trim() ? editForm.password : undefined,
       }
-      const updatedUser = await adminApi.updateUser(editingUserId, payload)
-      if (currentUser?.id === editingUserId) {
+      const updatedUser = await adminApi.updateUser(userId, payload)
+      if (!operation.isCurrent()) return
+      const latestCurrentUser = useAuthStore.getState().user
+      if (latestCurrentUser?.id === userId) {
         setUser({
-          ...currentUser,
+          ...latestCurrentUser,
           ...updatedUser,
-          preferences: currentUser.preferences ?? updatedUser.preferences ?? null,
+          preferences: latestCurrentUser.preferences ?? updatedUser.preferences ?? null,
         })
       }
-      setMessage('用户信息已更新。')
-      resetEditing()
-      await loadData(search, status, page, pageSize)
+      const sameEditor = editingUser.current === userId
+      const draftUnchanged = editRevision.current === draftRevision
+      setMessage(`用户 ${updatedUser.username} 的信息已更新。${sameEditor && !draftUnchanged ? '后续编辑的内容尚未保存。' : ''}`)
+      if (sameEditor && draftUnchanged) resetEditing()
+      await loadData()
     } catch (err) {
-      setError(getErrorMessage(err, '更新用户失败。'))
+      if (operation.isCurrent()) setError(getErrorMessage(err, '更新用户失败。'))
     } finally {
-      setSubmitting(false)
+      if (operation.isCurrent()) setPendingMutation(null)
+      operation.finish()
     }
   }
 
   const handleDeleteUser = async (user: AdminUserListItem) => {
+    const operation = operations.beginMutation()
+    if (!operation) return
     const confirmed = window.confirm(
       `确认删除用户 ${user.username} 吗？该操作会同步删除该用户的会话、知识库文档和偏好数据。`,
     )
-    if (!confirmed) {
+    if (!confirmed || !operation.isCurrent()) {
+      operation.finish()
       return
     }
 
+    setPendingMutation({ kind: 'delete', userId: user.id })
     try {
       setError('')
       setMessage('')
       const response = await adminApi.deleteUser(user.id)
-      if (editingUserId === user.id) {
+      if (!operation.isCurrent()) return
+      if (editingUser.current === user.id) {
         resetEditing()
       }
-      const nextPage = users.length === 1 && page > 1 ? page - 1 : page
       setMessage(response.message)
-      await loadData(search, status, nextPage, pageSize)
+      await loadData()
     } catch (err) {
-      setError(getErrorMessage(err, '删除用户失败。'))
+      if (operation.isCurrent()) setError(getErrorMessage(err, '删除用户失败。'))
+    } finally {
+      if (operation.isCurrent()) setPendingMutation(null)
+      operation.finish()
     }
   }
 
@@ -240,10 +324,11 @@ export default function Admin() {
         </section>
       )}
 
-      {(error || message) && (
+      {(error || message || listError) && (
         <section className="space-y-3">
-          {error && <div className="rounded-2xl bg-rose-50 px-4 py-3 text-sm text-rose-700">{error}</div>}
-          {message && <div className="rounded-2xl bg-emerald-50 px-4 py-3 text-sm text-emerald-700">{message}</div>}
+          {error && <div role="alert" className="rounded-2xl bg-rose-50 px-4 py-3 text-sm text-rose-700">{error}</div>}
+          {listError && <div role="alert" className="rounded-2xl bg-rose-50 px-4 py-3 text-sm text-rose-700">{listError}</div>}
+          {message && <div role="status" className="rounded-2xl bg-emerald-50 px-4 py-3 text-sm text-emerald-700">{message}</div>}
         </section>
       )}
 
@@ -257,7 +342,7 @@ export default function Admin() {
               <span className="mb-2 block text-sm text-slate-600">用户名</span>
               <input
                 value={createForm.username}
-                onChange={(event) => setCreateForm((current) => ({ ...current, username: event.target.value }))}
+                onChange={(event) => updateCreateForm({ username: event.target.value })}
                 required
                 minLength={3}
                 className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 outline-none transition focus:border-slate-950"
@@ -269,7 +354,7 @@ export default function Admin() {
               <input
                 type="email"
                 value={createForm.email}
-                onChange={(event) => setCreateForm((current) => ({ ...current, email: event.target.value }))}
+                onChange={(event) => updateCreateForm({ email: event.target.value })}
                 required
                 className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 outline-none transition focus:border-slate-950"
               />
@@ -280,7 +365,7 @@ export default function Admin() {
               <input
                 type="password"
                 value={createForm.password}
-                onChange={(event) => setCreateForm((current) => ({ ...current, password: event.target.value }))}
+                onChange={(event) => updateCreateForm({ password: event.target.value })}
                 required
                 minLength={8}
                 className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 outline-none transition focus:border-slate-950"
@@ -293,7 +378,7 @@ export default function Admin() {
                 <select
                   value={createForm.status}
                   onChange={(event) =>
-                    setCreateForm((current) => ({ ...current, status: event.target.value as UserStatus }))
+                    updateCreateForm({ status: event.target.value as UserStatus })
                   }
                   className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 outline-none transition focus:border-slate-950"
                 >
@@ -308,7 +393,7 @@ export default function Admin() {
                   type="checkbox"
                   checked={createForm.is_superuser}
                   onChange={(event) =>
-                    setCreateForm((current) => ({ ...current, is_superuser: event.target.checked }))
+                    updateCreateForm({ is_superuser: event.target.checked })
                   }
                   className="h-5 w-5 rounded border-slate-300"
                 />
@@ -317,10 +402,10 @@ export default function Admin() {
 
             <button
               type="submit"
-              disabled={submitting}
+              disabled={Boolean(pendingMutation)}
               className="rounded-2xl bg-slate-950 px-6 py-3 text-sm font-medium text-white transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-60"
             >
-              {submitting ? '提交中...' : '创建用户'}
+              {pendingMutation?.kind === 'create' ? '提交中...' : '创建用户'}
             </button>
           </form>
         </article>
@@ -337,7 +422,7 @@ export default function Admin() {
                 <span className="mb-2 block text-sm text-slate-600">用户名</span>
                 <input
                   value={editForm.username}
-                  onChange={(event) => setEditForm((current) => ({ ...current, username: event.target.value }))}
+                  onChange={(event) => updateEditForm({ username: event.target.value })}
                   required
                   minLength={3}
                   className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 outline-none transition focus:border-slate-950"
@@ -349,7 +434,7 @@ export default function Admin() {
                 <input
                   type="email"
                   value={editForm.email}
-                  onChange={(event) => setEditForm((current) => ({ ...current, email: event.target.value }))}
+                  onChange={(event) => updateEditForm({ email: event.target.value })}
                   required
                   className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 outline-none transition focus:border-slate-950"
                 />
@@ -360,7 +445,7 @@ export default function Admin() {
                 <input
                   type="password"
                   value={editForm.password ?? ''}
-                  onChange={(event) => setEditForm((current) => ({ ...current, password: event.target.value }))}
+                  onChange={(event) => updateEditForm({ password: event.target.value })}
                   placeholder="留空表示不修改密码"
                   minLength={8}
                   className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 outline-none transition focus:border-slate-950"
@@ -373,7 +458,7 @@ export default function Admin() {
                   <select
                     value={editForm.status}
                     onChange={(event) =>
-                      setEditForm((current) => ({ ...current, status: event.target.value as UserStatus }))
+                      updateEditForm({ status: event.target.value as UserStatus })
                     }
                     className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 outline-none transition focus:border-slate-950"
                   >
@@ -388,7 +473,7 @@ export default function Admin() {
                     type="checkbox"
                     checked={editForm.is_superuser}
                     onChange={(event) =>
-                      setEditForm((current) => ({ ...current, is_superuser: event.target.checked }))
+                      updateEditForm({ is_superuser: event.target.checked })
                     }
                     className="h-5 w-5 rounded border-slate-300"
                   />
@@ -398,10 +483,10 @@ export default function Admin() {
               <div className="flex flex-wrap gap-3">
                 <button
                   type="submit"
-                  disabled={submitting}
+                  disabled={Boolean(pendingMutation)}
                   className="rounded-2xl bg-slate-950 px-6 py-3 text-sm font-medium text-white transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-60"
                 >
-                  {submitting ? '保存中...' : '保存修改'}
+                  {pendingMutation?.kind === 'update' && pendingMutation.userId === editingUserId ? '保存中...' : '保存修改'}
                 </button>
                 <button
                   type="button"
@@ -423,12 +508,14 @@ export default function Admin() {
       <section className="rounded-[2rem] border border-slate-200 bg-white/90 p-8 shadow-[0_24px_80px_rgba(15,23,42,0.08)]">
         <form onSubmit={handleSearchSubmit} className="mb-6 flex flex-wrap gap-4">
           <input
+            aria-label="搜索用户名或邮箱"
             value={search}
             onChange={(event) => setSearch(event.target.value)}
             placeholder="搜索用户名或邮箱"
-            className="min-w-[260px] flex-1 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 outline-none transition focus:border-slate-950"
+            className="min-w-0 basis-64 flex-1 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 outline-none transition focus:border-slate-950"
           />
           <select
+            aria-label="筛选用户状态"
             value={status}
             onChange={(event) => setStatus(event.target.value as UserStatus | 'all')}
             className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 outline-none transition focus:border-slate-950"
@@ -438,6 +525,7 @@ export default function Admin() {
             <option value="disabled">禁用</option>
           </select>
           <select
+            aria-label="每页用户数"
             value={pageSize}
             onChange={(event) => void handlePageSizeChange(Number(event.target.value))}
             className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 outline-none transition focus:border-slate-950"
@@ -464,7 +552,7 @@ export default function Admin() {
             <button
               type="button"
               disabled={page <= 1 || loading}
-              onClick={() => void loadData(search, status, page - 1, pageSize)}
+              onClick={() => void loadData({ ...appliedQuery.current, page: page - 1 })}
               className="rounded-full border border-slate-300 px-4 py-2 transition hover:border-slate-950 hover:text-slate-950 disabled:cursor-not-allowed disabled:opacity-50"
             >
               上一页
@@ -472,7 +560,7 @@ export default function Admin() {
             <button
               type="button"
               disabled={page >= totalPages || loading}
-              onClick={() => void loadData(search, status, page + 1, pageSize)}
+              onClick={() => void loadData({ ...appliedQuery.current, page: page + 1 })}
               className="rounded-full border border-slate-300 px-4 py-2 transition hover:border-slate-950 hover:text-slate-950 disabled:cursor-not-allowed disabled:opacity-50"
             >
               下一页
@@ -480,7 +568,7 @@ export default function Admin() {
           </div>
         </div>
 
-        <div className="overflow-x-auto">
+        <div className="overflow-x-auto" aria-busy={loading}>
           <table className="min-w-full border-separate border-spacing-y-3">
             <thead>
               <tr className="text-left text-xs uppercase tracking-[0.2em] text-slate-500">
@@ -497,6 +585,13 @@ export default function Admin() {
                 <tr>
                   <td colSpan={6} className="px-4 py-6 text-sm text-slate-500">
                     正在加载数据...
+                  </td>
+                </tr>
+              ) : listError ? (
+                <tr>
+                  <td colSpan={6} className="px-4 py-6 text-sm text-slate-600">
+                    未能加载当前查询。
+                    <button type="button" onClick={() => void loadData()} className="ml-3 rounded-full border border-slate-300 px-4 py-2">重新加载</button>
                   </td>
                 </tr>
               ) : users.length === 0 ? (
@@ -537,18 +632,18 @@ export default function Admin() {
                           <button
                             type="button"
                             onClick={() => void handleToggleStatus(user)}
-                            disabled={isCurrentUser}
+                            disabled={isCurrentUser || Boolean(pendingMutation)}
                             className="rounded-full border border-slate-300 px-4 py-2 text-xs font-medium text-slate-700 transition hover:border-slate-950 hover:text-slate-950 disabled:cursor-not-allowed disabled:opacity-50"
                           >
-                            {user.status === 'active' ? '禁用' : '启用'}
+                            {pendingMutation?.kind === 'status' && pendingMutation.userId === user.id ? '更新中...' : user.status === 'active' ? '禁用' : '启用'}
                           </button>
                           <button
                             type="button"
                             onClick={() => void handleDeleteUser(user)}
-                            disabled={isCurrentUser}
+                            disabled={isCurrentUser || Boolean(pendingMutation)}
                             className="rounded-full border border-rose-200 px-4 py-2 text-xs font-medium text-rose-700 transition hover:border-rose-500 hover:text-rose-800 disabled:cursor-not-allowed disabled:opacity-50"
                           >
-                            删除
+                            {pendingMutation?.kind === 'delete' && pendingMutation.userId === user.id ? '删除中...' : '删除'}
                           </button>
                         </div>
                       </td>

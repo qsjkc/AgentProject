@@ -1,8 +1,11 @@
-import { FormEvent, useCallback, useEffect, useState } from 'react'
+import { FormEvent, useCallback, useEffect, useRef, useState } from 'react'
 
+import { createAdminOperations } from '../lib/adminOperations'
+import { matchingUiSession } from '../lib/apiSession'
 import { getErrorMessage } from '../lib/errors'
 import { formatRetentionRate, formatReviewPeriod } from '../lib/retention'
 import { adminApi } from '../services'
+import { useAuthStore } from '../stores'
 import type { AdminWeeklyReviewFunnelResponse, PetType } from '../types'
 
 const petOptions: Array<{ value: PetType; label: string }> = [
@@ -18,30 +21,52 @@ const petLabels: Record<PetType, string> = {
 }
 
 export default function AdminWeeklyReviewFunnel() {
+  const { token, user } = useAuthStore()
   const [petType, setPetType] = useState<PetType>('pig')
   const [limit, setLimit] = useState(12)
   const [loadedLimit, setLoadedLimit] = useState(12)
   const [response, setResponse] = useState<AdminWeeklyReviewFunnelResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const visibleSession = useRef({ token, userId: user?.id ?? null })
+  visibleSession.current = { token, userId: user?.id ?? null }
+  const [operations] = useState(() => createAdminOperations(() => {
+    const state = useAuthStore.getState()
+    return matchingUiSession(visibleSession.current, {
+      token: state.token, userId: state.user?.id ?? null,
+    }, localStorage.getItem('token'))
+  }))
 
   const loadFunnel = useCallback(async (nextPetType: PetType, nextLimit: number) => {
+    const request = operations.beginRead()
+    if (!request.isCurrent()) return
     setLoading(true)
     setError('')
     try {
       const nextResponse = await adminApi.getWeeklyReviewFunnel(nextPetType, nextLimit)
+      if (!request.isCurrent()) return
       setResponse(nextResponse)
       setLoadedLimit(nextLimit)
     } catch (err) {
-      setError(getErrorMessage(err, '加载周回顾漏斗失败。'))
+      if (request.isCurrent()) setError(getErrorMessage(err, '加载周回顾漏斗失败。'))
     } finally {
-      setLoading(false)
+      if (request.isCurrent()) setLoading(false)
     }
-  }, [])
+  }, [operations])
 
   useEffect(() => {
+    operations.mount()
+    const unsubscribe = useAuthStore.subscribe((next, previous) => {
+      if (next.token !== previous.token || next.user?.id !== previous.user?.id) {
+        operations.invalidate()
+      }
+    })
     void loadFunnel('pig', 12)
-  }, [loadFunnel])
+    return () => {
+      unsubscribe()
+      operations.unmount()
+    }
+  }, [loadFunnel, operations])
 
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault()
