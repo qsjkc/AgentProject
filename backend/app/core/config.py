@@ -1,4 +1,5 @@
 import json
+import os
 from functools import lru_cache
 from typing import List, Optional
 
@@ -7,7 +8,11 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", case_sensitive=True, extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=os.environ.get("DETACHYM_ENV_FILE", ".env") or None,
+        case_sensitive=True,
+        extra="ignore",
+    )
 
     APP_NAME: str = "Detachym Platform"
     APP_VERSION: str = "2.0.0"
@@ -28,6 +33,7 @@ class Settings(BaseSettings):
     CHROMA_PERSIST_DIR: str = "./data/chroma"
     UPLOAD_DIR: str = "./data/uploads"
     DOWNLOAD_DIR: str = "./data/downloads"
+    LOG_DIR: str = "./logs"
     MAX_UPLOAD_SIZE: int = 10 * 1024 * 1024
     MAX_DOCUMENTS_PER_USER: int = 20
     RAG_TOP_K: int = 4

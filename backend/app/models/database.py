@@ -314,7 +314,7 @@ class UserPreference(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
-    pet_type = Column(String(20), nullable=False, default="cat")
+    pet_type = Column(String(20), nullable=False, default="pig", server_default="pig")
     quick_chat_enabled = Column(Boolean, nullable=False, default=True)
     bubble_frequency = Column(Integer, nullable=False, default=120)
     created_at = Column(DateTime, default=utc_now, nullable=False)

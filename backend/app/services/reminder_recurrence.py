@@ -98,6 +98,13 @@ def normalize_first_occurrence(
         if current.tzinfo is None
         else current.astimezone(UTC).replace(tzinfo=None)
     )
+    # Preserve the instant explicitly selected for the first occurrence,
+    # including the second occurrence of a clock time during a DST fold.
+    # Later occurrences still advance by calendar day, never twice that day.
+    requested_first = as_utc_naive(local_value.replace(second=0, microsecond=0))
+    if local_value.weekday() in weekdays and requested_first > current_utc:
+        return requested_first, local_hour, local_minute, weekdays
+
     current_local = as_local(current_utc, timezone_name)
     candidate_date = max(local_value.date(), current_local.date())
     candidate_local = build_local_occurrence(
@@ -125,6 +132,40 @@ def normalize_first_occurrence(
             )
         candidate_date += timedelta(days=1)
     raise ValueError("Recurrence rule has no reachable first occurrence")
+
+
+def skip_paused_occurrences(series: ReminderSeries, *, now: datetime) -> None:
+    """Move a resumed series past the paused interval without emitting a backlog."""
+    if series.next_occurrence_at > now:
+        return
+    weekdays = set(series.weekdays)
+    if not weekdays or not weekdays.issubset(range(7)):
+        raise ValueError("Recurrence rule has no reachable weekday")
+
+    first_date = as_local(series.next_occurrence_at, series.timezone).date()
+    current_date = as_local(now, series.timezone).date()
+    # Whole weeks preserve the schedule, so even a years-long pause needs only
+    # a bounded number of individual date calculations inside this transaction.
+    whole_weeks = max(0, ((current_date - first_date).days - 1) // 7)
+    skipped = whole_weeks * len(weekdays)
+    if whole_weeks:
+        series.next_occurrence_at = as_utc_naive(build_local_occurrence(
+            first_date + timedelta(weeks=whole_weeks),
+            local_hour=series.local_hour,
+            local_minute=series.local_minute,
+            timezone_name=series.timezone,
+        ))
+    while series.next_occurrence_at <= now:
+        series.next_occurrence_at = calculate_next_occurrence(
+            series.next_occurrence_at,
+            local_hour=series.local_hour,
+            local_minute=series.local_minute,
+            timezone_name=series.timezone,
+            weekdays=list(weekdays),
+        )
+        skipped += 1
+    series.next_sequence += skipped
+    series.skipped_occurrence_count += skipped
 
 
 async def create_recurring_reminder(

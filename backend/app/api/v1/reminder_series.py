@@ -1,4 +1,5 @@
 from typing import List, Optional
+from zoneinfo import ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import and_, or_, select
@@ -14,6 +15,7 @@ from app.schemas.reminder import (
     ReminderSeriesStatus,
 )
 from app.services.reminder_state import reset_email_delivery, stop_email_delivery
+from app.services.reminder_recurrence import skip_paused_occurrences
 
 
 router = APIRouter(prefix="/reminder-series", tags=["reminder-series"])
@@ -28,7 +30,7 @@ async def get_owned_series(
         select(ReminderSeries).where(
             ReminderSeries.id == series_id,
             ReminderSeries.user_id == current_user.id,
-        )
+        ).with_for_update()
     )
     series = result.scalar_one_or_none()
     if series is None:
@@ -133,6 +135,10 @@ async def resume_reminder_series(
     if series.status == "canceled":
         raise HTTPException(status_code=409, detail="Canceled reminder series cannot be resumed")
     if series.status != "active":
+        try:
+            skip_paused_occurrences(series, now=utc_now())
+        except (ValueError, ZoneInfoNotFoundError) as exc:
+            raise HTTPException(status_code=409, detail="Invalid reminder recurrence rule") from exc
         series.status = "active"
         await restore_paused_future_occurrences(db, series)
         await db.commit()

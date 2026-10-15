@@ -1,27 +1,9 @@
-import os
-import shutil
 import asyncio
 from datetime import datetime, timedelta
-from pathlib import Path
 from uuid import uuid4
 
 import pytest
 from httpx import ASGITransport, AsyncClient
-
-TEST_ROOT = Path(__file__).resolve().parent / ".runtime-pet-relationships"
-if TEST_ROOT.exists():
-    shutil.rmtree(TEST_ROOT)
-TEST_ROOT.mkdir(parents=True, exist_ok=True)
-os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{(TEST_ROOT / 'test.db').as_posix()}"
-os.environ["CHROMA_PERSIST_DIR"] = str(TEST_ROOT / "chroma")
-os.environ["UPLOAD_DIR"] = str(TEST_ROOT / "uploads")
-os.environ["DOWNLOAD_DIR"] = str(TEST_ROOT / "downloads")
-os.environ["SMTP_USER"] = ""
-os.environ["SMTP_PASSWORD"] = ""
-os.environ["REMINDER_RECURRENCE_WORKER_ENABLED"] = "false"
-os.environ["INITIAL_ADMIN_USERNAME"] = "admin"
-os.environ["INITIAL_ADMIN_EMAIL"] = "admin@example.com"
-os.environ["INITIAL_ADMIN_PASSWORD"] = "ChangeThisPassword123!"
 
 from app.main import app  # noqa: E402
 from app.services.pet_relationships import (  # noqa: E402

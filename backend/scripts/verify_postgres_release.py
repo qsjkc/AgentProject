@@ -12,11 +12,26 @@ from pathlib import Path
 import secrets
 import subprocess
 import sys
+import tempfile
 import time
 from uuid import uuid4
 
 
 ROOT = Path(__file__).resolve().parents[1]
+HISTORICAL_REVISION = "010"
+
+
+def get_migration_head():
+    """Read the revision graph without running env.py or loading app settings."""
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    config = Config(str(ROOT / "alembic.ini"))
+    config.set_main_option("script_location", str(ROOT / "alembic"))
+    heads = ScriptDirectory.from_config(config).get_heads()
+    if len(heads) != 1:
+        raise RuntimeError(f"Expected one Alembic migration head, found {len(heads)}")
+    return heads[0]
 
 
 def command(*args, env=None, timeout=120):
@@ -35,18 +50,19 @@ async def probe():
     sys.path.insert(0, str(ROOT))
     from sqlalchemy import inspect, select, text
     from app.models.database import (
-        Base, PetRelationship, User, async_session_maker, engine,
+        Base, PetRelationship, User, UserPreference, async_session_maker, engine,
     )
     from app.services.pet_relationships import (
         acknowledge_pet_relationship_milestone, award_pet_relationship,
         claim_pet_relationship_milestone, get_pet_weekly_summary,
     )
     from app.services.pet_retention import get_weekly_review_funnel
+    from app.services.user_preferences import get_or_create_preferences
 
     try:
         async with engine.begin() as connection:
             revision = (await connection.execute(text("select version_num from alembic_version"))).scalar_one()
-            assert revision == "014", revision
+            assert revision == get_migration_head(), revision
 
             def compare_columns(sync_connection):
                 inspector = inspect(sync_connection)
@@ -67,6 +83,25 @@ async def probe():
                 idempotency_key="p1l-level-two",
             )
             assert result["relationship"]["level"] == 2, result
+
+        async with async_session_maker() as session:
+            historical = dict((await session.execute(
+                select(User.username, UserPreference.pet_type)
+                .join(UserPreference, UserPreference.user_id == User.id)
+                .where(User.username.in_(["release-fixture", "release-dog", "release-pig"]))
+            )).all())
+            assert historical == {
+                "release-fixture": "cat", "release-dog": "dog", "release-pig": "pig",
+            }, historical
+            new_user = User(
+                username="release-new-preferences", email="new-preferences@example.test",
+                hashed_password="not-a-login-hash",
+            )
+            session.add(new_user)
+            await session.flush()
+            preferences, write_attempted = await get_or_create_preferences(new_user.id, session)
+            assert write_attempted and preferences.pet_type == "pig"
+            await session.rollback()
 
         tokens = [str(uuid4()), str(uuid4())]
 
@@ -99,6 +134,7 @@ async def probe():
             "old_relationship_readable": True, "reward_write": True,
             "concurrent_milestone_winners": len(winners), "ack_idempotent": True,
             "weekly_summary_and_funnel_readable": True,
+            "historical_preferences_preserved": True, "new_preferences_default_to_pig": True,
         }
     finally:
         await engine.dispose()
@@ -108,8 +144,12 @@ def verify(image, report_path):
     name = f"detachym-release-check-{uuid4().hex[:12]}"
     password = secrets.token_hex(16)
     container_id = None
+    runtime = tempfile.TemporaryDirectory(prefix="detachym-postgres-release-")
     report = {"status": "running", "image": image, "checks": {}, "container_removed": False}
     try:
+        head = get_migration_head()
+        report["schema_head"] = head
+        report["historical_revision"] = HISTORICAL_REVISION
         container_id = command(
             "docker", "run", "--rm", "--name", name,
             "--label", "detachym.owner=postgres-release-check",
@@ -132,8 +172,13 @@ def verify(image, report_path):
         def environment(database):
             return {
                 **os.environ,
+                "DETACHYM_ENV_FILE": "",
                 "DATABASE_URL": f"postgresql+asyncpg://postgres:{password}@127.0.0.1:{port}/{database}",
                 "DEBUG": "false", "SMTP_USER": "", "SMTP_PASSWORD": "",
+                "CHROMA_PERSIST_DIR": str(Path(runtime.name) / "chroma"),
+                "UPLOAD_DIR": str(Path(runtime.name) / "uploads"),
+                "DOWNLOAD_DIR": str(Path(runtime.name) / "downloads"),
+                "LOG_DIR": str(Path(runtime.name) / "logs"),
                 "REMINDER_EMAIL_WORKER_ENABLED": "false",
                 "REMINDER_RECURRENCE_WORKER_ENABLED": "false",
             }
@@ -145,11 +190,31 @@ def verify(image, report_path):
         def migrate(database, action, revision):
             command(sys.executable, "-m", "alembic", action, revision, env=environment(database))
 
+        def verify_preference_default(database, expected):
+            # Omit pet_type deliberately: this exercises the migrated database
+            # default, independently of the application's explicit pig insert.
+            sql(database, f"""
+                DO $$
+                DECLARE fixture_user_id integer; actual_pet text;
+                BEGIN
+                    insert into users (username,email,hashed_password,created_at,updated_at)
+                    values ('release-default-check','default-check@example.test','not-a-login-hash',now(),now())
+                    returning id into fixture_user_id;
+                    insert into user_preferences (user_id,created_at,updated_at)
+                    values (fixture_user_id,now(),now()) returning pet_type into actual_pet;
+                    IF actual_pet IS DISTINCT FROM '{expected}' THEN
+                        RAISE EXCEPTION 'Unexpected new preference default: %', actual_pet;
+                    END IF;
+                    delete from users where id=fixture_user_id;
+                END; $$;
+            """)
+
         migrate("p1l_empty", "upgrade", "head")
-        assert sql("p1l_empty", "select version_num from alembic_version") == "014"
+        assert sql("p1l_empty", "select version_num from alembic_version") == head
+        verify_preference_default("p1l_empty", "pig")
         report["checks"]["empty_to_head"] = True
         sql("postgres", "create database p1l_upgrade")
-        migrate("p1l_upgrade", "upgrade", "010")
+        migrate("p1l_upgrade", "upgrade", HISTORICAL_REVISION)
         sql("p1l_upgrade", """
             insert into users (username,email,hashed_password,created_at,updated_at)
             values ('release-fixture','release@example.test','not-a-login-hash',now(),now());
@@ -158,24 +223,39 @@ def verify(image, report_path):
             insert into reminders (user_id,pet_type,title,remind_at,created_at,updated_at,email_enabled,email_status)
             select id,'pig','release reminder',now(),now(),now(),false,'disabled'
             from users where username='release-fixture';
+            insert into users (username,email,hashed_password,created_at,updated_at)
+            values ('release-dog','dog@example.test','not-a-login-hash',now(),now()),
+                   ('release-pig','pig@example.test','not-a-login-hash',now(),now());
+            insert into user_preferences (user_id,pet_type,created_at,updated_at)
+            select id,case username when 'release-fixture' then 'cat' when 'release-dog' then 'dog' else 'pig' end,now(),now()
+            from users where username in ('release-fixture','release-dog','release-pig');
         """)
         fingerprint_sql = """
             select json_build_object(
-                'users',(select json_agg(row(id,username,email)) from users),
-                'pets',(select json_agg(row(user_id,pet_type,intimacy_xp)) from pet_relationships),
-                'reminders',(select json_agg(row(user_id,title,status)) from reminders)
+                'users',(select json_agg(row(id,username,email) order by id) from users),
+                'pets',(select json_agg(row(user_id,pet_type,intimacy_xp) order by id) from pet_relationships),
+                'reminders',(select json_agg(row(user_id,title,status) order by id) from reminders),
+                'preferences',(select json_agg(row(user_id,pet_type,quick_chat_enabled,bubble_frequency) order by user_id) from user_preferences)
             )::text
         """
         before = sql("p1l_upgrade", fingerprint_sql)
         command("docker", "exec", container_id, "pg_dump", "-U", "postgres",
                 "-d", "p1l_upgrade", "-Fc", "-f", "/tmp/p1l-before-upgrade.dump")
         migrate("p1l_upgrade", "upgrade", "head")
+        assert sql("p1l_upgrade", "select version_num from alembic_version") == head
         assert sql("p1l_upgrade", fingerprint_sql) == before
-        report["checks"]["010_to_014_preserves_data"] = True
-        migrate("p1l_upgrade", "downgrade", "010")
+        verify_preference_default("p1l_upgrade", "pig")
+        report["checks"][f"{HISTORICAL_REVISION}_to_{head}_preserves_data"] = True
+        migrate("p1l_upgrade", "downgrade", HISTORICAL_REVISION)
+        assert sql("p1l_upgrade", "select version_num from alembic_version") == HISTORICAL_REVISION
         assert sql("p1l_upgrade", fingerprint_sql) == before
+        verify_preference_default("p1l_upgrade", "cat")
         migrate("p1l_upgrade", "upgrade", "head")
+        assert sql("p1l_upgrade", "select version_num from alembic_version") == head
+        assert sql("p1l_upgrade", fingerprint_sql) == before
+        verify_preference_default("p1l_upgrade", "pig")
         report["checks"]["synthetic_upgrade_downgrade_upgrade"] = True
+        report["checks"]["preference_defaults_upgrade_and_downgrade"] = True
         probe_output = command(sys.executable, str(Path(__file__).resolve()), "--probe",
                                env=environment("p1l_upgrade"))
         report["checks"]["postgres_services"] = json.loads(probe_output.splitlines()[-1])
@@ -185,8 +265,9 @@ def verify(image, report_path):
         sql("postgres", "create database p1l_restore")
         command("docker", "exec", container_id, "pg_restore", "--exit-on-error",
                 "-U", "postgres", "-d", "p1l_restore", "/tmp/p1l-before-upgrade.dump")
-        assert sql("p1l_restore", "select version_num from alembic_version") == "010"
+        assert sql("p1l_restore", "select version_num from alembic_version") == HISTORICAL_REVISION
         assert sql("p1l_restore", fingerprint_sql) == before
+        verify_preference_default("p1l_restore", "cat")
         sql("p1l_restore", "update reminders set title='restored write' where title='release reminder'")
         assert sql("p1l_restore", "select count(*) from reminders where title='restored write'") == "1"
         report["checks"]["backup_restore_read_write"] = True
@@ -203,6 +284,7 @@ def verify(image, report_path):
             except Exception as error:
                 report["status"] = "failed"
                 report["cleanup_error"] = str(error).replace(password, "[redacted]")
+        runtime.cleanup()
         serialized = json.dumps(report, ensure_ascii=False, indent=2)
         if report_path:
             Path(report_path).resolve().write_text(serialized + "\n", encoding="utf-8")

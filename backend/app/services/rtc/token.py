@@ -4,6 +4,7 @@ import hmac
 import io
 import secrets
 import struct
+import time
 
 
 TOKEN_VERSION = "001"
@@ -43,7 +44,7 @@ def generate_rtc_token(
     user_id: str,
     expire_at: int,
 ) -> str:
-    issued_at = int(secrets.randbelow(1 << 31))
+    issued_at = int(time.time())
     nonce = secrets.randbits(32)
     privileges = {
         TokenPrivileges.PUBLISH_STREAM: 0,

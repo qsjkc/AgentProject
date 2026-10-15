@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
+from starlette.concurrency import run_in_threadpool
 
 from app.core.security import get_current_superuser, get_password_hash
 from app.models.database import UserPreference, get_db
@@ -22,19 +23,13 @@ from app.schemas.admin import (
 from app.schemas.user import MessageResponse
 from app.services.pet_retention import get_weekly_review_funnel
 from app.services.rag import rag_service
+from app.services.user_preferences import get_or_create_preferences
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
 
 async def ensure_user_preferences(user_id: int, db: AsyncSession) -> UserPreference:
-    result = await db.execute(select(UserPreference).where(UserPreference.user_id == user_id))
-    preferences = result.scalar_one_or_none()
-    if preferences:
-        return preferences
-
-    preferences = UserPreference(user_id=user_id)
-    db.add(preferences)
-    await db.flush()
+    preferences, _ = await get_or_create_preferences(user_id, db)
     return preferences
 
 
@@ -67,15 +62,17 @@ async def delete_user_artifacts(user_id: int, db: AsyncSession) -> None:
     documents = result.scalars().all()
 
     for document in documents:
-        rag_service.delete_document(document.id)
+        await run_in_threadpool(rag_service.delete_document, document.id)
         file_path = Path(document.file_path)
-        if file_path.exists():
-            file_path.unlink()
+        await run_in_threadpool(file_path.unlink, missing_ok=True)
 
 
 async def get_user_or_404(user_id: int, db: AsyncSession) -> User:
     result = await db.execute(
-        select(User).options(selectinload(User.preferences)).where(User.id == user_id)
+        select(User)
+        .options(selectinload(User.preferences))
+        .where(User.id == user_id)
+        .execution_options(populate_existing=True)
     )
     user = result.scalar_one_or_none()
     if not user:
@@ -94,9 +91,10 @@ async def ensure_unique_identity(
     if exclude_user_id is not None:
         query = query.where(User.id != exclude_user_id)
 
-    existing = (await db.execute(query)).scalar_one_or_none()
-    if existing:
-        detail = "Username already registered" if existing.username == username else "Email already registered"
+    conflicts = (await db.execute(query)).scalars().all()
+    if conflicts:
+        # The two unique fields can belong to different existing accounts.
+        detail = "Username already registered" if any(user.username == username for user in conflicts) else "Email already registered"
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail)
 
 
@@ -227,7 +225,7 @@ async def create_user(
     user = User(
         username=payload.username,
         email=payload.email,
-        hashed_password=get_password_hash(payload.password),
+        hashed_password=await run_in_threadpool(get_password_hash, payload.password),
     )
     apply_user_state(user, status_value=payload.status, is_superuser=payload.is_superuser)
     db.add(user)
@@ -263,7 +261,7 @@ async def update_user(
     user.email = payload.email
     apply_user_state(user, status_value=payload.status, is_superuser=payload.is_superuser)
     if payload.password:
-        user.hashed_password = get_password_hash(payload.password)
+        user.hashed_password = await run_in_threadpool(get_password_hash, payload.password)
 
     await ensure_user_preferences(user.id, db)
     await db.commit()
@@ -299,13 +297,14 @@ async def delete_user(
     if current_admin.id == user_id:
         raise HTTPException(status_code=400, detail="You cannot delete your own account")
 
-    user = await get_user_or_404(user_id, db)
-    await delete_user_artifacts(user.id, db)
-    await db.execute(
-        delete(VerificationCode).where(
-            or_(VerificationCode.user_id == user.id, VerificationCode.email == user.email)
+    async with rag_service.user_operation(user_id):
+        user = await get_user_or_404(user_id, db)
+        await delete_user_artifacts(user.id, db)
+        await db.execute(
+            delete(VerificationCode).where(
+                or_(VerificationCode.user_id == user.id, VerificationCode.email == user.email)
+            )
         )
-    )
-    await db.delete(user)
-    await db.commit()
+        await db.delete(user)
+        await db.commit()
     return MessageResponse(message="User deleted")

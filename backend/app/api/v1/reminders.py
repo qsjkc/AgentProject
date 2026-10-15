@@ -2,8 +2,9 @@ from datetime import datetime
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.attributes import flag_modified
 
 from app.core.config import settings
 from app.core.logging import logger
@@ -156,19 +157,25 @@ async def update_reminder(
     reminder = await get_owned_reminder(reminder_id, current_user, db)
     delivery_changed = False
     remind_at_changed = False
+    reopened = payload.status == "pending" and reminder.status != "pending"
     if payload.title is not None:
         reminder.title = payload.title
-    if payload.remind_at is not None:
+    if payload.remind_at is not None and payload.remind_at != reminder.remind_at:
         reminder.remind_at = payload.remind_at
         delivery_changed = True
         remind_at_changed = True
     if payload.email_enabled is not None:
+        delivery_changed = delivery_changed or (
+            payload.email_enabled != reminder.email_enabled
+            or (payload.email_enabled and reminder.email_status == "failed")
+        )
         reminder.email_enabled = payload.email_enabled
-        delivery_changed = True
-    if payload.status is not None:
+    if payload.status is not None and payload.status != reminder.status:
         reminder.status = payload.status
         if payload.status in {"completed", "canceled"}:
             reminder.completed_at = utc_now()
+            if payload.status == "completed":
+                reminder.triggered_at = reminder.triggered_at or reminder.completed_at
             reminder.cancellation_source = (
                 "user" if payload.status == "canceled" else None
             )
@@ -177,8 +184,14 @@ async def update_reminder(
             reminder.completed_at = None
             reminder.cancellation_source = None
             delivery_changed = True
-    if reminder.status == "pending" and delivery_changed:
-        reset_email_delivery(reminder, force_resend=remind_at_changed)
+    if reminder.status == "pending":
+        if remind_at_changed or reopened:
+            reminder.triggered_at = None
+            # A trigger can commit after our initial read saw NULL. Force the
+            # reset into this UPDATE even when the ORM saw no local change.
+            flag_modified(reminder, "triggered_at")
+        if delivery_changed:
+            reset_email_delivery(reminder, force_resend=remind_at_changed)
     await db.commit()
     await db.refresh(reminder)
     if payload.status == "completed":
@@ -226,11 +239,30 @@ async def trigger_reminder(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    now = utc_now()
+    # A desktop poll may finish after the user moves or cancels the reminder.
+    # Check eligibility in the write itself, not against an earlier snapshot.
+    result = await db.execute(
+        update(Reminder)
+        .where(
+            Reminder.id == reminder_id,
+            Reminder.user_id == current_user.id,
+            Reminder.status == "pending",
+            Reminder.remind_at <= now,
+            Reminder.triggered_at.is_(None),
+        )
+        .values(triggered_at=now)
+        .execution_options(synchronize_session=False)
+    )
+    if result.rowcount == 1:
+        await db.commit()
+        return await get_owned_reminder(reminder_id, current_user, db)
+
     reminder = await get_owned_reminder(reminder_id, current_user, db)
     if reminder.status != "pending":
         raise HTTPException(status_code=409, detail="Only pending reminders can be triggered")
+    if reminder.remind_at > now:
+        raise HTTPException(status_code=409, detail="Reminder is not due yet")
     if reminder.triggered_at is None:
-        reminder.triggered_at = utc_now()
-        await db.commit()
-        await db.refresh(reminder)
+        raise HTTPException(status_code=409, detail="Reminder changed before it could be triggered")
     return reminder

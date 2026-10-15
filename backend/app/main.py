@@ -128,7 +128,7 @@ async def readiness():
             detail={
                 "status": "not_ready",
                 "checks": {
-                    "database": f"error: {exc}",
+                    "database": "error",
                     "storage": storage_checks,
                 },
             },

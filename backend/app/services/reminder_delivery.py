@@ -6,7 +6,6 @@ from uuid import uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy import or_, select, update
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.logging import logger
@@ -140,26 +139,27 @@ class ReminderDeliveryService:
         claim_token = str(uuid4())
 
         async with async_session_maker.begin() as session:
+            eligible = (
+                Reminder.status == "pending",
+                Reminder.email_enabled.is_(True),
+                Reminder.email_sent_at.is_(None),
+                Reminder.email_status.in_(("pending", "retrying", "sending")),
+                Reminder.remind_at <= now,
+                Reminder.email_attempt_count
+                < max(1, settings.REMINDER_EMAIL_MAX_ATTEMPTS),
+                or_(
+                    Reminder.email_next_attempt_at.is_(None),
+                    Reminder.email_next_attempt_at <= now,
+                ),
+                or_(
+                    Reminder.email_claimed_at.is_(None),
+                    Reminder.email_claimed_at <= stale_before,
+                ),
+            )
             query = (
                 select(Reminder, User.email, User.username)
                 .join(User, User.id == Reminder.user_id)
-                .where(
-                    Reminder.status == "pending",
-                    Reminder.email_enabled.is_(True),
-                    Reminder.email_sent_at.is_(None),
-                    Reminder.email_status.in_(("pending", "retrying", "sending")),
-                    Reminder.remind_at <= now,
-                    Reminder.email_attempt_count
-                    < max(1, settings.REMINDER_EMAIL_MAX_ATTEMPTS),
-                    or_(
-                        Reminder.email_next_attempt_at.is_(None),
-                        Reminder.email_next_attempt_at <= now,
-                    ),
-                    or_(
-                        Reminder.email_claimed_at.is_(None),
-                        Reminder.email_claimed_at <= stale_before,
-                    ),
-                )
+                .where(*eligible)
                 .order_by(Reminder.remind_at.asc(), Reminder.id.asc())
                 .limit(1)
                 .with_for_update(skip_locked=True, of=Reminder)
@@ -169,12 +169,25 @@ class ReminderDeliveryService:
                 return None
 
             reminder, recipient, username = row
-            reminder.email_status = "sending"
-            reminder.email_claimed_at = now
-            reminder.email_claim_token = claim_token
-            reminder.email_attempt_count = (reminder.email_attempt_count or 0) + 1
-            reminder.email_next_attempt_at = None
-            reminder.email_last_error = None
+            # SQLite ignores FOR UPDATE. Recheck eligibility atomically so a
+            # second worker cannot replace a live claim after the initial read.
+            result = await session.execute(
+                update(Reminder)
+                .where(Reminder.id == reminder.id, *eligible)
+                .values(
+                    email_status="sending",
+                    email_claimed_at=now,
+                    email_claim_token=claim_token,
+                    email_attempt_count=Reminder.email_attempt_count + 1,
+                    email_next_attempt_at=None,
+                    email_last_error=None,
+                )
+                .returning(Reminder.email_attempt_count)
+                .execution_options(synchronize_session=False)
+            )
+            attempt_count = result.scalar_one_or_none()
+            if attempt_count is None:
+                return None
             return ClaimedReminder(
                 id=reminder.id,
                 claim_token=claim_token,
@@ -183,7 +196,7 @@ class ReminderDeliveryService:
                 pet_type=reminder.pet_type,
                 title=reminder.title,
                 remind_at=reminder.remind_at,
-                attempt_count=reminder.email_attempt_count,
+                attempt_count=attempt_count,
             )
 
     async def _claim_is_active(self, claimed: ClaimedReminder) -> bool:
@@ -200,15 +213,16 @@ class ReminderDeliveryService:
 
     async def _mark_sent(self, claimed: ClaimedReminder) -> None:
         async with async_session_maker.begin() as session:
-            reminder = await self._get_claimed(session, claimed)
-            if reminder is None:
-                return
-            reminder.email_status = "sent"
-            reminder.email_sent_at = utc_now()
-            reminder.email_claimed_at = None
-            reminder.email_claim_token = None
-            reminder.email_next_attempt_at = None
-            reminder.email_last_error = None
+            await session.execute(
+                self._claimed_update(claimed).values(
+                    email_status="sent",
+                    email_sent_at=utc_now(),
+                    email_claimed_at=None,
+                    email_claim_token=None,
+                    email_next_attempt_at=None,
+                    email_last_error=None,
+                )
+            )
 
     async def _mark_failed_attempt(
         self,
@@ -216,47 +230,47 @@ class ReminderDeliveryService:
         error: Exception,
     ) -> None:
         async with async_session_maker.begin() as session:
-            reminder = await self._get_claimed(session, claimed)
-            if reminder is None:
-                return
-
             max_attempts = max(1, settings.REMINDER_EMAIL_MAX_ATTEMPTS)
             if claimed.attempt_count >= max_attempts:
-                reminder.email_status = "failed"
-                reminder.email_next_attempt_at = None
+                email_status = "failed"
+                next_attempt_at = None
             else:
                 delay = max(1, settings.REMINDER_EMAIL_RETRY_BASE_SECONDS) * (
                     2 ** (claimed.attempt_count - 1)
                 )
-                reminder.email_status = "retrying"
-                reminder.email_next_attempt_at = utc_now() + timedelta(seconds=delay)
-            reminder.email_claimed_at = None
-            reminder.email_claim_token = None
-            reminder.email_last_error = (
-                str(error)[:500]
-                if isinstance(error, EmailDeliveryError)
-                else type(error).__name__
+                email_status = "retrying"
+                next_attempt_at = utc_now() + timedelta(seconds=delay)
+            result = await session.execute(
+                self._claimed_update(claimed).values(
+                    email_status=email_status,
+                    email_next_attempt_at=next_attempt_at,
+                    email_claimed_at=None,
+                    email_claim_token=None,
+                    email_last_error=(
+                        str(error)[:500]
+                        if isinstance(error, EmailDeliveryError)
+                        else type(error).__name__
+                    ),
+                )
             )
+            if not result.rowcount:
+                return
             logger.warning(
                 "Reminder email failed reminder_id=%s attempt=%s status=%s",
-                reminder.id,
+                claimed.id,
                 claimed.attempt_count,
-                reminder.email_status,
+                email_status,
             )
 
     @staticmethod
-    async def _get_claimed(
-        session: AsyncSession,
-        claimed: ClaimedReminder,
-    ) -> Reminder | None:
-        result = await session.execute(
-            select(Reminder).where(
-                Reminder.id == claimed.id,
-                Reminder.email_status == "sending",
-                Reminder.email_claim_token == claimed.claim_token,
-            )
+    def _claimed_update(claimed: ClaimedReminder):
+        return update(Reminder).where(
+            Reminder.id == claimed.id,
+            Reminder.status == "pending",
+            Reminder.email_enabled.is_(True),
+            Reminder.email_status == "sending",
+            Reminder.email_claim_token == claimed.claim_token,
         )
-        return result.scalar_one_or_none()
 
 
 def build_reminder_email(claimed: ClaimedReminder) -> tuple[str, str]:

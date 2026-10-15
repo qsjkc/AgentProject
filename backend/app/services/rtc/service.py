@@ -2,7 +2,7 @@ import asyncio
 import ipaddress
 import json
 from copy import deepcopy
-from datetime import timedelta
+from datetime import UTC, timedelta
 from typing import Any
 from urllib.parse import urlparse
 from uuid import uuid4
@@ -599,7 +599,9 @@ class VoiceDemoService:
             app_key=settings.VOLC_AI_RTC_APP_KEY,
             room_id=room_id,
             user_id=user_id,
-            expire_at=int(expire_at.timestamp()),
+            # utc_now() is naive UTC for the store/DB contract. Attach UTC
+            # before epoch conversion; naive timestamp() uses the host zone.
+            expire_at=int(expire_at.replace(tzinfo=UTC).timestamp()),
         )
         record = VoiceDemoSessionRecord(
             session_id=session_id,

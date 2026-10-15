@@ -21,13 +21,13 @@ class UserLogin(BaseModel):
 
 
 class UserPreferenceBase(BaseModel):
-    pet_type: PetType = "cat"
+    pet_type: PetType = "pig"
     quick_chat_enabled: bool = True
     bubble_frequency: int = Field(default=120, ge=30, le=3600)
 
 
 class UserPreferenceUpdate(UserPreferenceBase):
-    pass
+    """Omitted fields keep their stored value; explicit nulls remain invalid."""
 
 
 class UserPreferenceResponse(UserPreferenceBase):

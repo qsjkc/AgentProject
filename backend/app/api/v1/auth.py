@@ -1,12 +1,12 @@
-import random
-import string
+import secrets
 from datetime import timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm
-from sqlalchemy import delete, or_, select
+from sqlalchemy import delete, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
+from starlette.concurrency import run_in_threadpool
 
 from app.core.security import (
     create_access_token,
@@ -28,12 +28,13 @@ from app.schemas.user import (
     VerificationCodeRequest,
 )
 from app.services.email import EmailDeliveryError, send_email
+from app.services.user_preferences import get_or_create_preferences
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
 def generate_verification_code() -> str:
-    return "".join(random.choices(string.digits, k=6))
+    return f"{secrets.randbelow(1_000_000):06d}"
 
 
 async def send_auth_email(email: str, subject: str, html_content: str) -> bool:
@@ -94,15 +95,40 @@ async def get_valid_code(
     verification = result.scalars().first()
     if not verification:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid verification code")
-    if verification.expires_at < utc_now():
+    if verification.expires_at <= utc_now():
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Verification code expired")
     return verification
 
 
+async def consume_verification_code(db: AsyncSession, verification: VerificationCode) -> None:
+    """Claim the code in the same transaction as the account change.
+
+    A prior SELECT is insufficient: simultaneous requests may both validate it.
+    Conditional UPDATE also rejects a code reissued or expired while waiting.
+    The caller commits both writes, or get_db rolls both back on failure.
+    """
+    consumed_at = utc_now()
+    result = await db.execute(
+        update(VerificationCode)
+        .where(
+            VerificationCode.id == verification.id,
+            VerificationCode.code == verification.code,
+            VerificationCode.email == verification.email,
+            VerificationCode.purpose == verification.purpose,
+            VerificationCode.created_at == verification.created_at,
+            VerificationCode.expires_at == verification.expires_at,
+            VerificationCode.consumed_at.is_(None),
+            VerificationCode.expires_at > consumed_at,
+        )
+        .values(consumed_at=consumed_at)
+        .execution_options(synchronize_session=False)
+    )
+    if result.rowcount != 1:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid verification code")
+
+
 async def create_default_preferences(user_id: int, db: AsyncSession) -> UserPreference:
-    preferences = UserPreference(user_id=user_id)
-    db.add(preferences)
-    await db.flush()
+    preferences, _ = await get_or_create_preferences(user_id, db)
     return preferences
 
 
@@ -180,18 +206,18 @@ async def register(
         purpose="register",
         code=user_create.verification_code,
     )
+    await consume_verification_code(db, verification)
 
     user = User(
         username=user_create.username,
         email=user_create.email,
-        hashed_password=get_password_hash(user_create.password),
+        hashed_password=await run_in_threadpool(get_password_hash, user_create.password),
         status="active",
         is_active=True,
     )
     db.add(user)
     await db.flush()
     await create_default_preferences(user.id, db)
-    verification.consumed_at = utc_now()
     await db.commit()
 
     return await load_user_with_preferences(user.id, db)
@@ -204,14 +230,19 @@ async def login(
 ) -> Token:
     identifier = form_data.username.strip()
     result = await db.execute(select(User).where(or_(User.username == identifier, User.email == identifier)))
-    user = result.scalar_one_or_none()
-
-    if not user or not verify_password(form_data.password, user.hashed_password):
+    # Username and email are unique separately, so one identifier can match
+    # two different accounts. Authenticate only an unambiguous password match.
+    matches = []
+    for candidate in result.scalars().all():
+        if await run_in_threadpool(verify_password, form_data.password, candidate.hashed_password):
+            matches.append(candidate)
+    if len(matches) != 1:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect username or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
+    user = matches[0]
     if user.status != "active" or not user.is_active:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User is disabled")
 
@@ -237,9 +268,11 @@ async def reset_password(
     user = result.scalar_one_or_none()
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    if verification.user_id != user.id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid verification code")
 
-    user.hashed_password = get_password_hash(payload.new_password)
-    verification.consumed_at = utc_now()
+    await consume_verification_code(db, verification)
+    user.hashed_password = await run_in_threadpool(get_password_hash, payload.new_password)
     await db.commit()
     return MessageResponse(message="Password reset successful")
 
@@ -250,10 +283,10 @@ async def change_password(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> MessageResponse:
-    if not verify_password(payload.current_password, current_user.hashed_password):
+    if not await run_in_threadpool(verify_password, payload.current_password, current_user.hashed_password):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Current password is incorrect")
 
-    current_user.hashed_password = get_password_hash(payload.new_password)
+    current_user.hashed_password = await run_in_threadpool(get_password_hash, payload.new_password)
     await db.commit()
     return MessageResponse(message="Password updated")
 
