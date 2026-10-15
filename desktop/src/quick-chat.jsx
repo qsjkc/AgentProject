@@ -1,13 +1,34 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import ReactDOM from 'react-dom/client'
 
 import './desktop.css'
-import { clearSessionToken, desktopApi, getApiBaseUrl, getLanguage, getSessionToken } from './shared/api'
+import {
+  captureApiOperationContext,
+  desktopApi,
+  getApiBaseUrl,
+  getLanguage,
+  getSessionSnapshot,
+} from './shared/api'
+import {
+  adoptRelationshipCapability,
+  adoptPetStateCapability,
+  commitAccountOperation,
+  createAccountOperationGate,
+  deriveQuickChatPetStateContext,
+  isAuthContextChangedError,
+} from './shared/pet-account-context'
 import { normalizeLanguage, t } from './shared/i18n'
+import { restoreFailedChatDraft, shouldSubmitChatInput } from './shared/chat-input'
 import { getPetReminderCopy } from './shared/pet-personality'
-import { refreshPetRelationship } from './shared/pet-relationships-api'
+import { getPetRelationship } from './shared/pet-relationships-api'
 import { getPetVisual } from './shared/pets'
-import { parseOneTimeReminder } from './shared/reminder-parser'
+import { PET_ONBOARDING_CAPABILITIES } from './shared/pet-onboarding-main'
+import { parseReminder } from './shared/reminder-parser'
+import { getReminderParseFeedback } from './shared/reminder-feedback'
+import {
+  getBrowserTimeZone,
+  getReminderRecurrenceLabel,
+} from './shared/reminder-recurrence'
 import { createReminder } from './shared/reminders-api'
 
 function formatError(error, fallbackMessage) {
@@ -59,41 +80,78 @@ function getQuickChatIntro(language, petLabel) {
 function QuickChatApp() {
   const [ready, setReady] = useState(false)
   const [message, setMessage] = useState('')
+  const [reminderDraftError, setReminderDraftError] = useState(null)
+  const messageInputRef = useRef(null)
   const [sessionId, setSessionId] = useState(null)
   const [useRag, setUseRag] = useState(true)
   const [messages, setMessages] = useState([])
   const [loading, setLoading] = useState(false)
+  const [syncError, setSyncError] = useState(false)
   const [hasToken, setHasToken] = useState(false)
   const [hasApiBaseUrl, setHasApiBaseUrl] = useState(false)
   const [language, setLanguage] = useState('zh-CN')
   const [petType, setPetType] = useState('cat')
+  const petContextRef = useRef({
+    hasSession: false,
+    petType: 'cat',
+    userId: null,
+    session: null,
+    authoritative: null,
+  })
+  const syncEpochRef = useRef(0)
+  const reminderGateRef = useRef(null)
+  const chatGateRef = useRef(null)
+  if (!reminderGateRef.current) reminderGateRef.current = createAccountOperationGate()
+  if (!chatGateRef.current) chatGateRef.current = createAccountOperationGate()
+  petContextRef.current.petType = petType
 
   const petVisual = useMemo(() => getPetVisual(petType, 'idle'), [petType])
   const petLabel = useMemo(() => t(language, petVisual.labelKey), [language, petVisual.labelKey])
   const recentMessages = messages.slice(-4)
+  const reminderDraftFeedback = getReminderParseFeedback(reminderDraftError, language)
+  useEffect(() => { setReminderDraftError(null) }, [message, petType, sessionId])
 
   useEffect(() => {
     let active = true
+    let syncId = 0
 
     const syncState = async () => {
+      const requestId = ++syncId
+      const syncEpoch = syncEpochRef.current
       try {
-        const [token, apiBaseUrl, savedLanguage, petState] = await Promise.all([
-          getSessionToken(),
+        const [apiBaseUrl, savedLanguage, petState] = await Promise.all([
           getApiBaseUrl(),
           getLanguage(),
           window.desktopBridge?.getPetState?.(),
         ])
 
-        if (!active) {
+        if (!active || requestId !== syncId) {
           return
         }
-
-        setHasToken(Boolean(token))
+        // Configuration is independent of account capability hydration. A focus
+        // refresh must not cancel an in-flight trusted pet-state broadcast.
         setHasApiBaseUrl(Boolean(apiBaseUrl))
         setLanguage(normalizeLanguage(savedLanguage))
+        if (syncEpochRef.current !== syncEpoch) return
+        const operationContext = await captureApiOperationContext({
+          ...petContextRef.current,
+          userId: petState?.userId ?? null,
+          petType: petState?.petType || 'cat',
+        }, 'pet')
+        if (!active || requestId !== syncId || syncEpochRef.current !== syncEpoch) return
+
+        const token = operationContext?.session?.token
+        setHasToken(Boolean(token))
 
         if (petState?.petType) {
           setPetType(petState.petType)
+        }
+        petContextRef.current = {
+          hasSession: Boolean(token),
+          petType: petState?.petType || 'cat',
+          userId: petState?.userId ?? null,
+          session: operationContext?.session || null,
+          authoritative: operationContext?.authoritative || null,
         }
 
         if (!token || !apiBaseUrl) {
@@ -101,27 +159,37 @@ function QuickChatApp() {
           return
         }
 
-        const preferences = await desktopApi.getPreferences()
-        if (!active) {
+        const preferences = await desktopApi.getPreferences(operationContext)
+        if (!active || requestId !== syncId || syncEpochRef.current !== syncEpoch) {
           return
         }
+        setSyncError(false)
 
-        setPetType(preferences?.pet_type || 'cat')
+        const nextPetType = preferences?.pet_type || 'cat'
+        setPetType(nextPetType)
+        petContextRef.current = {
+          hasSession: true,
+          petType: nextPetType,
+          userId: petState?.userId ?? null,
+          session: operationContext.session,
+          authoritative: operationContext.authoritative,
+        }
         await logDesktopDebug({
           event: 'quick-chat-sync-session',
           petType: preferences?.pet_type || petState?.petType || 'cat',
           hasToken: Boolean(token),
           hasApiBaseUrl: Boolean(apiBaseUrl),
         })
-      } catch {
-        if (active) {
-          setHasToken(false)
-          setHasApiBaseUrl(false)
-          setLanguage('zh-CN')
-          setPetType('cat')
+      } catch (error) {
+        void logDesktopDebug({ event: 'quick-chat-sync-failed', reason: error?.message })
+        // Preferences are an optional refresh. A temporary failure must not
+        // revoke the trusted identity or strand an in-flight chat's completion.
+        // An actual expired session is cleared by the API and pet-state event.
+        if (active && requestId === syncId && syncEpochRef.current === syncEpoch && !isAuthContextChangedError(error)) {
+          setSyncError(true)
         }
       } finally {
-        if (active) {
+        if (active && requestId === syncId) {
           setReady(true)
         }
       }
@@ -129,17 +197,37 @@ function QuickChatApp() {
 
     void syncState()
     window.addEventListener('focus', syncState)
-    void window.desktopBridge?.getRuntimeState?.().then((state) =>
-      logDesktopDebug({
-        event: 'quick-chat-runtime-state-initial',
-        runtimeState: state,
-      }),
-    )
+    void logDesktopDebug({ event: 'quick-chat-runtime-ready' })
 
     return () => {
       active = false
+      syncEpochRef.current += 1
       window.removeEventListener('focus', syncState)
     }
+  }, [])
+
+  useEffect(() => {
+    const unsubscribe = window.desktopBridge?.onPetRelationshipChanged?.((payload) => {
+      if (!payload || typeof payload !== 'object') return
+      const epoch = syncEpochRef.current
+      void (async () => {
+        const adopted = await adoptRelationshipCapability({
+          payload,
+          currentContext: petContextRef.current,
+          validateCapability: (capability, requiredScope, semantic) => (
+            window.desktopBridge?.renewOperationContext?.(capability, requiredScope, semantic)
+          ),
+        })
+        if (!adopted || syncEpochRef.current !== epoch) return
+        petContextRef.current = {
+          ...petContextRef.current,
+          relationshipId: adopted.relationship.id,
+          authoritative: adopted.authoritative,
+          local: adopted.local,
+        }
+      })()
+    })
+    return () => unsubscribe?.()
   }, [])
 
   useEffect(() => {
@@ -147,7 +235,6 @@ function QuickChatApp() {
       if (!payload || typeof payload !== 'object') {
         return
       }
-
       if (payload.language) {
         setLanguage(normalizeLanguage(payload.language))
       }
@@ -155,9 +242,74 @@ function QuickChatApp() {
       if (payload.petType) {
         setPetType(payload.petType)
       }
+      const transition = deriveQuickChatPetStateContext(petContextRef.current, payload)
+      const { context: nextContext, identityChanged } = transition
+      if (identityChanged) {
+        syncEpochRef.current += 1
+        reminderGateRef.current.invalidate()
+        chatGateRef.current.invalidate()
+        setLoading(false)
+        setSyncError(false)
+        setMessages([])
+        setMessage('')
+        setSessionId(null)
+      }
+      petContextRef.current = nextContext
 
-      if (typeof payload.hasSession === 'boolean') {
-        setHasToken(payload.hasSession)
+      if (identityChanged) {
+        setHasToken(false)
+      }
+      const stateEpoch = syncEpochRef.current
+      if (nextContext.hasSession && payload.authoritative) {
+        void adoptPetStateCapability({
+          payload,
+          currentContext: nextContext,
+          validateCapability: (capability, requiredScope, semantic) => (
+            window.desktopBridge?.renewOperationContext?.(capability, requiredScope, semantic)
+          ),
+        }).then(async (adopted) => {
+          const session = adopted ? await getSessionSnapshot() : null
+          if (adopted && syncEpochRef.current === stateEpoch) {
+            const previousSession = petContextRef.current.session
+            if (previousSession && (previousSession.token !== session?.token
+              || previousSession.generation !== session?.generation)) {
+              syncEpochRef.current += 1
+              reminderGateRef.current.invalidate()
+              chatGateRef.current.invalidate()
+              setLoading(false)
+              setMessages([])
+              setMessage('')
+              setSessionId(null)
+            }
+            petContextRef.current = {
+              ...petContextRef.current,
+              authoritative: adopted.authoritative,
+              session,
+              local: adopted.local,
+            }
+            setHasToken(Boolean(session?.token))
+          }
+        }).catch(() => undefined)
+        return
+      }
+      if (transition.needsRecapture) {
+        void getSessionSnapshot().then(async (session) => {
+          const initiating = { ...nextContext, session }
+          const operationContext = await captureApiOperationContext(initiating, 'pet')
+          if (
+            syncEpochRef.current === stateEpoch
+            && petContextRef.current.hasSession
+            && Number(petContextRef.current.userId) === Number(nextContext.userId)
+            && petContextRef.current.petType === nextContext.petType
+          ) {
+            petContextRef.current = operationContext
+            setHasToken(Boolean(operationContext.session?.token))
+          }
+        }).catch(() => undefined)
+      } else if (!nextContext.hasSession) {
+        setHasToken(false)
+      } else if (!identityChanged) {
+        setHasToken(Boolean(nextContext.session?.token))
       }
       void logDesktopDebug({
         event: 'quick-chat-pet-state-changed',
@@ -210,67 +362,162 @@ function QuickChatApp() {
       return
     }
 
+    if (!petContextRef.current.authoritative) {
+      return
+    }
+
     const outgoingMessage = message.trim()
-    const parsedReminder = parseOneTimeReminder(outgoingMessage)
+    setReminderDraftError(null)
+    const parsedReminder = parseReminder(outgoingMessage)
     if (parsedReminder.ok) {
+      let reminderContext = reminderGateRef.current.begin({ ...petContextRef.current })
       setMessages((current) => [...current, { role: 'user', content: outgoingMessage }])
       setMessage('')
       setLoading(true)
+      let reminderCreated = false
       try {
+        const operationContext = await captureApiOperationContext(reminderContext, 'pet')
         const reminder = await createReminder({
-          pet_type: petType,
+          pet_type: reminderContext.petType,
           title: parsedReminder.title,
           source_text: parsedReminder.sourceText,
           remind_at: parsedReminder.remindAt.toISOString(),
-        })
-        void refreshPetRelationship(petType).catch((error) => {
-          void logDesktopDebug({
-            event: 'quick-chat-relationship-refresh-failed',
-            source: 'reminder-created',
-            reason: error instanceof Error ? error.message : String(error),
-          })
-        })
-        const timeText = parsedReminder.remindAt.toLocaleString(language === 'zh-CN' ? 'zh-CN' : 'en-US', {
+          recurrence_type: parsedReminder.recurrenceType,
+          recurrence_timezone: parsedReminder.recurrenceType === 'once'
+            ? null
+            : getBrowserTimeZone(),
+        }, operationContext)
+        reminderCreated = true
+        if (
+          !reminderGateRef.current.isCurrent(reminderContext, petContextRef.current)
+          || Number(reminder.user_id) !== Number(reminderContext.userId)
+        ) {
+          return
+        }
+        const confirmedRemindAt = new Date(reminder.remind_at)
+        const timeText = confirmedRemindAt.toLocaleString(language === 'zh-CN' ? 'zh-CN' : 'en-US', {
           month: 'numeric',
           day: 'numeric',
           hour: '2-digit',
           minute: '2-digit',
         })
-        const copy = getPetReminderCopy(petType).createdReminder(reminder.title, timeText)
-        setMessages((current) => [...current, { role: 'assistant', content: copy }])
+        const copy = getPetReminderCopy(reminderContext.petType).createdReminder(
+          reminder.title,
+          timeText,
+          reminder.email_enabled,
+          getReminderRecurrenceLabel(
+            reminder.recurrence_type,
+            reminder.remind_at,
+            language,
+          ),
+        )
+        commitAccountOperation(
+          reminderGateRef.current,
+          reminderContext,
+          petContextRef.current,
+          () => setMessages((current) => [...current, { role: 'assistant', content: copy }]),
+        )
+        try {
+          const nextRelationship = await getPetRelationship(
+            reminderContext.petType,
+            reminderContext,
+          )
+          if (
+            !reminderGateRef.current.isCurrent(reminderContext, petContextRef.current)
+            || Number(nextRelationship?.user_id) !== Number(reminderContext.userId)
+            || nextRelationship?.pet_type !== reminderContext.petType
+          ) return
+          const cacheResult = await window.desktopBridge?.cachePetRelationship?.(
+            nextRelationship,
+            reminderContext,
+          )
+          if (!cacheResult?.ok || !cacheResult.authoritative) return
+          petContextRef.current = {
+            ...petContextRef.current,
+            relationshipId: nextRelationship.id,
+            authoritative: cacheResult.authoritative,
+          }
+          reminderContext = reminderGateRef.current.begin({ ...petContextRef.current })
+        } catch (error) {
+          await logDesktopDebug({
+            event: 'quick-chat-relationship-refresh-failed',
+            source: 'reminder-created',
+            reason: error instanceof Error ? error.message : String(error),
+          })
+          return
+        }
+        if (
+          petType === 'pig'
+          && reminderContext.petType === 'pig'
+          && petContextRef.current.petType === reminderContext.petType
+          && Number.isInteger(Number(reminderContext.userId))
+          && Number(reminderContext.userId) > 0
+          && Number(petContextRef.current.userId) === Number(reminderContext.userId)
+          && Number(reminder.user_id) === Number(reminderContext.userId)
+        ) {
+          const onboardingResult = await window.desktopBridge?.recordPetOnboardingObservation?.(
+            'pig',
+            PET_ONBOARDING_CAPABILITIES.REMINDER_CREATED,
+            { reminderId: reminder.id },
+            reminderContext,
+          )
+          if (!reminderGateRef.current.isCurrent(reminderContext, petContextRef.current)) {
+            return
+          }
+          if (onboardingResult === undefined || onboardingResult?.ok === false) {
+            await logDesktopDebug({
+              event: 'quick-chat-onboarding-reminder-observation-rejected',
+              reason: onboardingResult?.reason || 'onboarding_bridge_unavailable',
+              reminderId: reminder.id,
+            })
+            if (!reminderGateRef.current.isCurrent(reminderContext, petContextRef.current)) {
+              return
+            }
+          }
+        }
+        if (!reminderGateRef.current.isCurrent(reminderContext, petContextRef.current)) {
+          return
+        }
         await window.desktopBridge?.notifyPetReminderEvent?.({
           type: 'created',
-          petType,
+          petType: reminderContext.petType,
           title: reminder.title,
           message: copy,
-        })
+          reminderId: reminder.id,
+        }, reminderContext)
       } catch (error) {
         const detail = formatError(error, t(language, 'messageDeliveryFailed'))
-        setMessages((current) => [...current, { role: 'assistant', content: detail }])
+        commitAccountOperation(
+          reminderGateRef.current,
+          reminderContext,
+          petContextRef.current,
+          () => {
+            if (!reminderCreated) {
+              setMessage((current) => restoreFailedChatDraft(current, outgoingMessage))
+              setMessages((current) => [...current, { role: 'assistant', content: detail }])
+            }
+          },
+        )
       } finally {
-        setLoading(false)
+        commitAccountOperation(
+          reminderGateRef.current,
+          reminderContext,
+          petContextRef.current,
+          () => setLoading(false),
+        )
       }
       return
     }
-    if (parsedReminder.reason === 'missing_time') {
-      const copy = getPetReminderCopy(petType).parseFailed
-      setMessages((current) => [
-        ...current,
-        { role: 'user', content: outgoingMessage },
-        { role: 'assistant', content: copy },
-      ])
-      setMessage('')
-      await window.desktopBridge?.notifyPetReminderEvent?.({
-        type: 'parse_failed',
-        petType,
-        message: copy,
-      })
+    if (getReminderParseFeedback(parsedReminder.reason, language)) {
+      setReminderDraftError(parsedReminder.reason)
+      messageInputRef.current?.focus()
       return
     }
 
     setMessages((current) => [...current, { role: 'user', content: outgoingMessage }])
     setMessage('')
     setLoading(true)
+    const requestContext = chatGateRef.current.begin({ ...petContextRef.current })
 
     try {
       await logDesktopDebug({
@@ -278,13 +525,17 @@ function QuickChatApp() {
         petType,
         hasSessionId: Boolean(sessionId),
       })
+      const operationContext = await captureApiOperationContext(requestContext, 'pet')
       const response = await desktopApi.sendMessage({
         message: outgoingMessage,
         session_id: sessionId ?? undefined,
         use_rag: useRag,
         pet_type: petType,
         compact_response: true,
-      })
+      }, operationContext)
+      if (!chatGateRef.current.isCurrent(requestContext, petContextRef.current)) {
+        return
+      }
       setSessionId(response.session_id)
       setMessages((current) => [
         ...current,
@@ -300,25 +551,35 @@ function QuickChatApp() {
         petType,
         sessionId: response.session_id,
       })
+      if (!chatGateRef.current.isCurrent(requestContext, petContextRef.current)) {
+        return
+      }
     } catch (error) {
       const detail = formatError(error, t(language, 'messageDeliveryFailed'))
-      setMessages((current) => [...current, { role: 'assistant', content: detail }])
-      if (detail.toLowerCase().includes('validate credentials')) {
-        await clearSessionToken()
-        setHasToken(false)
+      if (chatGateRef.current.isCurrent(requestContext, petContextRef.current)) {
+        setMessage((current) => restoreFailedChatDraft(current, outgoingMessage))
+        setMessages((current) => [...current, { role: 'assistant', content: detail }])
+        if (detail.toLowerCase().includes('validate credentials')) {
+          setHasToken(false)
+        }
+        await logDesktopDebug({
+          event: 'quick-chat-send-failed',
+          petType: requestContext.petType,
+          reason: detail,
+        })
       }
-      await logDesktopDebug({
-        event: 'quick-chat-send-failed',
-        petType,
-        reason: detail,
-      })
     } finally {
-      setLoading(false)
+      commitAccountOperation(
+        chatGateRef.current,
+        requestContext,
+        petContextRef.current,
+        () => setLoading(false),
+      )
     }
   }
 
   const handleInputKeyDown = (event) => {
-    if (event.key === 'Enter' && !event.shiftKey) {
+    if (shouldSubmitChatInput(event)) {
       event.preventDefault()
       void sendMessage()
     }
@@ -364,6 +625,11 @@ function QuickChatApp() {
               </div>
             ) : (
               <>
+                {syncError && <div className="quick-chat-footnote" role="status" data-e2e="quick-chat-sync-error">
+                  {language === 'zh-CN'
+                    ? '暂时没能刷新设置，当前对话仍保留。重新打开窗口时会再试。'
+                    : 'Settings could not refresh. Your conversation is kept; reopening this window will retry.'}
+                </div>}
                 <div className="quick-chat-thread">
                   {recentMessages.length === 0 && (
                     <div className="quick-chat-message assistant quick-chat-message-empty">
@@ -371,7 +637,11 @@ function QuickChatApp() {
                     </div>
                   )}
                   {recentMessages.map((item, index) => (
-                    <div key={`${item.role}-${index}`} className={`quick-chat-message ${item.role}`}>
+                    <div
+                      key={`${item.role}-${index}`}
+                      className={`quick-chat-message ${item.role}`}
+                      data-e2e={item.role === 'assistant' ? 'quick-chat-assistant-message' : undefined}
+                    >
                       <div className={`quick-chat-message-body ${item.role}`}>{item.content}</div>
                       {item.role === 'assistant' && item.knowledgeUsed && (
                         <div className="quick-chat-footnote">
@@ -385,19 +655,31 @@ function QuickChatApp() {
                 <div className="quick-chat-input-wrap">
                   <div className="quick-chat-composer">
                     <textarea
+                      ref={messageInputRef}
                       className="quick-chat-input no-drag"
+                      data-e2e="quick-chat-input"
                       rows={3}
                       value={message}
+                      aria-label={t(language, 'quickChatPlaceholder', { pet: petLabel })}
+                      aria-invalid={Boolean(reminderDraftFeedback)}
+                      aria-describedby={reminderDraftFeedback ? 'quick-reminder-draft-feedback' : undefined}
                       onChange={(event) => setMessage(event.target.value)}
                       onKeyDown={handleInputKeyDown}
                       placeholder={t(language, 'quickChatPlaceholder', { pet: petLabel })}
                     />
+                    {reminderDraftFeedback && <div id="quick-reminder-draft-feedback" className="reminder-draft-feedback" role="alert" data-e2e="quick-reminder-draft-error">{reminderDraftFeedback}</div>}
                     <div className="quick-chat-toolbar">
                       <label className="quick-chat-toggle no-drag">
                         <input type="checkbox" checked={useRag} onChange={(event) => setUseRag(event.target.checked)} />
                         <span>{t(language, 'enableKnowledgeBase')}</span>
                       </label>
-                      <button type="button" className="quick-chat-send no-drag" onClick={sendMessage} disabled={loading}>
+                      <button
+                        type="button"
+                        className="quick-chat-send no-drag"
+                        data-e2e="quick-chat-send"
+                        onClick={sendMessage}
+                        disabled={loading}
+                      >
                         {loading ? t(language, 'sending') : t(language, 'send')}
                       </button>
                     </div>

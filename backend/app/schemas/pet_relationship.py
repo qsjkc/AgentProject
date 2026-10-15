@@ -1,5 +1,6 @@
-from datetime import datetime
+from datetime import date, datetime
 from typing import Literal, Optional
+from uuid import UUID
 
 from pydantic import BaseModel, Field
 
@@ -73,6 +74,26 @@ class PetOutfitUpdateRequest(BaseModel):
     item_id: Optional[str] = Field(default=None, max_length=64)
 
 
+class PetRelationshipMilestoneClaimRequest(BaseModel):
+    claim_token: UUID
+
+
+class PetRelationshipMilestoneAckRequest(BaseModel):
+    claim_token: UUID
+
+
+class PetRelationshipMilestoneResponse(BaseModel):
+    id: int
+    pet_type: PetType
+    level: int = Field(ge=2, le=5)
+    relationship_stage: RelationshipStage
+    reward_outfit_id: str
+    achieved_at: datetime
+    claim_token: UUID
+    claim_expires_at: Optional[datetime] = None
+    acknowledged_at: Optional[datetime] = None
+
+
 class PetRelationshipRewardResponse(BaseModel):
     action: PetRewardAction
     requested_xp: int = Field(ge=0)
@@ -83,3 +104,51 @@ class PetRelationshipRewardResponse(BaseModel):
     daily_awarded_xp: int = Field(ge=0)
     level_up: bool = False
     relationship: PetRelationshipResponse
+
+
+class PetDailySummaryResponse(BaseModel):
+    pet_type: PetType
+    local_date: date
+    timezone: str
+    interaction_count: int = Field(ge=0)
+    xp_gained: int = Field(ge=0)
+    action_counts: dict[str, int]
+    care_count: int = Field(ge=0)
+    meaningful_chat_count: int = Field(ge=0)
+    reminders_created_count: int = Field(ge=0)
+    reminders_completed_count: int = Field(ge=0)
+    first_interaction_at: Optional[datetime] = None
+    last_interaction_at: Optional[datetime] = None
+
+
+class PetWeeklySummarySeenRequest(BaseModel):
+    review_key: str = Field(
+        min_length=21,
+        max_length=21,
+        pattern=r"^\d{4}-\d{2}-\d{2}_\d{4}-\d{2}-\d{2}$",
+    )
+
+
+class PetWeeklySummaryResponse(BaseModel):
+    pet_type: PetType
+    review_key: str
+    week_start: date
+    week_end: date
+    timezone: str
+    eligible: bool
+    is_new: bool
+    reviewed_at: Optional[datetime] = None
+    active_days: int = Field(ge=0, le=7)
+    interaction_count: int = Field(ge=0)
+    xp_gained: int = Field(ge=0)
+    action_counts: dict[str, int]
+    care_count: int = Field(ge=0)
+    meaningful_chat_count: int = Field(ge=0)
+    reminders_created_count: int = Field(ge=0)
+    reminders_completed_count: int = Field(ge=0)
+    level_at_start: int = Field(ge=1, le=5)
+    level_at_end: int = Field(ge=1, le=5)
+    levels_gained: int = Field(ge=0, le=4)
+    relationship_stage_at_end: RelationshipStage
+    first_interaction_at: Optional[datetime] = None
+    last_interaction_at: Optional[datetime] = None

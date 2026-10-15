@@ -1,8 +1,13 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import logging
 import math
 import re
+from asyncio import Lock
+from contextlib import asynccontextmanager
+from threading import RLock
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List
@@ -12,6 +17,8 @@ from pypdf import PdfReader
 
 from app.core.config import settings
 from app.schemas.rag import RAGSource
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -24,20 +31,41 @@ class RAGService:
     def __init__(self) -> None:
         self._client: chromadb.PersistentClient | None = None
         self._collection = None
+        self._initialization_lock = RLock()
+        self._index_lock = RLock()
+        self._user_operations: dict[int, tuple[Lock, int]] = {}
+
+    @asynccontextmanager
+    async def user_operation(self, user_id: int):
+        # Keep the index, upload file and async database commit in one ordered
+        # operation per owner. A waiting request must share the same lock.
+        lock, users = self._user_operations.get(user_id, (Lock(), 0))
+        self._user_operations[user_id] = (lock, users + 1)
+        try:
+            async with lock:
+                yield
+        finally:
+            _, remaining = self._user_operations[user_id]
+            if remaining == 1:
+                del self._user_operations[user_id]
+            else:
+                self._user_operations[user_id] = (lock, remaining - 1)
 
     def _get_client(self) -> chromadb.PersistentClient:
-        if self._client is None:
-            Path(settings.CHROMA_PERSIST_DIR).mkdir(parents=True, exist_ok=True)
-            self._client = chromadb.PersistentClient(path=settings.CHROMA_PERSIST_DIR)
-        return self._client
+        with self._initialization_lock:
+            if self._client is None:
+                Path(settings.CHROMA_PERSIST_DIR).mkdir(parents=True, exist_ok=True)
+                self._client = chromadb.PersistentClient(path=settings.CHROMA_PERSIST_DIR)
+            return self._client
 
     def _get_collection(self):
-        if self._collection is None:
-            self._collection = self._get_client().get_or_create_collection(
-                name="detachym_rag",
-                metadata={"hnsw:space": "cosine"},
-            )
-        return self._collection
+        with self._initialization_lock:
+            if self._collection is None:
+                self._collection = self._get_client().get_or_create_collection(
+                    name="detachym_rag",
+                    metadata={"hnsw:space": "cosine"},
+                )
+            return self._collection
 
     def _tokenize(self, text: str) -> list[str]:
         normalized = text.lower()
@@ -126,43 +154,77 @@ class RAGService:
             raise ValueError("Document has no readable content")
 
         collection = self._get_collection()
-        self.delete_document(document_id)
+        batch_size = self._get_client().max_batch_size
+        if batch_size < 1:
+            raise ValueError("Document index batch size must be positive")
 
-        collection.add(
-            ids=[f"{document_id}:{index}" for index in range(len(chunks))],
-            documents=chunks,
-            embeddings=[self.embed_text(f"{filename} {chunk}") for chunk in chunks],
-            metadatas=[
-                {
-                    "document_id": str(document_id),
-                    "user_id": str(user_id),
-                    "filename": filename,
-                    "chunk_index": index,
-                }
-                for index in range(len(chunks))
-            ],
-        )
+        # Chroma's batch limit follows the local SQLite variable limit. Keep
+        # reads and deletes outside a partially written or failed replacement.
+        with self._index_lock:
+            self.delete_document(document_id)
+            try:
+                for start in range(0, len(chunks), batch_size):
+                    batch = chunks[start : start + batch_size]
+                    collection.add(
+                        ids=[f"{document_id}:{start + offset}" for offset in range(len(batch))],
+                        documents=batch,
+                        embeddings=[self.embed_text(f"{filename} {chunk}") for chunk in batch],
+                        metadatas=[
+                            {
+                                "document_id": str(document_id),
+                                "user_id": str(user_id),
+                                "filename": filename,
+                                "chunk_index": start + offset,
+                            }
+                            for offset in range(len(batch))
+                        ],
+                    )
+            except Exception:
+                try:
+                    self.delete_document(document_id)
+                except Exception:
+                    logger.exception("Failed to remove incomplete document index document_id=%s", document_id)
+                raise
         return len(chunks)
 
     def delete_document(self, document_id: int) -> None:
         collection = self._get_collection()
-        collection.delete(where={"document_id": str(document_id)})
+        batch_size = self._get_client().max_batch_size
+        if batch_size < 1:
+            raise ValueError("Document index batch size must be positive")
+        with self._index_lock:
+            # A filtered delete also enters Chroma's embedding operation queue,
+            # so it has the same batch limit as adding a large document.
+            ids = collection.get(where={"document_id": str(document_id)}, include=[])["ids"]
+            for start in range(0, len(ids), batch_size):
+                collection.delete(ids=ids[start : start + batch_size])
 
     def build_context(self, user_id: int, question: str, top_k: int | None = None) -> RAGContext:
+        query_embedding = self.embed_text(question)
+        if not any(query_embedding):
+            return RAGContext(context="", sources=[])
+
         collection = self._get_collection()
-        results = collection.query(
-            query_embeddings=[self.embed_text(question)],
-            n_results=top_k or settings.RAG_TOP_K,
-            where={"user_id": str(user_id)},
-            include=["documents", "metadatas"],
-        )
+        with self._index_lock:
+            results = collection.query(
+                query_embeddings=[query_embedding],
+                n_results=top_k or settings.RAG_TOP_K,
+                where={"user_id": str(user_id)},
+                include=["documents", "metadatas", "distances"],
+            )
 
         documents = results.get("documents", [[]])[0]
         metadatas = results.get("metadatas", [[]])[0]
+        distances = results.get("distances", [[]])[0]
         sources: list[RAGSource] = []
-        context_parts: list[str] = []
+        context_parts: list[dict] = []
 
         for index, document in enumerate(documents):
+            # This collection uses cosine distance. A distance of one or more
+            # has no positive correlation; keep every positively related hit.
+            distance = distances[index] if index < len(distances) else None
+            if distance is None or not math.isfinite(distance) or distance >= 1:
+                continue
             metadata = metadatas[index] if index < len(metadatas) else {}
             filename = metadata.get("filename", "Unknown")
             document_id = int(metadata.get("document_id", 0))
@@ -174,10 +236,19 @@ class RAGService:
                     snippet=snippet,
                 )
             )
-            context_parts.append(f"[{filename}] {document}")
+            context_parts.append({
+                "document_id": document_id,
+                "filename": filename,
+                "content": document,
+            })
 
         return RAGContext(
-            context="\n\n".join(context_parts),
+            # JSON strings retain untrusted quotes, newlines and delimiter-like
+            # text as field values instead of creating another prompt section.
+            context=json.dumps({
+                "type": "untrusted_knowledge_base_context",
+                "documents": context_parts,
+            }, ensure_ascii=False) if context_parts else "",
             sources=sources,
         )
 

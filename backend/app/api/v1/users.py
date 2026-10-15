@@ -1,21 +1,18 @@
 from fastapi import APIRouter, Depends
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import get_current_user
 from app.models.database import UserPreference, get_db
 from app.models.user import User
 from app.schemas.user import UserPreferenceResponse, UserPreferenceUpdate
+from app.services.user_preferences import get_or_create_preferences
 
 router = APIRouter(prefix="/users", tags=["users"])
 
 
 async def ensure_preferences(current_user: User, db: AsyncSession) -> UserPreference:
-    result = await db.execute(select(UserPreference).where(UserPreference.user_id == current_user.id))
-    preferences = result.scalar_one_or_none()
-    if not preferences:
-        preferences = UserPreference(user_id=current_user.id)
-        db.add(preferences)
+    preferences, write_attempted = await get_or_create_preferences(current_user.id, db)
+    if write_attempted:
         await db.commit()
         await db.refresh(preferences)
     return preferences
@@ -36,9 +33,9 @@ async def update_preferences(
     db: AsyncSession = Depends(get_db),
 ) -> UserPreferenceResponse:
     preferences = await ensure_preferences(current_user, db)
-    preferences.pet_type = payload.pet_type
-    preferences.quick_chat_enabled = payload.quick_chat_enabled
-    preferences.bubble_frequency = payload.bubble_frequency
+    # Schema defaults describe a new account, not edits to an existing choice.
+    for field, value in payload.model_dump(exclude_unset=True).items():
+        setattr(preferences, field, value)
     await db.commit()
     await db.refresh(preferences)
     return preferences

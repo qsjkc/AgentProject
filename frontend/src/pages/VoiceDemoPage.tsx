@@ -1,15 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { getErrorMessage } from '../lib/errors'
+import { formatApiDateTime } from '../lib/apiTime'
 import { createVoiceRtcSession, isRtcSupported, type VoiceRtcSessionHandle } from '../lib/voiceRtc'
-import { apiBaseUrl, apiOrigin } from '../services/api'
+import { type OwnedVoiceDemoSession } from '../lib/voiceSessionApi'
 import {
-  createVoiceDemoSession,
-  getVoiceDemoSession,
-  interruptVoiceDemoSession,
-  startVoiceDemoSession,
-  stopVoiceDemoSession,
-} from '../services/voiceDemo'
+  createVoiceSessionController,
+  isVoiceConnectionCancelled,
+  type VoiceConnectionAttempt,
+} from '../lib/voiceSessionController'
+import { captureVoiceDemoApi } from '../services/voiceDemo'
 import type {
   VoiceDemoSessionCreateResponse,
   VoiceDemoSessionStatusResponse,
@@ -28,10 +28,7 @@ interface EventLogEntry {
 
 const secureLocalHosts = new Set(['localhost', '127.0.0.1'])
 
-function buildApiUrl(path: string) {
-  const sanitizedBase = apiBaseUrl.endsWith('/') ? apiBaseUrl : `${apiBaseUrl}/`
-  return new URL(path.replace(/^\//, ''), sanitizedBase.startsWith('http') ? sanitizedBase : `${apiOrigin}${sanitizedBase}`).toString()
-}
+type VoiceAttempt = VoiceConnectionAttempt<VoiceRtcSessionHandle, OwnedVoiceDemoSession>
 
 async function queryMicrophonePermission(): Promise<PermissionStateLabel> {
   if (!('permissions' in navigator) || !navigator.permissions?.query) {
@@ -96,21 +93,6 @@ function permissionLabel(permission: PermissionStateLabel) {
   return labels[permission]
 }
 
-function keepAliveStop(sessionId: string) {
-  const token = localStorage.getItem('token')
-  if (!token) {
-    return
-  }
-  void fetch(buildApiUrl(`rtc/voice-demo/session/${sessionId}/stop`), {
-    method: 'POST',
-    keepalive: true,
-    headers: {
-      Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/json',
-    },
-  }).catch(() => undefined)
-}
-
 export default function VoiceDemoPage() {
   const [phase, setPhase] = useState<VoiceDemoUiPhase>('idle')
   const [backendSession, setBackendSession] = useState<VoiceDemoSessionCreateResponse | null>(null)
@@ -130,8 +112,13 @@ export default function VoiceDemoPage() {
   const rtcSessionRef = useRef<VoiceRtcSessionHandle | null>(null)
   const sessionIdRef = useRef<string | null>(null)
   const logIdRef = useRef(0)
+  const mountedRef = useRef(false)
+  const microphoneQueryRef = useRef(0)
+  const interruptPendingRef = useRef<VoiceAttempt | null>(null)
+  const controller = useMemo(() => createVoiceSessionController<VoiceRtcSessionHandle, OwnedVoiceDemoSession>(), [])
 
   const pushLog = useCallback((message: string, level: 'info' | 'error' = 'info') => {
+    if (!mountedRef.current) return
     logIdRef.current += 1
     setLogs((current) => [
       {
@@ -158,260 +145,213 @@ export default function VoiceDemoPage() {
 
     const stream = new MediaStream([track])
     audioElement.srcObject = stream
+    const attempt = controller.current()
     void audioElement.play().catch(() => {
-      pushLog('远端音频已附加，但浏览器阻止了自动播放。请点击“重连”后再试。', 'error')
+      if (attempt?.isCurrent()) pushLog('远端音频已附加，但浏览器阻止了自动播放。请点击“重连”后再试。', 'error')
     })
     setRemoteAudioAttached(true)
-  }, [pushLog])
+  }, [controller, pushLog])
 
   const refreshMicPermission = useCallback(async () => {
+    const generation = ++microphoneQueryRef.current
     const permission = await queryMicrophonePermission()
-    setMicPermission(permission)
+    if (mountedRef.current && generation === microphoneQueryRef.current) setMicPermission(permission)
   }, [])
 
-  const refreshBackendStatus = useCallback(async (sessionId: string) => {
+  const refreshBackendStatus = useCallback(async (attempt: VoiceAttempt | null = controller.current()) => {
+    if (!attempt?.isCurrent() || !attempt.backend) return
     try {
-      const status = await getVoiceDemoSession(sessionId)
+      const status = await attempt.backend.getStatus()
+      if (!attempt.isCurrent()) return
       setBackendStatus(status)
       setBackendState(status.state)
     } catch (err) {
-      pushLog(getErrorMessage(err, '刷新后端 session 状态失败。'), 'error')
+      if (attempt.isCurrent()) pushLog(getErrorMessage(err, '刷新后端 session 状态失败。'), 'error')
     }
-  }, [pushLog])
-
-  const cleanupRtc = useCallback(
-    async ({ stopBackend }: { stopBackend: boolean }) => {
-      const currentSessionId = sessionIdRef.current
-      const rtcSession = rtcSessionRef.current
-
-      try {
-        if (rtcSession) {
-          await rtcSession.leave()
-          rtcSession.destroy()
-        }
-      } catch (err) {
-        pushLog(getErrorMessage(err, 'RTC 清理失败。'), 'error')
-      } finally {
-        rtcSessionRef.current = null
-        setMuted(false)
-        setAiSpeaking(false)
-        setInputSuppressed(false)
-        setRtcRoomState('left')
-        setRtcConnectionState('idle')
-        setRemoteTrack(null)
-      }
-
-      if (stopBackend && currentSessionId) {
-        try {
-          const response = await stopVoiceDemoSession(currentSessionId)
-          setBackendState(response.state)
-          pushLog(response.cleanupPending ? '挂断请求已接收，后端将继续清理会话。' : '挂断完成。')
-        } catch (err) {
-          pushLog(getErrorMessage(err, '后端 stop 请求失败。'), 'error')
-        }
-      }
-    },
-    [pushLog, setRemoteTrack],
-  )
+  }, [controller, pushLog])
 
   const resetSessionState = useCallback(() => {
     sessionIdRef.current = null
+    rtcSessionRef.current = null
     setBackendSession(null)
     setBackendStatus(null)
     setBackendState(null)
-  }, [])
+    setMuted(false)
+    setAiSpeaking(false)
+    setInputSuppressed(false)
+    setRtcRoomState('left')
+    setRtcConnectionState('idle')
+    setRemoteTrack(null)
+  }, [setRemoteTrack])
 
   useEffect(() => {
+    mountedRef.current = true
     void refreshMicPermission()
-  }, [refreshMicPermission])
+    const handleBeforeUnload = () => {
+      void controller.cancel()
+    }
+    window.addEventListener('beforeunload', handleBeforeUnload)
+    return () => {
+      mountedRef.current = false
+      microphoneQueryRef.current += 1
+      window.removeEventListener('beforeunload', handleBeforeUnload)
+      void controller.cancel()
+    }
+  }, [controller, refreshMicPermission])
 
   useEffect(() => {
-    if (!sessionIdRef.current || phase !== 'connected') {
-      return undefined
-    }
-
-    const timer = window.setInterval(() => {
-      if (sessionIdRef.current) {
-        void refreshBackendStatus(sessionIdRef.current)
-      }
-    }, 15000)
-
+    if (phase !== 'connected') return undefined
+    const timer = window.setInterval(() => void refreshBackendStatus(), 15000)
     return () => window.clearInterval(timer)
   }, [phase, refreshBackendStatus])
 
-  useEffect(() => {
-    const handleBeforeUnload = () => {
-      const currentSessionId = sessionIdRef.current
-      if (currentSessionId) {
-        keepAliveStop(currentSessionId)
-      }
-    }
-
-    window.addEventListener('beforeunload', handleBeforeUnload)
-    return () => {
-      window.removeEventListener('beforeunload', handleBeforeUnload)
-      const currentSessionId = sessionIdRef.current
-      if (currentSessionId) {
-        keepAliveStop(currentSessionId)
-      }
-      void cleanupRtc({ stopBackend: false })
-    }
-  }, [cleanupRtc])
-
-  const handleConnect = useCallback(async () => {
-    if (phase === 'creating_session' || phase === 'joining_room' || phase === 'interrupting' || phase === 'stopping') {
-      return
-    }
-
+  const handleConnect = useCallback(async (replaceCurrent = false) => {
+    if (!mountedRef.current || (!replaceCurrent && controller.current()?.isCurrent())) return
     if (!isSecureVoiceContext()) {
       const message = '语音 Demo 只允许在 HTTPS 或 localhost / 127.0.0.1 环境中连接。'
       setError(message)
       pushLog(message, 'error')
       return
     }
-
+    const token = localStorage.getItem('token')
+    if (!token) return
+    const attempt = controller.begin(() => mountedRef.current && localStorage.getItem('token') === token)
+    const api = captureVoiceDemoApi(token, attempt.isCurrent)
+    const ifCurrent = <T,>(callback: (value: T) => void) => (value: T) => {
+      if (attempt.isCurrent()) callback(value)
+    }
+    resetSessionState()
     setError('')
     setPhase('creating_session')
     pushLog('开始准备语音会话。')
 
-    let createdSession: VoiceDemoSessionCreateResponse | null = null
-    let rtcSession: VoiceRtcSessionHandle | null = null
-
     try {
-      if (!(await isRtcSupported())) {
-        throw new Error('当前浏览器不支持火山 RTC Web SDK。')
-      }
-
+      await attempt.previousCleanup
+      attempt.assertCurrent()
+      const supported = await isRtcSupported()
+      attempt.assertCurrent()
+      if (!supported) throw new Error('当前浏览器不支持火山 RTC Web SDK。')
       await refreshMicPermission()
+      attempt.assertCurrent()
       await ensureMicrophoneAccess()
+      attempt.assertCurrent()
       setMicPermission('granted')
       pushLog('麦克风权限检查通过。')
 
-      createdSession = await createVoiceDemoSession()
-      sessionIdRef.current = createdSession.sessionId
-      setBackendSession(createdSession)
-      setBackendState(createdSession.state)
-      pushLog(`后端 session 已创建：${createdSession.sessionId}`)
-
+      const ownedSession = await api.create()
+      await attempt.ownBackend(ownedSession)
+      attempt.assertCurrent()
+      const created = ownedSession.session
+      sessionIdRef.current = created.sessionId
+      setBackendSession(created)
+      setBackendState(created.state)
+      pushLog(`后端 session 已创建：${created.sessionId}`)
       setPhase('joining_room')
-      rtcSession = await createVoiceRtcSession({
-        appId: createdSession.appId,
-        roomId: createdSession.roomId,
-        userId: createdSession.userId,
-        aiUserId: createdSession.aiUserId,
-        token: createdSession.token,
+
+      const rtcSession = await createVoiceRtcSession({
+        appId: created.appId,
+        roomId: created.roomId,
+        userId: created.userId,
+        aiUserId: created.aiUserId,
+        token: created.token,
         feedbackProtectionEnabled,
-        onConnectionStateChange: (state) => setRtcConnectionState(state),
-        onRoomStateChange: (state) => setRtcRoomState(state),
-        onRemoteAudioTrack: setRemoteTrack,
-        onAiSpeakingChange: setAiSpeaking,
-        onInputSuppressionChange: setInputSuppressed,
-        onLog: (message) => pushLog(message),
-        onError: (message) => {
+        isCurrent: attempt.isCurrent,
+        onConnectionStateChange: ifCurrent(setRtcConnectionState),
+        onRoomStateChange: ifCurrent(setRtcRoomState),
+        onRemoteAudioTrack: ifCurrent(setRemoteTrack),
+        onAiSpeakingChange: ifCurrent(setAiSpeaking),
+        onInputSuppressionChange: ifCurrent(setInputSuppressed),
+        onLog: ifCurrent((message: string) => pushLog(message)),
+        onError: ifCurrent((message: string) => {
           setError(message)
           pushLog(message, 'error')
-        },
+        }),
       })
+      await attempt.ownRtc(rtcSession)
+      attempt.assertCurrent()
       rtcSessionRef.current = rtcSession
-
       await rtcSession.joinAndPublish()
-
-      const startResponse = await startVoiceDemoSession(createdSession.sessionId)
-      setBackendState(startResponse.state)
-      pushLog(startResponse.started ? '后端 VoiceChat 已启动。' : '后端 session 已处于启动状态。')
-
-      await refreshBackendStatus(createdSession.sessionId)
+      attempt.assertCurrent()
+      const response = await ownedSession.start()
+      attempt.assertCurrent()
+      setBackendState(response.state)
+      pushLog(response.started ? '后端 VoiceChat 已启动。' : '后端 session 已处于启动状态。')
+      await refreshBackendStatus(attempt)
+      attempt.assertCurrent()
       setMuted(false)
       setPhase('connected')
     } catch (err) {
-      const message = getErrorMessage(err, '连接语音 Demo 失败。')
-      setError(message)
-      pushLog(message, 'error')
-      setPhase('error')
-
-      if (rtcSession) {
-        try {
-          await rtcSession.leave()
-        } catch (leaveError) {
-          pushLog(getErrorMessage(leaveError, '连接失败后清理 RTC 房间失败。'), 'error')
-        }
-        rtcSession.destroy()
+      const showFailure = attempt.isCurrent() && !isVoiceConnectionCancelled(err)
+      await attempt.cleanup()
+      if (showFailure && mountedRef.current && controller.current() === attempt) {
+        const message = getErrorMessage(err, '连接语音 Demo 失败。')
+        resetSessionState()
+        setError(message)
+        pushLog(message, 'error')
+        setPhase('error')
       }
-      rtcSessionRef.current = null
-
-      if (createdSession?.sessionId) {
-        try {
-          await stopVoiceDemoSession(createdSession.sessionId)
-        } catch (stopError) {
-          pushLog(getErrorMessage(stopError, '连接失败后的 stop 请求失败。'), 'error')
-        }
-      }
-      resetSessionState()
     }
-  }, [feedbackProtectionEnabled, phase, pushLog, refreshBackendStatus, refreshMicPermission, resetSessionState, setRemoteTrack])
+  }, [controller, feedbackProtectionEnabled, pushLog, refreshBackendStatus, refreshMicPermission, resetSessionState, setRemoteTrack])
 
   const handleMuteToggle = useCallback(async () => {
-    const rtcSession = rtcSessionRef.current
-    if (!rtcSession || phase !== 'connected') {
-      return
-    }
-
+    const attempt = controller.current()
+    const rtcSession = attempt?.rtc
+    if (!attempt?.isCurrent() || !rtcSession || phase !== 'connected') return
     setError('')
     try {
-      if (muted) {
-        await rtcSession.unmute()
-        setMuted(false)
-      } else {
-        await rtcSession.mute()
-        setMuted(true)
-      }
+      if (rtcSession.isMuted()) await rtcSession.unmute()
+      else await rtcSession.mute()
+      if (attempt.isCurrent()) setMuted(rtcSession.isMuted())
     } catch (err) {
+      if (!attempt.isCurrent()) return
       const message = getErrorMessage(err, '切换静音失败。')
       setError(message)
       pushLog(message, 'error')
     }
-  }, [muted, phase, pushLog])
+  }, [controller, phase, pushLog])
 
   const handleInterrupt = useCallback(async () => {
-    const currentSessionId = sessionIdRef.current
-    if (!currentSessionId) {
-      return
-    }
-
+    const attempt = controller.current()
+    if (!attempt?.isCurrent() || !attempt.backend || interruptPendingRef.current === attempt) return
+    interruptPendingRef.current = attempt
     setPhase('interrupting')
     try {
-      const response = await interruptVoiceDemoSession(currentSessionId)
+      const response = await attempt.backend.interrupt()
+      if (!attempt.isCurrent()) return
       setBackendState(response.state)
       pushLog(response.accepted ? '已发送打断指令。' : response.lastError || '当前 session 已不再接收打断指令。')
-      setPhase(rtcSessionRef.current?.isJoined() ? 'connected' : 'stopped')
+      setPhase(attempt.rtc?.isJoined() ? 'connected' : 'stopped')
     } catch (err) {
+      if (!attempt.isCurrent()) return
       const message = getErrorMessage(err, '发送打断失败。')
       setError(message)
       pushLog(message, 'error')
       setPhase('error')
+    } finally {
+      if (interruptPendingRef.current === attempt) interruptPendingRef.current = null
     }
-  }, [pushLog])
+  }, [controller, pushLog])
 
   const handleHangup = useCallback(async () => {
+    const attempt = controller.current()
+    if (!attempt) return
     setPhase('stopping')
-    await cleanupRtc({ stopBackend: true })
+    await attempt.cleanup()
+    if (!mountedRef.current || controller.current() !== attempt) return
     resetSessionState()
     setPhase('stopped')
-  }, [cleanupRtc, resetSessionState])
+    pushLog('本地语音已关闭。')
+  }, [controller, pushLog, resetSessionState])
 
-  const handleReconnect = useCallback(async () => {
-    await cleanupRtc({ stopBackend: true })
-    resetSessionState()
-    setPhase('stopped')
-    await handleConnect()
-  }, [cleanupRtc, handleConnect, resetSessionState])
+  const handleReconnect = useCallback(() => handleConnect(true), [handleConnect])
 
   const handleFeedbackProtectionToggle = useCallback(() => {
     const next = !feedbackProtectionEnabled
     setFeedbackProtectionEnabled(next)
-    rtcSessionRef.current?.setFeedbackProtectionEnabled(next)
+    const attempt = controller.current()
+    if (attempt?.isCurrent()) attempt.rtc?.setFeedbackProtectionEnabled(next)
     pushLog(next ? '已开启扬声器回灌防护。' : '已关闭扬声器回灌防护。')
-  }, [feedbackProtectionEnabled, pushLog])
+  }, [controller, feedbackProtectionEnabled, pushLog])
 
   const statusItems = useMemo(
     () => [
@@ -520,7 +460,7 @@ export default function VoiceDemoPage() {
               <div><span className="font-medium text-slate-900">aiUserId:</span> {backendSession?.aiUserId ?? '-'}</div>
               <div>
                 <span className="font-medium text-slate-900">expiresAt:</span>{' '}
-                {backendSession?.expiresAt ? new Date(backendSession.expiresAt).toLocaleString() : '-'}
+                {formatApiDateTime(backendSession?.expiresAt)}
               </div>
               <div><span className="font-medium text-slate-900">lastAction:</span> {backendStatus?.lastAction ?? '-'}</div>
               <div><span className="font-medium text-slate-900">lastError:</span> {backendStatus?.lastError ?? '-'}</div>

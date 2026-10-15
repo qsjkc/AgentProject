@@ -1,11 +1,23 @@
-import { PET_OUTFIT_SLOTS } from '../shared/pet-outfits'
+import { applyPetOutfitPreview, PET_OUTFIT_SLOTS } from '../shared/pet-outfits'
 import {
   getPetOutfitSpriteStyle,
   getPetOutfitVisual,
 } from '../shared/pet-outfit-visuals'
 
-function getEffectiveOutfits(petType, action, outfit) {
-  const unlocked = new Set(outfit?.unlocked_outfit_ids || [])
+const OUTFIT_COMPATIBLE_ACTIONS = new Set([
+  'idle',
+  'dress_up',
+  'run',
+  'stretch',
+  'look_around',
+  'yawn',
+  'welcome_back',
+  'level_up',
+])
+
+function getEffectiveOutfits(petType, action, outfit, previewItemId) {
+  const effectiveOutfit = applyPetOutfitPreview(outfit, petType, previewItemId)
+  const unlocked = new Set(effectiveOutfit.unlocked_outfit_ids || [])
 
   if (petType !== 'pig') {
     return []
@@ -17,11 +29,11 @@ function getEffectiveOutfits(petType, action, outfit) {
   if (action === 'reminding') {
     return unlocked.has('pig_bell') ? ['pig_bell'] : []
   }
-  if (action !== 'idle' && action !== 'dress_up') {
+  if (!OUTFIT_COMPATIBLE_ACTIONS.has(action)) {
     return []
   }
 
-  const equipped = outfit?.equipped_outfits || {}
+  const equipped = effectiveOutfit.equipped_outfits || {}
   return PET_OUTFIT_SLOTS
     .map((slot) => equipped[slot])
     .filter(Boolean)
@@ -42,8 +54,8 @@ export function OutfitSprite({ petType, itemId, className = '' }) {
   )
 }
 
-export function PetOutfitRenderer({ petType, action, outfit }) {
-  const itemIds = getEffectiveOutfits(petType, action, outfit)
+export function PetOutfitRenderer({ petType, action, outfit, previewItemId = null }) {
+  const itemIds = getEffectiveOutfits(petType, action, outfit, previewItemId)
   if (!itemIds.length) {
     return null
   }

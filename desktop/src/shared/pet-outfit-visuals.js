@@ -40,6 +40,9 @@ const PIG_ACTION_SLOT_OFFSETS = {
   reminding: {
     side: { x: -4, y: -5 },
   },
+  yawn: {
+    head: { x: 3, y: 5 },
+  },
 }
 
 function getSpritePosition(column, row) {

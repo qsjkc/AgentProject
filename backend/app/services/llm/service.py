@@ -39,8 +39,7 @@ class LLMService:
         max_tokens: Optional[int] = None
     ) -> AsyncGenerator[str, None]:
         if not self._providers:
-            yield "LLM provider is not configured. Add a valid API key to enable AI responses."
-            return
+            raise ValueError("LLM provider is not configured")
 
         llm_provider = self.get_provider()
         try:

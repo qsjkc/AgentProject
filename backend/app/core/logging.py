@@ -6,8 +6,8 @@ from logging.handlers import RotatingFileHandler
 from app.core.config import settings
 
 
-LOG_DIR = Path("logs")
-LOG_DIR.mkdir(exist_ok=True)
+LOG_DIR = Path(settings.LOG_DIR)
+LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def setup_logging() -> logging.Logger:

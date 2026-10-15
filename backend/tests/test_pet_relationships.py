@@ -1,30 +1,22 @@
-import os
-import shutil
+import asyncio
 from datetime import datetime, timedelta
-from pathlib import Path
+from uuid import uuid4
 
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-TEST_ROOT = Path(__file__).resolve().parent / ".runtime-pet-relationships"
-if TEST_ROOT.exists():
-    shutil.rmtree(TEST_ROOT)
-TEST_ROOT.mkdir(parents=True, exist_ok=True)
-os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{(TEST_ROOT / 'test.db').as_posix()}"
-os.environ["CHROMA_PERSIST_DIR"] = str(TEST_ROOT / "chroma")
-os.environ["UPLOAD_DIR"] = str(TEST_ROOT / "uploads")
-os.environ["DOWNLOAD_DIR"] = str(TEST_ROOT / "downloads")
-os.environ["SMTP_USER"] = ""
-os.environ["SMTP_PASSWORD"] = ""
-os.environ["INITIAL_ADMIN_USERNAME"] = "admin"
-os.environ["INITIAL_ADMIN_EMAIL"] = "admin@example.com"
-os.environ["INITIAL_ADMIN_PASSWORD"] = "ChangeThisPassword123!"
-
 from app.main import app  # noqa: E402
 from app.services.pet_relationships import (  # noqa: E402
+    MILESTONE_CLAIM_LEASE_SECONDS,
+    acknowledge_pet_relationship_milestone,
     award_pet_relationship,
+    claim_pet_relationship_milestone,
+    get_pet_daily_summary,
+    get_pet_weekly_summary,
     get_relationship_level,
     get_relationship_progress,
+    mark_pet_weekly_summary_shown,
+    mark_pet_weekly_summary_seen,
 )
 
 
@@ -134,6 +126,615 @@ async def test_relationship_is_created_per_user_and_pet(client: AsyncClient):
     assert bob_pig.status_code == 200
     assert bob_pig.json()["id"] != pig.json()["id"]
 
+    daily_summary = await client.get("/api/v1/pets/pig/daily-summary", headers=bob_headers)
+    assert daily_summary.status_code == 200
+    assert daily_summary.json()["pet_type"] == "pig"
+    assert daily_summary.json()["interaction_count"] == 0
+    assert daily_summary.json()["xp_gained"] == 0
+    assert daily_summary.json()["reminders_created_count"] == 0
+    assert daily_summary.json()["reminders_completed_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_daily_summary_uses_local_day_and_isolates_user_and_pet(client: AsyncClient):
+    alice_headers = await register_and_login(client, "daily-alice", "daily-alice@example.com")
+    bob_headers = await register_and_login(client, "daily-bob", "daily-bob@example.com")
+
+    alice_relationship = await client.get("/api/v1/pets/pig/relationship", headers=alice_headers)
+    bob_relationship = await client.get("/api/v1/pets/pig/relationship", headers=bob_headers)
+    alice_user_id = alice_relationship.json()["user_id"]
+    bob_user_id = bob_relationship.json()["user_id"]
+
+    from app.models.database import (  # noqa: E402
+        ChatMessage,
+        ChatSession,
+        Reminder,
+        async_session_maker,
+    )
+
+    summary_time = datetime(2026, 7, 31, 7, 0, 0)
+    async with async_session_maker() as session:
+        for index, action in enumerate(
+            ("pat", "meaningful_chat", "reminder_created", "reminder_completed")
+        ):
+            result = await award_pet_relationship(
+                session,
+                user_id=alice_user_id,
+                pet_type="pig",
+                action=action,
+                idempotency_key=f"daily-summary-{action}",
+                now=summary_time + timedelta(minutes=index),
+            )
+            assert result["reason"] == "awarded"
+
+        alice_chat_session = ChatSession(user_id=alice_user_id, title="Alice daily chat")
+        bob_chat_session = ChatSession(user_id=bob_user_id, title="Bob daily chat")
+        session.add_all([alice_chat_session, bob_chat_session])
+        await session.flush()
+
+        session.add_all(
+            [
+                Reminder(
+                    user_id=alice_user_id,
+                    pet_type="pig",
+                    title="Today reminder",
+                    remind_at=summary_time + timedelta(hours=2),
+                    status="completed",
+                    completed_at=summary_time + timedelta(minutes=5),
+                    created_at=summary_time,
+                ),
+                Reminder(
+                    user_id=alice_user_id,
+                    pet_type="pig",
+                    title="Older reminder",
+                    remind_at=summary_time,
+                    status="completed",
+                    completed_at=summary_time + timedelta(minutes=6),
+                    created_at=summary_time - timedelta(days=1),
+                ),
+                Reminder(
+                    user_id=alice_user_id,
+                    pet_type="cat",
+                    title="Other pet reminder",
+                    remind_at=summary_time,
+                    status="completed",
+                    completed_at=summary_time,
+                    created_at=summary_time,
+                ),
+                Reminder(
+                    user_id=bob_user_id,
+                    pet_type="pig",
+                    title="Other user reminder",
+                    remind_at=summary_time,
+                    status="completed",
+                    completed_at=summary_time,
+                    created_at=summary_time,
+                ),
+                ChatMessage(
+                    session_id=alice_chat_session.id,
+                    role="user",
+                    pet_type="pig",
+                    content="First pig chat",
+                    created_at=summary_time + timedelta(minutes=1),
+                ),
+                ChatMessage(
+                    session_id=alice_chat_session.id,
+                    role="user",
+                    pet_type="pig",
+                    content="Second pig chat",
+                    created_at=summary_time + timedelta(minutes=4),
+                ),
+                ChatMessage(
+                    session_id=alice_chat_session.id,
+                    role="user",
+                    pet_type="cat",
+                    content="Other pet chat",
+                    created_at=summary_time,
+                ),
+                ChatMessage(
+                    session_id=bob_chat_session.id,
+                    role="user",
+                    pet_type="pig",
+                    content="Other user chat",
+                    created_at=summary_time,
+                ),
+            ]
+        )
+        await session.commit()
+
+        summary = await get_pet_daily_summary(
+            session,
+            user_id=alice_user_id,
+            pet_type="pig",
+            now=summary_time,
+        )
+
+    assert summary["local_date"].isoformat() == "2026-07-31"
+    assert summary["timezone"] == "Asia/Shanghai"
+    assert summary["interaction_count"] == 6
+    assert summary["xp_gained"] == 19
+    assert summary["action_counts"] == {
+        "meaningful_chat": 2,
+        "pat": 1,
+        "reminder_completed": 2,
+        "reminder_created": 1,
+    }
+    assert summary["care_count"] == 1
+    assert summary["meaningful_chat_count"] == 2
+    assert summary["reminders_created_count"] == 1
+    assert summary["reminders_completed_count"] == 2
+    assert summary["first_interaction_at"] == summary_time
+    assert summary["last_interaction_at"] == summary_time + timedelta(minutes=6)
+
+
+@pytest.mark.asyncio
+async def test_weekly_summary_uses_completed_week_and_persists_seen_receipt(
+    client: AsyncClient,
+):
+    headers = await register_and_login(
+        client,
+        "weekly-review",
+        "weekly-review@example.com",
+    )
+    relationship_response = await client.get(
+        "/api/v1/pets/pig/relationship",
+        headers=headers,
+    )
+    user_id = relationship_response.json()["user_id"]
+
+    from sqlalchemy import select  # noqa: E402
+    from app.models.database import (  # noqa: E402
+        ChatMessage,
+        ChatSession,
+        PetRelationship,
+        PetRetentionEvent,
+        Reminder,
+        async_session_maker,
+    )
+
+    monday = datetime(2026, 7, 27, 1, 0, 0)
+    next_monday = datetime(2026, 8, 3, 1, 0, 0)
+    async with async_session_maker() as session:
+        for index, action in enumerate(
+            ("pat", "reminder_created", "reminder_completed", "meaningful_chat")
+        ):
+            result = await award_pet_relationship(
+                session,
+                user_id=user_id,
+                pet_type="pig",
+                action=action,
+                idempotency_key=f"weekly-review-{action}",
+                now=monday + timedelta(days=index),
+            )
+            assert result["reason"] == "awarded"
+
+        chat_session = ChatSession(user_id=user_id, title="Weekly review chat")
+        session.add(chat_session)
+        await session.flush()
+        session.add_all(
+            [
+                Reminder(
+                    user_id=user_id,
+                    pet_type="pig",
+                    title="Private reminder title",
+                    remind_at=monday + timedelta(days=2),
+                    status="completed",
+                    completed_at=monday + timedelta(days=2),
+                    created_at=monday + timedelta(days=1),
+                ),
+                ChatMessage(
+                    session_id=chat_session.id,
+                    role="user",
+                    pet_type="pig",
+                    content="Private weekly chat content",
+                    created_at=monday + timedelta(days=3),
+                ),
+            ]
+        )
+        await session.commit()
+
+        summary = await get_pet_weekly_summary(
+            session,
+            user_id=user_id,
+            pet_type="pig",
+            now=next_monday,
+        )
+
+        assert summary["review_key"] == "2026-07-27_2026-08-02"
+        assert summary["week_start"].isoformat() == "2026-07-27"
+        assert summary["week_end"].isoformat() == "2026-08-02"
+        assert summary["active_days"] == 4
+        assert summary["interaction_count"] == 4
+        assert summary["xp_gained"] == 19
+        assert summary["action_counts"] == {
+            "meaningful_chat": 1,
+            "pat": 1,
+            "reminder_completed": 1,
+            "reminder_created": 1,
+        }
+        assert summary["care_count"] == 1
+        assert summary["level_at_start"] == 1
+        assert summary["level_at_end"] == 1
+        assert summary["levels_gained"] == 0
+        assert summary["eligible"] is True
+        assert summary["is_new"] is True
+        assert "content" not in summary
+        assert "title" not in summary
+
+        shown_summary = await mark_pet_weekly_summary_shown(
+            session,
+            user_id=user_id,
+            pet_type="pig",
+            review_key=summary["review_key"],
+            now=next_monday,
+        )
+        duplicate_shown_summary = await mark_pet_weekly_summary_shown(
+            session,
+            user_id=user_id,
+            pet_type="pig",
+            review_key=summary["review_key"],
+            now=next_monday + timedelta(seconds=1),
+        )
+        assert shown_summary["is_new"] is True
+        assert duplicate_shown_summary["is_new"] is True
+
+        seen_summary = await mark_pet_weekly_summary_seen(
+            session,
+            user_id=user_id,
+            pet_type="pig",
+            review_key=summary["review_key"],
+            now=next_monday,
+        )
+        relationship_result = await session.execute(
+            select(PetRelationship).where(
+                PetRelationship.user_id == user_id,
+                PetRelationship.pet_type == "pig",
+            )
+        )
+        relationship = relationship_result.scalar_one()
+
+        for index, action in enumerate(
+            ("pat", "meaningful_chat", "reminder_created")
+        ):
+            follow_up = await award_pet_relationship(
+                session,
+                user_id=user_id,
+                pet_type="pig",
+                action=action,
+                idempotency_key=f"weekly-follow-up-{action}",
+                now=next_monday + timedelta(minutes=index + 1),
+            )
+            assert follow_up["reason"] == "awarded"
+
+        duplicate_follow_up = await award_pet_relationship(
+            session,
+            user_id=user_id,
+            pet_type="pig",
+            action="pat",
+            idempotency_key="weekly-follow-up-pat-duplicate-funnel",
+            now=next_monday + timedelta(minutes=5),
+        )
+        assert duplicate_follow_up["reason"] == "cooldown"
+
+        retention_result = await session.execute(
+            select(PetRetentionEvent)
+            .where(
+                PetRetentionEvent.user_id == user_id,
+                PetRetentionEvent.pet_type == "pig",
+                PetRetentionEvent.review_key == summary["review_key"],
+            )
+            .order_by(PetRetentionEvent.event_type)
+        )
+        retention_events = retention_result.scalars().all()
+
+    assert seen_summary["is_new"] is False
+    assert seen_summary["reviewed_at"] == next_monday
+    assert relationship.last_weekly_review_key == summary["review_key"]
+    assert relationship.last_weekly_review_seen_at == next_monday
+    assert [event.event_type for event in retention_events] == [
+        "weekly_review_follow_up_care",
+        "weekly_review_follow_up_chat",
+        "weekly_review_follow_up_reminder",
+        "weekly_review_generated",
+        "weekly_review_seen",
+        "weekly_review_shown",
+    ]
+    assert {event.user_id for event in retention_events} == {user_id}
+    assert set(PetRetentionEvent.__table__.columns.keys()) == {
+        "id",
+        "user_id",
+        "pet_type",
+        "event_type",
+        "review_key",
+        "occurred_at",
+    }
+
+
+@pytest.mark.asyncio
+async def test_weekly_summary_hides_empty_week(client: AsyncClient):
+    headers = await register_and_login(client, "weekly-empty", "weekly-empty@example.com")
+    relationship_response = await client.get(
+        "/api/v1/pets/pig/relationship",
+        headers=headers,
+    )
+    user_id = relationship_response.json()["user_id"]
+
+    from sqlalchemy import select  # noqa: E402
+    from app.models.database import (  # noqa: E402
+        PetRetentionEvent,
+        async_session_maker,
+    )
+    from app.services.pet_retention import (  # noqa: E402
+        record_pet_retention_event,
+        record_weekly_review_follow_up,
+    )
+
+    async with async_session_maker() as session:
+        summary = await get_pet_weekly_summary(
+            session,
+            user_id=user_id,
+            pet_type="pig",
+            now=datetime(2026, 8, 3, 1, 0, 0),
+        )
+        retention_result = await session.execute(
+            select(PetRetentionEvent).where(
+                PetRetentionEvent.user_id == user_id,
+                PetRetentionEvent.pet_type == "pig",
+            )
+        )
+        outside_window = await record_weekly_review_follow_up(
+            session,
+            user_id=user_id,
+            pet_type="pig",
+            action="pat",
+            review_key=summary["review_key"],
+            review_seen_at=datetime(2026, 8, 3, 1, 0, 0),
+            occurred_at=datetime(2026, 8, 10, 1, 0, 1),
+        )
+        with pytest.raises(ValueError, match="unknown_retention_event"):
+            await record_pet_retention_event(
+                session,
+                user_id=user_id,
+                pet_type="pig",
+                event_type="arbitrary_client_metadata",
+                review_key=summary["review_key"],
+            )
+
+    assert summary["eligible"] is False
+    assert summary["is_new"] is False
+    assert summary["interaction_count"] == 0
+    assert summary["active_days"] == 0
+    assert retention_result.scalars().all() == []
+    assert outside_window is False
+
+    rejected_shown = await client.post(
+        "/api/v1/pets/pig/weekly-summary/shown",
+        headers=headers,
+        json={"review_key": summary["review_key"]},
+    )
+    assert rejected_shown.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_max_level_activity_is_remembered_without_more_xp(client: AsyncClient):
+    headers = await register_and_login(client, "max-memory", "max-memory@example.com")
+    relationship_response = await client.get("/api/v1/pets/pig/relationship", headers=headers)
+    user_id = relationship_response.json()["user_id"]
+
+    from sqlalchemy import select  # noqa: E402
+    from app.models.database import (  # noqa: E402
+        PetActivityEvent,
+        PetRelationship,
+        async_session_maker,
+    )
+
+    first_pat_at = datetime(2026, 8, 1, 2, 0, 0)
+    async with async_session_maker() as session:
+        relationship_result = await session.execute(
+            select(PetRelationship).where(
+                PetRelationship.user_id == user_id,
+                PetRelationship.pet_type == "pig",
+            )
+        )
+        relationship = relationship_result.scalar_one()
+        relationship.intimacy_xp = 900
+        relationship.level = 5
+        relationship.relationship_stage = "deep_bond"
+        await session.commit()
+
+        first = await award_pet_relationship(
+            session,
+            user_id=user_id,
+            pet_type="pig",
+            action="pat",
+            idempotency_key="max-level-pat-0",
+            now=first_pat_at,
+        )
+        assert first["reason"] == "max_level"
+        assert first["awarded_xp"] == 0
+
+        duplicate = await award_pet_relationship(
+            session,
+            user_id=user_id,
+            pet_type="pig",
+            action="pat",
+            idempotency_key="max-level-pat-0",
+            now=first_pat_at + timedelta(seconds=1),
+        )
+        assert duplicate["reason"] == "duplicate"
+
+        cooling_down = await award_pet_relationship(
+            session,
+            user_id=user_id,
+            pet_type="pig",
+            action="pat",
+            idempotency_key="max-level-pat-cooldown",
+            now=first_pat_at + timedelta(minutes=1),
+        )
+        assert cooling_down["reason"] == "cooldown"
+
+        for index in range(1, 10):
+            max_level_result = await award_pet_relationship(
+                session,
+                user_id=user_id,
+                pet_type="pig",
+                action="pat",
+                idempotency_key=f"max-level-pat-{index}",
+                now=first_pat_at + timedelta(minutes=index * 5),
+            )
+            assert max_level_result["reason"] == "max_level"
+            assert max_level_result["awarded_xp"] == 0
+
+        beyond_daily_limit = await award_pet_relationship(
+            session,
+            user_id=user_id,
+            pet_type="pig",
+            action="pat",
+            idempotency_key="max-level-pat-10",
+            now=first_pat_at + timedelta(minutes=50),
+        )
+        assert beyond_daily_limit["reason"] == "max_level"
+
+        summary = await get_pet_daily_summary(
+            session,
+            user_id=user_id,
+            pet_type="pig",
+            now=first_pat_at,
+        )
+        activity_result = await session.execute(
+            select(PetActivityEvent).where(
+                PetActivityEvent.user_id == user_id,
+                PetActivityEvent.pet_type == "pig",
+                PetActivityEvent.action == "pat",
+            )
+        )
+        activities = activity_result.scalars().all()
+
+    assert len(activities) == 10
+    assert summary["interaction_count"] == 10
+    assert summary["care_count"] == 10
+    assert summary["action_counts"] == {"pat": 10}
+    assert summary["xp_gained"] == 0
+    assert summary["last_interaction_at"] == first_pat_at + timedelta(minutes=45)
+
+
+@pytest.mark.asyncio
+async def test_activity_survives_daily_xp_cap(client: AsyncClient):
+    headers = await register_and_login(client, "daily-cap-memory", "daily-cap-memory@example.com")
+    relationship_response = await client.get("/api/v1/pets/pig/relationship", headers=headers)
+    user_id = relationship_response.json()["user_id"]
+
+    from sqlalchemy import select  # noqa: E402
+    from app.models.database import (  # noqa: E402
+        PetIntimacyEvent,
+        PetRelationship,
+        async_session_maker,
+    )
+
+    interaction_at = datetime(2026, 8, 2, 2, 0, 0)
+    async with async_session_maker() as session:
+        relationship_result = await session.execute(
+            select(PetRelationship).where(
+                PetRelationship.user_id == user_id,
+                PetRelationship.pet_type == "pig",
+            )
+        )
+        relationship = relationship_result.scalar_one()
+        relationship.intimacy_xp = 120
+        relationship.level = 2
+        relationship.relationship_stage = "getting_familiar"
+        session.add(
+            PetIntimacyEvent(
+                user_id=user_id,
+                relationship_id=relationship.id,
+                pet_type="pig",
+                action="reminder_completed",
+                xp_awarded=120,
+                idempotency_key="daily-cap-seed",
+                awarded_at=interaction_at,
+            )
+        )
+        await session.commit()
+
+        capped = await award_pet_relationship(
+            session,
+            user_id=user_id,
+            pet_type="pig",
+            action="feed",
+            idempotency_key="daily-cap-feed",
+            now=interaction_at + timedelta(minutes=1),
+        )
+        summary = await get_pet_daily_summary(
+            session,
+            user_id=user_id,
+            pet_type="pig",
+            now=interaction_at,
+        )
+
+    assert capped["reason"] == "daily_cap"
+    assert capped["awarded_xp"] == 0
+    assert capped["relationship"]["intimacy_xp"] == 120
+    assert summary["interaction_count"] == 1
+    assert summary["care_count"] == 1
+    assert summary["action_counts"] == {"feed": 1}
+    assert summary["xp_gained"] == 120
+
+
+@pytest.mark.asyncio
+async def test_activity_backfill_is_idempotent(client: AsyncClient):
+    headers = await register_and_login(client, "activity-backfill", "activity-backfill@example.com")
+    relationship_response = await client.get("/api/v1/pets/pig/relationship", headers=headers)
+    user_id = relationship_response.json()["user_id"]
+    relationship_id = relationship_response.json()["id"]
+
+    from sqlalchemy import func, select  # noqa: E402
+    from app.models.database import (  # noqa: E402
+        PetActivityEvent,
+        PetIntimacyEvent,
+        async_session_maker,
+        backfill_pet_activity_events,
+        engine,
+    )
+
+    occurred_at = datetime(2026, 8, 3, 2, 0, 0)
+    async with async_session_maker() as session:
+        session.add(
+            PetIntimacyEvent(
+                user_id=user_id,
+                relationship_id=relationship_id,
+                pet_type="pig",
+                action="clean",
+                xp_awarded=4,
+                idempotency_key="legacy-clean-event",
+                awarded_at=occurred_at,
+            )
+        )
+        await session.commit()
+
+    async with engine.begin() as connection:
+        await backfill_pet_activity_events(connection)
+        await backfill_pet_activity_events(connection)
+
+    async with async_session_maker() as session:
+        count_result = await session.execute(
+            select(func.count(PetActivityEvent.id)).where(
+                PetActivityEvent.user_id == user_id,
+                PetActivityEvent.idempotency_key == "legacy-clean-event",
+            )
+        )
+        activity_count = count_result.scalar_one()
+        activity_result = await session.execute(
+            select(PetActivityEvent).where(
+                PetActivityEvent.user_id == user_id,
+                PetActivityEvent.idempotency_key == "legacy-clean-event",
+            )
+        )
+        activity = activity_result.scalar_one()
+
+    assert activity_count == 1
+    assert activity.action == "clean"
+    assert activity.occurred_at == occurred_at
+
 
 @pytest.mark.asyncio
 async def test_outfit_api_enforces_slot_and_unlock_level(client: AsyncClient):
@@ -172,6 +773,381 @@ async def test_outfit_api_enforces_slot_and_unlock_level(client: AsyncClient):
     )
     assert cleared.status_code == 200
     assert cleared.json()["outfit"]["equipped_outfits"] == {}
+
+
+@pytest.mark.asyncio
+async def test_relationship_milestone_claim_and_ack_api_is_scoped_and_idempotent(
+    client: AsyncClient,
+):
+    alice_headers = await register_and_login(
+        client,
+        "milestone-alice",
+        "milestone-alice@example.com",
+    )
+    bob_headers = await register_and_login(
+        client,
+        "milestone-bob",
+        "milestone-bob@example.com",
+    )
+    relationship_response = await client.get(
+        "/api/v1/pets/pig/relationship",
+        headers=alice_headers,
+    )
+    assert relationship_response.status_code == 200
+    user_id = relationship_response.json()["user_id"]
+
+    empty_claim = await client.post(
+        "/api/v1/pets/pig/relationship/milestones/claim",
+        headers=alice_headers,
+        json={"claim_token": str(uuid4())},
+    )
+    assert empty_claim.status_code == 204
+
+    from sqlalchemy import select  # noqa: E402
+    from app.models.database import (  # noqa: E402
+        PetRelationship,
+        PetRelationshipMilestone,
+        async_session_maker,
+    )
+
+    achieved_at = datetime(2026, 8, 11, 1, 0, 0)
+    async with async_session_maker() as session:
+        relationship_result = await session.execute(
+            select(PetRelationship).where(
+                PetRelationship.user_id == user_id,
+                PetRelationship.pet_type == "pig",
+            )
+        )
+        relationship = relationship_result.scalar_one()
+        relationship.intimacy_xp = 99
+        relationship.level = 1
+        relationship.relationship_stage = "new_friend"
+        await session.commit()
+
+        awarded = await award_pet_relationship(
+            session,
+            user_id=user_id,
+            pet_type="pig",
+            action="poke",
+            idempotency_key="milestone-api-level-two",
+            now=achieved_at,
+        )
+        assert awarded["level_up"] is True
+
+        duplicate = await award_pet_relationship(
+            session,
+            user_id=user_id,
+            pet_type="pig",
+            action="poke",
+            idempotency_key="milestone-api-level-two",
+            now=achieved_at,
+        )
+        assert duplicate["reason"] == "duplicate"
+
+        milestone_result = await session.execute(
+            select(PetRelationshipMilestone).where(
+                PetRelationshipMilestone.relationship_id == relationship.id
+            )
+        )
+        milestones = milestone_result.scalars().all()
+
+    assert [(item.level, item.reward_outfit_id) for item in milestones] == [
+        (2, "pig_sleep_cap"),
+    ]
+
+    claim_token = str(uuid4())
+    claimed = await client.post(
+        "/api/v1/pets/pig/relationship/milestones/claim",
+        headers=alice_headers,
+        json={"claim_token": claim_token},
+    )
+    assert claimed.status_code == 200
+    assert claimed.json() == {
+        "id": milestones[0].id,
+        "pet_type": "pig",
+        "level": 2,
+        "relationship_stage": "getting_familiar",
+        "reward_outfit_id": "pig_sleep_cap",
+        "achieved_at": "2026-08-11T01:00:00",
+        "claim_token": claim_token,
+        "claim_expires_at": claimed.json()["claim_expires_at"],
+        "acknowledged_at": None,
+    }
+
+    retried_claim = await client.post(
+        "/api/v1/pets/pig/relationship/milestones/claim",
+        headers=alice_headers,
+        json={"claim_token": claim_token},
+    )
+    assert retried_claim.status_code == 200
+    assert {
+        key: value
+        for key, value in retried_claim.json().items()
+        if key != "claim_expires_at"
+    } == {
+        key: value
+        for key, value in claimed.json().items()
+        if key != "claim_expires_at"
+    }
+    assert datetime.fromisoformat(
+        retried_claim.json()["claim_expires_at"]
+    ) > datetime.fromisoformat(claimed.json()["claim_expires_at"])
+
+    busy_claim = await client.post(
+        "/api/v1/pets/pig/relationship/milestones/claim",
+        headers=alice_headers,
+        json={"claim_token": str(uuid4())},
+    )
+    assert busy_claim.status_code == 204
+
+    wrong_token = str(uuid4())
+    wrong_ack = await client.post(
+        f"/api/v1/pets/pig/relationship/milestones/{milestones[0].id}/ack",
+        headers=alice_headers,
+        json={"claim_token": wrong_token},
+    )
+    assert wrong_ack.status_code == 409
+    assert wrong_ack.json()["detail"] == "milestone_claim_invalid_or_expired"
+
+    wrong_pet = await client.post(
+        f"/api/v1/pets/cat/relationship/milestones/{milestones[0].id}/ack",
+        headers=alice_headers,
+        json={"claim_token": claim_token},
+    )
+    assert wrong_pet.status_code == 404
+    assert wrong_pet.json()["detail"] == "milestone_not_found"
+
+    wrong_user = await client.post(
+        f"/api/v1/pets/pig/relationship/milestones/{milestones[0].id}/ack",
+        headers=bob_headers,
+        json={"claim_token": claim_token},
+    )
+    assert wrong_user.status_code == 404
+    assert wrong_user.json()["detail"] == "milestone_not_found"
+
+    acknowledged = await client.post(
+        f"/api/v1/pets/pig/relationship/milestones/{milestones[0].id}/ack",
+        headers=alice_headers,
+        json={"claim_token": claim_token},
+    )
+    assert acknowledged.status_code == 200
+    assert acknowledged.json()["acknowledged_at"] is not None
+    assert acknowledged.json()["claim_expires_at"] is None
+
+    retried_ack = await client.post(
+        f"/api/v1/pets/pig/relationship/milestones/{milestones[0].id}/ack",
+        headers=alice_headers,
+        json={"claim_token": claim_token},
+    )
+    assert retried_ack.status_code == 200
+    assert retried_ack.json() == acknowledged.json()
+
+    wrong_token_after_ack = await client.post(
+        f"/api/v1/pets/pig/relationship/milestones/{milestones[0].id}/ack",
+        headers=alice_headers,
+        json={"claim_token": wrong_token},
+    )
+    assert wrong_token_after_ack.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_relationship_milestone_lease_reclaim_and_late_ack(client: AsyncClient):
+    headers = await register_and_login(
+        client,
+        "milestone-lease",
+        "milestone-lease@example.com",
+    )
+    relationship_response = await client.get(
+        "/api/v1/pets/pig/relationship",
+        headers=headers,
+    )
+    user_id = relationship_response.json()["user_id"]
+
+    from sqlalchemy import select  # noqa: E402
+    from app.models.database import PetRelationship, async_session_maker  # noqa: E402
+
+    achieved_at = datetime(2026, 8, 11, 2, 0, 0)
+    async with async_session_maker() as session:
+        relationship_result = await session.execute(
+            select(PetRelationship).where(
+                PetRelationship.user_id == user_id,
+                PetRelationship.pet_type == "pig",
+            )
+        )
+        relationship = relationship_result.scalar_one()
+        relationship.intimacy_xp = 99
+        relationship.level = 1
+        relationship.relationship_stage = "new_friend"
+        await session.commit()
+        await award_pet_relationship(
+            session,
+            user_id=user_id,
+            pet_type="pig",
+            action="poke",
+            idempotency_key="milestone-lease-level-two",
+            now=achieved_at,
+        )
+
+        first_token = str(uuid4())
+        first_claim = await claim_pet_relationship_milestone(
+            session,
+            user_id=user_id,
+            pet_type="pig",
+            claim_token=first_token,
+            now=achieved_at,
+        )
+        assert first_claim is not None
+
+        same_claim = await claim_pet_relationship_milestone(
+            session,
+            user_id=user_id,
+            pet_type="pig",
+            claim_token=first_token,
+            now=achieved_at + timedelta(seconds=1),
+        )
+        assert same_claim is not None
+        assert same_claim["id"] == first_claim["id"]
+        assert same_claim["claim_token"] == first_claim["claim_token"]
+        assert same_claim["claim_expires_at"] == (
+            first_claim["claim_expires_at"] + timedelta(seconds=1)
+        )
+
+        late_ack = await acknowledge_pet_relationship_milestone(
+            session,
+            milestone_id=first_claim["id"],
+            user_id=user_id,
+            pet_type="pig",
+            claim_token=first_token,
+            now=achieved_at
+            + timedelta(seconds=MILESTONE_CLAIM_LEASE_SECONDS + 1),
+        )
+        assert late_ack["acknowledged_at"] == (
+            achieved_at + timedelta(seconds=MILESTONE_CLAIM_LEASE_SECONDS + 1)
+        )
+
+        relationship.intimacy_xp = 259
+        relationship.level = 2
+        relationship.relationship_stage = "getting_familiar"
+        await session.commit()
+        await award_pet_relationship(
+            session,
+            user_id=user_id,
+            pet_type="pig",
+            action="poke",
+            idempotency_key="milestone-lease-level-three",
+            now=achieved_at + timedelta(days=1),
+        )
+
+        stale_token = str(uuid4())
+        stale_claim = await claim_pet_relationship_milestone(
+            session,
+            user_id=user_id,
+            pet_type="pig",
+            claim_token=stale_token,
+            now=achieved_at + timedelta(days=1),
+        )
+        assert stale_claim is not None
+        assert stale_claim["level"] == 3
+
+        replacement_token = str(uuid4())
+        replacement_claim = await claim_pet_relationship_milestone(
+            session,
+            user_id=user_id,
+            pet_type="pig",
+            claim_token=replacement_token,
+            now=achieved_at
+            + timedelta(days=1, seconds=MILESTONE_CLAIM_LEASE_SECONDS + 1),
+        )
+        assert replacement_claim is not None
+        assert replacement_claim["id"] == stale_claim["id"]
+        assert replacement_claim["claim_token"] == replacement_token
+
+        with pytest.raises(
+            PermissionError,
+            match="milestone_claim_invalid_or_expired",
+        ):
+            await acknowledge_pet_relationship_milestone(
+                session,
+                milestone_id=stale_claim["id"],
+                user_id=user_id,
+                pet_type="pig",
+                claim_token=stale_token,
+                now=achieved_at + timedelta(days=2),
+            )
+
+        replacement_ack = await acknowledge_pet_relationship_milestone(
+            session,
+            milestone_id=replacement_claim["id"],
+            user_id=user_id,
+            pet_type="pig",
+            claim_token=replacement_token,
+            now=achieved_at + timedelta(days=2),
+        )
+        repeated_ack = await acknowledge_pet_relationship_milestone(
+            session,
+            milestone_id=replacement_claim["id"],
+            user_id=user_id,
+            pet_type="pig",
+            claim_token=replacement_token,
+            now=achieved_at + timedelta(days=3),
+        )
+
+    assert repeated_ack == replacement_ack
+
+
+@pytest.mark.asyncio
+async def test_relationship_milestone_claim_is_atomic_between_clients(client: AsyncClient):
+    headers = await register_and_login(
+        client,
+        "milestone-race",
+        "milestone-race@example.com",
+    )
+    relationship_response = await client.get(
+        "/api/v1/pets/pig/relationship",
+        headers=headers,
+    )
+    user_id = relationship_response.json()["user_id"]
+
+    from sqlalchemy import select  # noqa: E402
+    from app.models.database import PetRelationship, async_session_maker  # noqa: E402
+
+    claim_time = datetime(2026, 8, 11, 3, 0, 0)
+    async with async_session_maker() as session:
+        relationship_result = await session.execute(
+            select(PetRelationship).where(
+                PetRelationship.user_id == user_id,
+                PetRelationship.pet_type == "pig",
+            )
+        )
+        relationship = relationship_result.scalar_one()
+        relationship.intimacy_xp = 99
+        relationship.level = 1
+        relationship.relationship_stage = "new_friend"
+        await session.commit()
+        await award_pet_relationship(
+            session,
+            user_id=user_id,
+            pet_type="pig",
+            action="poke",
+            idempotency_key="milestone-race-level-two",
+            now=claim_time,
+        )
+
+    async def claim_once(token: str):
+        async with async_session_maker() as session:
+            return await claim_pet_relationship_milestone(
+                session,
+                user_id=user_id,
+                pet_type="pig",
+                claim_token=token,
+                now=claim_time,
+            )
+
+    tokens = [str(uuid4()), str(uuid4())]
+    claims = await asyncio.gather(*(claim_once(token) for token in tokens))
+    won = [claim for claim in claims if claim is not None]
+    assert len(won) == 1
+    assert won[0]["claim_token"] in tokens
 
 
 @pytest.mark.asyncio

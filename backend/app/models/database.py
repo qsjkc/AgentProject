@@ -35,8 +35,12 @@ LEGACY_APP_TABLES = {
     "chat_messages",
     "documents",
     "reminders",
+    "reminder_series",
     "pet_relationships",
+    "pet_relationship_milestones",
     "pet_intimacy_events",
+    "pet_activity_events",
+    "pet_retention_events",
 }
 
 engine = create_async_engine(
@@ -75,6 +79,7 @@ async def init_db() -> None:
     if not settings.AUTO_RUN_MIGRATIONS:
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
+            await backfill_pet_activity_events(conn)
         logger.warning("AUTO_RUN_MIGRATIONS disabled; schema initialized via metadata bootstrap")
         return
 
@@ -112,12 +117,43 @@ async def ensure_relational_schema(existing_tables: set[str]) -> None:
     )
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        await backfill_pet_activity_events(conn)
     await run_alembic_command("stamp", "head")
 
 
 async def get_sqlite_table_columns(conn, table_name: str) -> set[str]:
     result = await conn.exec_driver_sql(f"PRAGMA table_info({table_name})")
     return {row[1] for row in result.fetchall()}
+
+
+async def backfill_pet_activity_events(conn) -> None:
+    await conn.exec_driver_sql(
+        """
+        INSERT INTO pet_activity_events (
+            user_id,
+            relationship_id,
+            pet_type,
+            action,
+            idempotency_key,
+            occurred_at
+        )
+        SELECT
+            source.user_id,
+            source.relationship_id,
+            source.pet_type,
+            source.action,
+            source.idempotency_key,
+            source.awarded_at
+        FROM pet_intimacy_events AS source
+        WHERE source.action NOT IN ('reminder_created', 'reminder_completed', 'meaningful_chat')
+          AND NOT EXISTS (
+              SELECT 1
+              FROM pet_activity_events AS existing
+              WHERE existing.user_id = source.user_id
+                AND existing.idempotency_key = source.idempotency_key
+          )
+        """
+    )
 
 
 async def ensure_legacy_sqlite_schema(conn) -> None:
@@ -154,6 +190,90 @@ async def ensure_legacy_sqlite_schema(conn) -> None:
             "ALTER TABLE pet_relationships ADD COLUMN equipped_outfits JSON NOT NULL DEFAULT '{}'"
         )
 
+    chat_message_columns = await get_sqlite_table_columns(conn, "chat_messages")
+    if chat_message_columns and "pet_type" not in chat_message_columns:
+        await conn.exec_driver_sql("ALTER TABLE chat_messages ADD COLUMN pet_type VARCHAR(20)")
+    if chat_message_columns:
+        await conn.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_chat_messages_pet_daily "
+            "ON chat_messages (pet_type, role, created_at)"
+        )
+
+    reminder_columns = await get_sqlite_table_columns(conn, "reminders")
+    if reminder_columns and "email_enabled" not in reminder_columns:
+        await conn.exec_driver_sql(
+            "ALTER TABLE reminders ADD COLUMN email_enabled BOOLEAN NOT NULL DEFAULT 0"
+        )
+    if reminder_columns and "email_status" not in reminder_columns:
+        await conn.exec_driver_sql(
+            "ALTER TABLE reminders ADD COLUMN email_status VARCHAR(20) NOT NULL DEFAULT 'disabled'"
+        )
+    if reminder_columns and "email_sent_at" not in reminder_columns:
+        await conn.exec_driver_sql("ALTER TABLE reminders ADD COLUMN email_sent_at DATETIME")
+    if reminder_columns and "email_claimed_at" not in reminder_columns:
+        await conn.exec_driver_sql("ALTER TABLE reminders ADD COLUMN email_claimed_at DATETIME")
+    if reminder_columns and "email_claim_token" not in reminder_columns:
+        await conn.exec_driver_sql(
+            "ALTER TABLE reminders ADD COLUMN email_claim_token VARCHAR(36)"
+        )
+    if reminder_columns and "email_attempt_count" not in reminder_columns:
+        await conn.exec_driver_sql(
+            "ALTER TABLE reminders ADD COLUMN email_attempt_count INTEGER NOT NULL DEFAULT 0"
+        )
+    if reminder_columns and "email_next_attempt_at" not in reminder_columns:
+        await conn.exec_driver_sql(
+            "ALTER TABLE reminders ADD COLUMN email_next_attempt_at DATETIME"
+        )
+    if reminder_columns and "email_last_error" not in reminder_columns:
+        await conn.exec_driver_sql(
+            "ALTER TABLE reminders ADD COLUMN email_last_error VARCHAR(500)"
+        )
+    if reminder_columns:
+        await conn.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_reminders_email_delivery "
+            "ON reminders (status, email_enabled, email_status, remind_at, email_next_attempt_at)"
+        )
+    if reminder_columns and "series_id" not in reminder_columns:
+        await conn.exec_driver_sql("ALTER TABLE reminders ADD COLUMN series_id INTEGER")
+    if reminder_columns and "recurrence_type" not in reminder_columns:
+        await conn.exec_driver_sql(
+            "ALTER TABLE reminders ADD COLUMN recurrence_type VARCHAR(20) "
+            "NOT NULL DEFAULT 'once'"
+        )
+    if reminder_columns and "occurrence_sequence" not in reminder_columns:
+        await conn.exec_driver_sql(
+            "ALTER TABLE reminders ADD COLUMN occurrence_sequence INTEGER"
+        )
+    if reminder_columns and "creation_source" not in reminder_columns:
+        await conn.exec_driver_sql(
+            "ALTER TABLE reminders ADD COLUMN creation_source VARCHAR(20) "
+            "NOT NULL DEFAULT 'user'"
+        )
+    if reminder_columns and "cancellation_source" not in reminder_columns:
+        await conn.exec_driver_sql(
+            "ALTER TABLE reminders ADD COLUMN cancellation_source VARCHAR(20)"
+        )
+    if reminder_columns:
+        await conn.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_reminders_series_id ON reminders (series_id)"
+        )
+        await conn.exec_driver_sql(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_reminders_series_sequence "
+            "ON reminders (series_id, occurrence_sequence)"
+        )
+
+    retention_event_columns = await get_sqlite_table_columns(
+        conn,
+        "pet_retention_events",
+    )
+    if retention_event_columns:
+        await conn.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_pet_retention_events_weekly_funnel "
+            "ON pet_retention_events (pet_type, review_key, event_type, user_id)"
+        )
+
+    await backfill_pet_activity_events(conn)
+
 
 class User(Base):
     __tablename__ = "users"
@@ -173,8 +293,19 @@ class User(Base):
     documents = relationship("Document", back_populates="user", cascade="all, delete-orphan")
     preferences = relationship("UserPreference", back_populates="user", uselist=False, cascade="all, delete-orphan")
     reminders = relationship("Reminder", back_populates="user", cascade="all, delete-orphan")
+    reminder_series = relationship(
+        "ReminderSeries",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
     pet_relationships = relationship("PetRelationship", back_populates="user", cascade="all, delete-orphan")
     pet_intimacy_events = relationship("PetIntimacyEvent", back_populates="user", cascade="all, delete-orphan")
+    pet_activity_events = relationship("PetActivityEvent", back_populates="user", cascade="all, delete-orphan")
+    pet_retention_events = relationship(
+        "PetRetentionEvent",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
 
 
 class UserPreference(Base):
@@ -183,7 +314,7 @@ class UserPreference(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
-    pet_type = Column(String(20), nullable=False, default="cat")
+    pet_type = Column(String(20), nullable=False, default="pig", server_default="pig")
     quick_chat_enabled = Column(Boolean, nullable=False, default=True)
     bubble_frequency = Column(Integer, nullable=False, default=120)
     created_at = Column(DateTime, default=utc_now, nullable=False)
@@ -220,10 +351,14 @@ class ChatSession(Base):
 
 class ChatMessage(Base):
     __tablename__ = "chat_messages"
+    __table_args__ = (
+        Index("ix_chat_messages_pet_daily", "pet_type", "role", "created_at"),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     session_id = Column(Integer, ForeignKey("chat_sessions.id", ondelete="CASCADE"), nullable=False)
     role = Column(String(20), nullable=False)
+    pet_type = Column(String(20), nullable=True)
     content = Column(Text, nullable=False)
     created_at = Column(DateTime, default=utc_now, nullable=False)
 
@@ -247,11 +382,65 @@ class Document(Base):
     user = relationship("User", back_populates="documents")
 
 
-class Reminder(Base):
-    __tablename__ = "reminders"
+class ReminderSeries(Base):
+    __tablename__ = "reminder_series"
+    __table_args__ = (
+        Index(
+            "ix_reminder_series_materialization",
+            "status",
+            "next_occurrence_at",
+        ),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    pet_type = Column(String(20), nullable=False, index=True)
+    title = Column(String(200), nullable=False)
+    source_text = Column(Text, nullable=True)
+    recurrence_type = Column(String(20), nullable=False)
+    timezone = Column(String(64), nullable=False)
+    local_hour = Column(Integer, nullable=False)
+    local_minute = Column(Integer, nullable=False)
+    weekdays = Column(JSON, nullable=False, default=list)
+    status = Column(String(20), nullable=False, default="active", index=True)
+    email_enabled = Column(Boolean, nullable=False, default=True)
+    next_occurrence_at = Column(DateTime, nullable=False, index=True)
+    next_sequence = Column(Integer, nullable=False, default=2)
+    last_materialized_at = Column(DateTime, nullable=True)
+    skipped_occurrence_count = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime, default=utc_now, nullable=False)
+    updated_at = Column(DateTime, default=utc_now, onupdate=utc_now, nullable=False)
+
+    user = relationship("User", back_populates="reminder_series")
+    reminders = relationship("Reminder", back_populates="series", passive_deletes=True)
+
+
+class Reminder(Base):
+    __tablename__ = "reminders"
+    __table_args__ = (
+        UniqueConstraint(
+            "series_id",
+            "occurrence_sequence",
+            name="uq_reminders_series_sequence",
+        ),
+        Index(
+            "ix_reminders_email_delivery",
+            "status",
+            "email_enabled",
+            "email_status",
+            "remind_at",
+            "email_next_attempt_at",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    series_id = Column(
+        Integer,
+        ForeignKey("reminder_series.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     pet_type = Column(String(20), nullable=False, index=True)
     title = Column(String(200), nullable=False)
     source_text = Column(Text, nullable=True)
@@ -259,10 +448,23 @@ class Reminder(Base):
     status = Column(String(20), nullable=False, default="pending", index=True)
     triggered_at = Column(DateTime, nullable=True)
     completed_at = Column(DateTime, nullable=True)
+    cancellation_source = Column(String(20), nullable=True)
+    recurrence_type = Column(String(20), nullable=False, default="once")
+    occurrence_sequence = Column(Integer, nullable=True)
+    creation_source = Column(String(20), nullable=False, default="user")
+    email_enabled = Column(Boolean, nullable=False, default=True)
+    email_status = Column(String(20), nullable=False, default="pending")
+    email_sent_at = Column(DateTime, nullable=True)
+    email_claimed_at = Column(DateTime, nullable=True)
+    email_claim_token = Column(String(36), nullable=True)
+    email_attempt_count = Column(Integer, nullable=False, default=0)
+    email_next_attempt_at = Column(DateTime, nullable=True)
+    email_last_error = Column(String(500), nullable=True)
     created_at = Column(DateTime, default=utc_now, nullable=False)
     updated_at = Column(DateTime, default=utc_now, onupdate=utc_now, nullable=False)
 
     user = relationship("User", back_populates="reminders")
+    series = relationship("ReminderSeries", back_populates="reminders")
 
 
 class PetRelationship(Base):
@@ -285,11 +487,60 @@ class PetRelationship(Base):
     last_active_at = Column(DateTime, nullable=True)
     last_greeting_at = Column(DateTime, nullable=True)
     last_level_up_at = Column(DateTime, nullable=True)
+    last_weekly_review_key = Column(String(21), nullable=True)
+    last_weekly_review_seen_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=utc_now, nullable=False)
     updated_at = Column(DateTime, default=utc_now, onupdate=utc_now, nullable=False)
 
     user = relationship("User", back_populates="pet_relationships")
     intimacy_events = relationship("PetIntimacyEvent", back_populates="relationship", cascade="all, delete-orphan")
+    activity_events = relationship("PetActivityEvent", back_populates="relationship", cascade="all, delete-orphan")
+    milestones = relationship(
+        "PetRelationshipMilestone",
+        back_populates="relationship",
+        cascade="all, delete-orphan",
+    )
+
+
+class PetRelationshipMilestone(Base):
+    __tablename__ = "pet_relationship_milestones"
+    __table_args__ = (
+        UniqueConstraint(
+            "relationship_id",
+            "level",
+            name="uq_pet_relationship_milestones_relationship_level",
+        ),
+        UniqueConstraint(
+            "relationship_id",
+            "claim_token",
+            name="uq_pet_relationship_milestones_relationship_claim_token",
+        ),
+        CheckConstraint(
+            "level >= 2 AND level <= 5",
+            name="ck_pet_relationship_milestones_level_range",
+        ),
+        Index(
+            "ix_pet_relationship_milestones_pending",
+            "relationship_id",
+            "acknowledged_at",
+            "level",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    relationship_id = Column(
+        Integer,
+        ForeignKey("pet_relationships.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    level = Column(Integer, nullable=False)
+    reward_outfit_id = Column(String(64), nullable=False)
+    achieved_at = Column(DateTime, default=utc_now, nullable=False)
+    claim_token = Column(String(36), nullable=True)
+    claim_expires_at = Column(DateTime, nullable=True)
+    acknowledged_at = Column(DateTime, nullable=True)
+
+    relationship = relationship("PetRelationship", back_populates="milestones")
 
 
 class PetIntimacyEvent(Base):
@@ -316,3 +567,77 @@ class PetIntimacyEvent(Base):
 
     user = relationship("User", back_populates="pet_intimacy_events")
     relationship = relationship("PetRelationship", back_populates="intimacy_events")
+
+
+class PetActivityEvent(Base):
+    __tablename__ = "pet_activity_events"
+    __table_args__ = (
+        UniqueConstraint("user_id", "idempotency_key", name="uq_pet_activity_events_user_key"),
+        Index("ix_pet_activity_events_daily", "relationship_id", "occurred_at"),
+        Index(
+            "ix_pet_activity_events_action_daily",
+            "relationship_id",
+            "action",
+            "occurred_at",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    relationship_id = Column(
+        Integer,
+        ForeignKey("pet_relationships.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    pet_type = Column(String(20), nullable=False)
+    action = Column(String(32), nullable=False)
+    idempotency_key = Column(String(128), nullable=False)
+    occurred_at = Column(DateTime, default=utc_now, nullable=False)
+
+    user = relationship("User", back_populates="pet_activity_events")
+    relationship = relationship("PetRelationship", back_populates="activity_events")
+
+
+class PetRetentionEvent(Base):
+    __tablename__ = "pet_retention_events"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            "pet_type",
+            "event_type",
+            "review_key",
+            name="uq_pet_retention_events_funnel_step",
+        ),
+        CheckConstraint(
+            "event_type IN ("
+            "'weekly_review_generated', "
+            "'weekly_review_shown', "
+            "'weekly_review_seen', "
+            "'weekly_review_follow_up_care', "
+            "'weekly_review_follow_up_chat', "
+            "'weekly_review_follow_up_reminder'"
+            ")",
+            name="ck_pet_retention_events_type",
+        ),
+        Index("ix_pet_retention_events_funnel", "event_type", "occurred_at"),
+        Index(
+            "ix_pet_retention_events_weekly_funnel",
+            "pet_type",
+            "review_key",
+            "event_type",
+            "user_id",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(
+        Integer,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    pet_type = Column(String(20), nullable=False)
+    event_type = Column(String(48), nullable=False)
+    review_key = Column(String(21), nullable=False)
+    occurred_at = Column(DateTime, default=utc_now, nullable=False)
+
+    user = relationship("User", back_populates="pet_retention_events")

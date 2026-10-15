@@ -1,4 +1,12 @@
-from app.models.database import PetIntimacyEvent, PetRelationship, Reminder, User, UserPreference, VerificationCode
+from app.models.database import (
+    PetIntimacyEvent,
+    PetRelationship,
+    Reminder,
+    ReminderSeries,
+    User,
+    UserPreference,
+    VerificationCode,
+)
 
 
 __all__ = [
@@ -6,6 +14,7 @@ __all__ = [
     "UserPreference",
     "VerificationCode",
     "Reminder",
+    "ReminderSeries",
     "PetRelationship",
     "PetIntimacyEvent",
 ]

@@ -14,6 +14,11 @@ export const ANIMATION_ACTIONS = {
   CLEAN: 'clean',
   DRESS_UP: 'dress_up',
   LEVEL_UP: 'level_up',
+  RUN: 'run',
+  STRETCH: 'stretch',
+  LOOK_AROUND: 'look_around',
+  YAWN: 'yawn',
+  WELCOME_BACK: 'welcome_back',
 }
 
 const LOCKED_ACTIONS = new Set([
@@ -24,9 +29,20 @@ const LOOPING_ACTIONS = new Set([
   ANIMATION_ACTIONS.IDLE,
   ANIMATION_ACTIONS.SLEEPING,
 ])
+const COMPANION_ACTIONS = new Set([
+  ANIMATION_ACTIONS.RUN,
+  ANIMATION_ACTIONS.STRETCH,
+  ANIMATION_ACTIONS.LOOK_AROUND,
+  ANIMATION_ACTIONS.YAWN,
+  ANIMATION_ACTIONS.WELCOME_BACK,
+])
 
 export function isLoopingPetAnimation(action) {
   return LOOPING_ACTIONS.has(action)
+}
+
+export function doesPetAnimationBlockCare(action, locked) {
+  return Boolean(locked && action !== ANIMATION_ACTIONS.LEVEL_UP)
 }
 
 export function createInitialPetAnimationState() {
@@ -34,6 +50,7 @@ export function createInitialPetAnimationState() {
     action: ANIMATION_ACTIONS.IDLE,
     locked: false,
     message: '',
+    milestoneId: null,
     lastInteractionAt: Date.now(),
   }
 }
@@ -43,12 +60,19 @@ function transition(action, patch = {}) {
     action,
     locked: LOCKED_ACTIONS.has(action),
     message: patch.message || '',
+    milestoneId: patch.milestoneId || null,
     lastInteractionAt: patch.lastInteractionAt || Date.now(),
   }
 }
 
 export function petAnimationReducer(state, event) {
-  if (state.locked && event.type !== 'ANIMATION_DONE' && event.type !== 'WAKE') {
+  if (
+    state.locked
+    && event.type !== 'ANIMATION_DONE'
+    && event.type !== 'MILESTONE_INTERRUPTED'
+    && event.type !== 'REMINDER_DUE'
+    && event.type !== 'WAKE'
+  ) {
     return state
   }
 
@@ -59,7 +83,10 @@ export function petAnimationReducer(state, event) {
     case 'CHAT_SUCCESS':
       return transition(ANIMATION_ACTIONS.HAPPY, { message: event.message })
     case 'LEVEL_UP':
-      return transition(ANIMATION_ACTIONS.LEVEL_UP, { message: event.message })
+      return transition(ANIMATION_ACTIONS.LEVEL_UP, {
+        message: event.message,
+        milestoneId: event.milestoneId,
+      })
     case 'REMINDER_PARSE_FAILED':
     case 'CHAT_ERROR':
       return transition(ANIMATION_ACTIONS.CONFUSED, { message: event.message })
@@ -77,8 +104,18 @@ export function petAnimationReducer(state, event) {
       return transition(ANIMATION_ACTIONS.CLEAN)
     case 'PET_DRESS_UP':
       return transition(ANIMATION_ACTIONS.DRESS_UP, { message: event.message })
+    case 'COMPANION_ACTION':
+      return COMPANION_ACTIONS.has(event.action)
+        ? transition(event.action, { message: event.message })
+        : state
     case 'IDLE_TICK':
-      return transition(Math.random() > 0.55 ? ANIMATION_ACTIONS.WALK : ANIMATION_ACTIONS.JUMP)
+      return transition(
+        Object.values(ANIMATION_ACTIONS).includes(event.action)
+          ? event.action
+          : Math.random() > 0.55
+            ? ANIMATION_ACTIONS.WALK
+            : ANIMATION_ACTIONS.JUMP,
+      )
     case 'SLEEP':
       return transition(ANIMATION_ACTIONS.SLEEPING)
     case 'WAKE':
@@ -86,6 +123,14 @@ export function petAnimationReducer(state, event) {
         ? transition(ANIMATION_ACTIONS.WAKE, { message: event.message })
         : state
     case 'ANIMATION_DONE':
+      if (state.milestoneId && state.milestoneId !== event.milestoneId) {
+        return state
+      }
+      return transition(ANIMATION_ACTIONS.IDLE)
+    case 'MILESTONE_INTERRUPTED':
+      if (state.milestoneId !== event.milestoneId) {
+        return state
+      }
       return transition(ANIMATION_ACTIONS.IDLE)
     default:
       return state

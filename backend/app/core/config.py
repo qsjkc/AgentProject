@@ -1,4 +1,5 @@
 import json
+import os
 from functools import lru_cache
 from typing import List, Optional
 
@@ -7,7 +8,11 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", case_sensitive=True, extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=os.environ.get("DETACHYM_ENV_FILE", ".env") or None,
+        case_sensitive=True,
+        extra="ignore",
+    )
 
     APP_NAME: str = "Detachym Platform"
     APP_VERSION: str = "2.0.0"
@@ -28,6 +33,7 @@ class Settings(BaseSettings):
     CHROMA_PERSIST_DIR: str = "./data/chroma"
     UPLOAD_DIR: str = "./data/uploads"
     DOWNLOAD_DIR: str = "./data/downloads"
+    LOG_DIR: str = "./logs"
     MAX_UPLOAD_SIZE: int = 10 * 1024 * 1024
     MAX_DOCUMENTS_PER_USER: int = 20
     RAG_TOP_K: int = 4
@@ -55,6 +61,18 @@ class Settings(BaseSettings):
     DESKTOP_RELEASE_FILE: str = "DetachymAgentPet1.0.exe"
     DESKTOP_DOWNLOAD_BASE: str = "/download"
     PET_REWARD_TIMEZONE: str = "Asia/Shanghai"
+    REMINDER_EMAIL_WORKER_ENABLED: bool = True
+    REMINDER_EMAIL_POLL_INTERVAL_SECONDS: int = 30
+    REMINDER_EMAIL_LEASE_SECONDS: int = 300
+    REMINDER_EMAIL_MAX_ATTEMPTS: int = 3
+    REMINDER_EMAIL_RETRY_BASE_SECONDS: int = 60
+    REMINDER_EMAIL_BATCH_SIZE: int = 20
+    REMINDER_RECURRENCE_WORKER_ENABLED: bool = True
+    REMINDER_RECURRENCE_POLL_INTERVAL_SECONDS: int = 30
+    REMINDER_RECURRENCE_LOOKAHEAD_SECONDS: int = 60
+    REMINDER_RECURRENCE_MISSED_GRACE_SECONDS: int = 21600
+    REMINDER_RECURRENCE_BATCH_SIZE: int = 20
+    REMINDER_RECURRENCE_MAX_CATCHUP_STEPS: int = 400
 
     VOLC_AI_RTC_APP_ID: Optional[str] = None
     VOLC_AI_RTC_APP_KEY: Optional[str] = None

@@ -1,13 +1,13 @@
 from typing import Literal
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from app.core.security import get_current_user, get_internal_service_identity
 from app.models.user import User
 from app.services.llm.base import Message
 from app.services.llm.service import llm_service
-from app.services.chat.service import PET_PERSONA_PROMPTS
+from app.services.chat.service import PET_PERSONA_PROMPTS, PROVIDER_UNAVAILABLE_MESSAGE
 from app.services.tools.weather import weather_service
 
 router = APIRouter(prefix="/tools", tags=["tools"])
@@ -88,8 +88,13 @@ async def get_internal_chat(
         return InternalChatResponse(content="我没有收到明确的问题，请再说一次。")
 
     full_response = ""
-    async for chunk in llm_service.chat(messages, stream=False, temperature=0.5, max_tokens=220):
-        full_response += chunk
+    try:
+        async for chunk in llm_service.chat(messages, stream=False, temperature=0.5, max_tokens=220):
+            full_response += chunk
+    except Exception as error:
+        raise HTTPException(status_code=503, detail=PROVIDER_UNAVAILABLE_MESSAGE) from error
 
-    content = full_response.strip() or "我暂时没有整理出可播报的回答。"
+    content = full_response.strip()
+    if not content:
+        raise HTTPException(status_code=503, detail=PROVIDER_UNAVAILABLE_MESSAGE)
     return InternalChatResponse(content=content)

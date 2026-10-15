@@ -1,19 +1,13 @@
-import random
-import smtplib
-import string
+import secrets
 from datetime import timedelta
-from email.header import Header
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm
-from sqlalchemy import delete, or_, select
+from sqlalchemy import delete, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
+from starlette.concurrency import run_in_threadpool
 
-from app.core.config import settings
-from app.core.logging import logger
 from app.core.security import (
     create_access_token,
     get_current_user,
@@ -33,38 +27,24 @@ from app.schemas.user import (
     UserResponse,
     VerificationCodeRequest,
 )
+from app.services.email import EmailDeliveryError, send_email
+from app.services.user_preferences import get_or_create_preferences
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
 def generate_verification_code() -> str:
-    return "".join(random.choices(string.digits, k=6))
+    return f"{secrets.randbelow(1_000_000):06d}"
 
 
-async def send_email(email: str, subject: str, html_content: str) -> bool:
-    if not settings.SMTP_USER or not settings.SMTP_PASSWORD:
-        logger.info("[dev-email] %s -> %s", subject, email)
-        logger.info("%s", html_content)
-        return True
-
-    msg = MIMEMultipart()
-    msg["From"] = str(Header(f"{settings.SMTP_SENDER_NAME} <{settings.SMTP_USER}>", "utf-8"))
-    msg["To"] = email
-    msg["Subject"] = Header(subject, "utf-8")
-    msg.attach(MIMEText(html_content, "html", "utf-8"))
-
+async def send_auth_email(email: str, subject: str, html_content: str) -> bool:
     try:
-        with smtplib.SMTP(settings.SMTP_SERVER, settings.SMTP_PORT, timeout=15) as server:
-            server.starttls()
-            server.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
-            server.send_message(msg)
-    except (TimeoutError, OSError, smtplib.SMTPException) as exc:
-        logger.exception("Failed to send email to %s", email)
+        return await send_email(email, subject, html_content)
+    except EmailDeliveryError as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="Failed to send verification email",
         ) from exc
-    return True
 
 
 async def issue_code(
@@ -115,15 +95,40 @@ async def get_valid_code(
     verification = result.scalars().first()
     if not verification:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid verification code")
-    if verification.expires_at < utc_now():
+    if verification.expires_at <= utc_now():
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Verification code expired")
     return verification
 
 
+async def consume_verification_code(db: AsyncSession, verification: VerificationCode) -> None:
+    """Claim the code in the same transaction as the account change.
+
+    A prior SELECT is insufficient: simultaneous requests may both validate it.
+    Conditional UPDATE also rejects a code reissued or expired while waiting.
+    The caller commits both writes, or get_db rolls both back on failure.
+    """
+    consumed_at = utc_now()
+    result = await db.execute(
+        update(VerificationCode)
+        .where(
+            VerificationCode.id == verification.id,
+            VerificationCode.code == verification.code,
+            VerificationCode.email == verification.email,
+            VerificationCode.purpose == verification.purpose,
+            VerificationCode.created_at == verification.created_at,
+            VerificationCode.expires_at == verification.expires_at,
+            VerificationCode.consumed_at.is_(None),
+            VerificationCode.expires_at > consumed_at,
+        )
+        .values(consumed_at=consumed_at)
+        .execution_options(synchronize_session=False)
+    )
+    if result.rowcount != 1:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid verification code")
+
+
 async def create_default_preferences(user_id: int, db: AsyncSession) -> UserPreference:
-    preferences = UserPreference(user_id=user_id)
-    db.add(preferences)
-    await db.flush()
+    preferences, _ = await get_or_create_preferences(user_id, db)
     return preferences
 
 
@@ -149,7 +154,7 @@ async def send_verification_code(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email already registered")
 
     code = await issue_code(db, email=payload.email, purpose="register")
-    await send_email(
+    await send_auth_email(
         payload.email,
         "Detachym 注册验证码",
         (
@@ -170,7 +175,7 @@ async def forgot_password(
     user = result.scalar_one_or_none()
     if user:
         code = await issue_code(db, email=payload.email, purpose="reset_password", user_id=user.id)
-        await send_email(
+        await send_auth_email(
             payload.email,
             "Detachym 重置密码验证码",
             (
@@ -201,18 +206,18 @@ async def register(
         purpose="register",
         code=user_create.verification_code,
     )
+    await consume_verification_code(db, verification)
 
     user = User(
         username=user_create.username,
         email=user_create.email,
-        hashed_password=get_password_hash(user_create.password),
+        hashed_password=await run_in_threadpool(get_password_hash, user_create.password),
         status="active",
         is_active=True,
     )
     db.add(user)
     await db.flush()
     await create_default_preferences(user.id, db)
-    verification.consumed_at = utc_now()
     await db.commit()
 
     return await load_user_with_preferences(user.id, db)
@@ -225,14 +230,19 @@ async def login(
 ) -> Token:
     identifier = form_data.username.strip()
     result = await db.execute(select(User).where(or_(User.username == identifier, User.email == identifier)))
-    user = result.scalar_one_or_none()
-
-    if not user or not verify_password(form_data.password, user.hashed_password):
+    # Username and email are unique separately, so one identifier can match
+    # two different accounts. Authenticate only an unambiguous password match.
+    matches = []
+    for candidate in result.scalars().all():
+        if await run_in_threadpool(verify_password, form_data.password, candidate.hashed_password):
+            matches.append(candidate)
+    if len(matches) != 1:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect username or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
+    user = matches[0]
     if user.status != "active" or not user.is_active:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User is disabled")
 
@@ -258,9 +268,11 @@ async def reset_password(
     user = result.scalar_one_or_none()
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    if verification.user_id != user.id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid verification code")
 
-    user.hashed_password = get_password_hash(payload.new_password)
-    verification.consumed_at = utc_now()
+    await consume_verification_code(db, verification)
+    user.hashed_password = await run_in_threadpool(get_password_hash, payload.new_password)
     await db.commit()
     return MessageResponse(message="Password reset successful")
 
@@ -271,10 +283,10 @@ async def change_password(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> MessageResponse:
-    if not verify_password(payload.current_password, current_user.hashed_password):
+    if not await run_in_threadpool(verify_password, payload.current_password, current_user.hashed_password):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Current password is incorrect")
 
-    current_user.hashed_password = get_password_hash(payload.new_password)
+    current_user.hashed_password = await run_in_threadpool(get_password_hash, payload.new_password)
     await db.commit()
     return MessageResponse(message="Password updated")
 

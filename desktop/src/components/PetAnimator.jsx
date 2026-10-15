@@ -2,54 +2,35 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { getPetAnimation } from '../shared/pet-animation-config'
 import { isLoopingPetAnimation } from '../shared/pet-animation-state'
+import { createPetAnimationPlayback } from '../shared/pet-animation-playback'
 
-export function PetAnimator({ petType, action, alt, onCycleComplete }) {
+export function PetAnimator({ petType, action, cycleId = null, alt, onCycleComplete }) {
   const animation = useMemo(() => getPetAnimation(petType, action), [petType, action])
   const { frameCount, frameDuration } = animation
   const [index, setIndex] = useState(0)
-  const previousIndexRef = useRef(0)
-  const resettingAnimationRef = useRef(false)
+  const onCompleteRef = useRef(onCycleComplete)
+  onCompleteRef.current = onCycleComplete
 
   useEffect(() => {
-    resettingAnimationRef.current = true
-    previousIndexRef.current = 0
-    setIndex(0)
-  }, [action, petType])
-
-  useEffect(() => {
-    if (frameCount <= 1) {
-      if (isLoopingPetAnimation(action)) {
-        return undefined
-      }
-      const timer = window.setTimeout(() => {
-        onCycleComplete?.(action)
-      }, 660)
-      return () => window.clearTimeout(timer)
+    const media = window.matchMedia('(prefers-reduced-motion: reduce)')
+    const policy = () => ({ visible: document.visibilityState !== 'hidden', reducedMotion: media.matches })
+    const playback = createPetAnimationPlayback({
+      frameCount,
+      frameDuration,
+      looping: isLoopingPetAnimation(action),
+      ...policy(),
+      onFrame: setIndex,
+      onComplete: () => onCompleteRef.current?.(action, cycleId),
+    })
+    const update = () => playback.updatePolicy(policy())
+    document.addEventListener('visibilitychange', update)
+    media.addEventListener('change', update)
+    return () => {
+      playback.dispose()
+      document.removeEventListener('visibilitychange', update)
+      media.removeEventListener('change', update)
     }
-
-    const timer = window.setInterval(() => {
-      setIndex((current) => (current + 1) % frameCount)
-    }, frameDuration)
-
-    return () => window.clearInterval(timer)
-  }, [action, frameCount, frameDuration, onCycleComplete])
-
-  useEffect(() => {
-    if (resettingAnimationRef.current) {
-      if (index === 0) {
-        resettingAnimationRef.current = false
-      }
-      return
-    }
-    if (frameCount <= 1 || isLoopingPetAnimation(action)) {
-      previousIndexRef.current = index
-      return
-    }
-    if (index === 0 && previousIndexRef.current === frameCount - 1) {
-      onCycleComplete?.(action)
-    }
-    previousIndexRef.current = index
-  }, [action, frameCount, index, onCycleComplete])
+  }, [action, cycleId, petType, frameCount, frameDuration])
 
   if (animation.type === 'sprite') {
     const column = index % animation.columns
@@ -60,6 +41,7 @@ export function PetAnimator({ petType, action, alt, onCycleComplete }) {
     return (
       <div
         className="pet-image pet-sprite"
+        data-animation-frame={index}
         role="img"
         aria-label={alt}
         style={{
@@ -74,6 +56,7 @@ export function PetAnimator({ petType, action, alt, onCycleComplete }) {
   return (
     <img
       className="pet-image"
+      data-animation-frame={index}
       src={animation.frames[index] || animation.frames[0]}
       alt={alt}
       draggable="false"

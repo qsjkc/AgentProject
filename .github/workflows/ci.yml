@@ -53,6 +53,19 @@ jobs:
       - name: Run backend tests
         run: pytest -q -p no:cacheprovider tests
 
+      - name: Test deployment version guard
+        run: python -m unittest discover -s ../deploy -p "test_*.py"
+
+      - name: Verify PostgreSQL migrations, services and restore
+        run: python scripts/verify_postgres_release.py --report ../P1L-postgres-verification.json
+
+      - name: Upload PostgreSQL verification
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: postgres-release-verification
+          path: P1L-postgres-verification.json
+
   frontend-checks:
     name: Frontend Checks
     runs-on: ubuntu-latest
@@ -135,5 +148,46 @@ jobs:
       - name: Run desktop tests
         run: npm run test
 
+      - name: Test release baseline checker
+        run: npm run test:release-baseline
+
       - name: Build renderer
         run: npm run build:renderer
+
+  desktop-e2e:
+    name: Windows Electron E2E (stub and real backend)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - name: Prepare isolated backend runtime
+        run: |
+          python -m venv ../backend/venv
+          ../backend/venv/Scripts/python.exe -m pip install -r ../backend/requirements.txt
+      - run: npm ci
+      - run: npm run test:e2e:runner
+      - run: npm run build:renderer
+      - run: npm run test:e2e
+      - run: npm run pack
+      - run: npm run test:packaged
+      - run: npm run test:packaged:real-backend
+      - name: Upload Electron evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-e2e
+          path: desktop/artifacts/e2e/
+          retention-days: 7

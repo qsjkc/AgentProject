@@ -11,7 +11,18 @@
     "sourceMap": false
   },
   "include": [
+    "src/components/RootErrorBoundary.tsx",
     "src/lib/errors.ts",
+    "src/lib/auth.ts",
+    "src/lib/apiSession.ts",
+    "src/lib/apiTime.ts",
+    "src/lib/adminOperations.ts",
+    "src/lib/authFormOperations.ts",
+    "src/lib/voiceSessionController.ts",
+    "src/lib/voiceSessionApi.ts",
+    "src/lib/voiceRtc.ts",
+    "src/stores/authState.ts",
+    "src/lib/retention.ts",
     "src/services/url.ts",
     "src/types/index.ts"
   ]

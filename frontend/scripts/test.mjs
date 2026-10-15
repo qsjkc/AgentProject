@@ -3,6 +3,13 @@ import { spawnSync } from 'node:child_process'
 import { rmSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import { testAuth } from './test-auth.mjs'
+import { testApiSessions } from './test-api-sessions.mjs'
+import { testApiTime } from './test-api-time.mjs'
+import { testAdminOperations } from './test-admin-operations.mjs'
+import { testAuthFormOperations } from './test-auth-form-operations.mjs'
+import { testVoiceSessions } from './test-voice-sessions.mjs'
+import { testWebRecovery } from './test-web-recovery.mjs'
 
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const outDir = path.join(rootDir, '.test-dist')
@@ -28,7 +35,26 @@ async function main() {
     runTypeScriptCompile()
 
     const { getErrorMessage } = await importCompiledModule('src/lib/errors.js')
+    const { formatRetentionRate, formatReviewPeriod } = await importCompiledModule(
+      'src/lib/retention.js',
+    )
     const { resolveDownloadUrlWithOrigin } = await importCompiledModule('src/services/url.js')
+    await testAuth(importCompiledModule)
+    await testApiSessions(importCompiledModule)
+    await testApiTime(importCompiledModule)
+    await testAdminOperations(importCompiledModule)
+    await testAuthFormOperations(importCompiledModule)
+    await testVoiceSessions(importCompiledModule)
+    await testWebRecovery(importCompiledModule)
+
+    assert.equal(formatReviewPeriod('2026-08-03_2026-08-09'), '2026-08-03 至 2026-08-09')
+    assert.equal(formatReviewPeriod('unexpected-key'), 'unexpected-key')
+    assert.equal(formatRetentionRate(0), '0%')
+    assert.equal(formatRetentionRate(0.6667), '66.7%')
+    assert.equal(formatRetentionRate(1), '100%')
+    assert.equal(formatRetentionRate(Number.NaN), '—')
+    assert.equal(formatRetentionRate(-0.1), '—')
+    assert.equal(formatRetentionRate(1.1), '—')
 
     assert.equal(
       getErrorMessage(
@@ -45,6 +71,16 @@ async function main() {
     )
     assert.equal(getErrorMessage(new Error('plain error'), 'fallback'), 'plain error')
     assert.equal(getErrorMessage(null, 'fallback'), 'fallback')
+    assert.equal(getErrorMessage({ code: 'ECONNABORTED' }, 'fallback'), '请求超时，请稍后重试。')
+    assert.equal(getErrorMessage({ code: 'ERR_NETWORK' }, 'fallback'), '网络连接暂时不可用，请检查网络后重试。')
+    assert.equal(getErrorMessage({ response: { status: 429, data: '<html>Too Many Requests</html>', headers: { 'retry-after': '70' } } }, 'fallback'), '操作太频繁，请在 70 秒后重试。')
+    for (const retryAfter of [undefined, 'not-a-number', -1, 999999]) {
+      assert.equal(getErrorMessage({ response: { status: 429, headers: { 'Retry-After': retryAfter } } }, 'fallback'), '操作太频繁，请稍等片刻再试。')
+    }
+    assert.equal(getErrorMessage({ response: { data: { detail: [{ msg: '密码过短' }, { msg: '邮箱格式错误' }, { msg: '密码过短' }] } } }, 'fallback'), '密码过短；邮箱格式错误')
+    for (const detail of [null, {}, 42, [null, {}, { msg: 42 }], '   ']) {
+      assert.equal(getErrorMessage({ response: { data: { detail } } }, 'fallback'), 'fallback')
+    }
 
     assert.equal(
       resolveDownloadUrlWithOrigin('https://detachym.top', {

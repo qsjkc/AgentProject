@@ -1,28 +1,30 @@
 import axios from 'axios'
+import { AUTH_EXPIRED_EVENT, shouldExpireSession } from '../lib/auth'
+import { installApiSessionBinding } from '../lib/apiSession'
 
 const defaultBaseUrl = import.meta.env.VITE_API_BASE_URL || '/api/v1'
 
 const api = axios.create({
   baseURL: defaultBaseUrl,
+  timeout: 30_000,
   headers: {
     'Content-Type': 'application/json',
   },
 })
 
-api.interceptors.request.use((config) => {
-  const token = localStorage.getItem('token')
-  if (token) {
-    config.headers.Authorization = `Bearer ${token}`
-  }
-  return config
-})
+export const registerApiSessionReader = installApiSessionBinding(api, () => localStorage.getItem('token'))
 
 api.interceptors.response.use(
   (response) => response,
   (error) => {
-    if (error.response?.status === 401) {
+    if (shouldExpireSession(
+      error.response?.status,
+      error.config?.url,
+      error.config?.headers?.Authorization,
+      localStorage.getItem('token'),
+    )) {
       localStorage.removeItem('token')
-      window.location.href = '/login'
+      window.dispatchEvent(new Event(AUTH_EXPIRED_EVENT))
     }
     return Promise.reject(error)
   }

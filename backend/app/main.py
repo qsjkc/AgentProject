@@ -11,6 +11,8 @@ from app.core.config import settings
 from app.core.logging import logger
 from app.core.security import get_password_hash
 from app.models.database import User, async_session_maker, init_db
+from app.services.reminder_delivery import reminder_delivery_service
+from app.services.reminder_recurrence import reminder_recurrence_service
 from app.services.rtc.service import voice_demo_service
 
 
@@ -55,13 +57,21 @@ async def lifespan(_: FastAPI):
 
     await init_db()
     await seed_initial_admin()
-    await voice_demo_service.startup()
-    logger.info("Application storage initialized")
-
-    yield
-
-    await voice_demo_service.shutdown()
-    logger.info("Shutting down %s", settings.APP_NAME)
+    try:
+        await voice_demo_service.startup()
+        await reminder_recurrence_service.startup()
+        await reminder_delivery_service.startup()
+        logger.info("Application storage initialized")
+        yield
+    finally:
+        try:
+            await reminder_delivery_service.shutdown()
+        finally:
+            try:
+                await reminder_recurrence_service.shutdown()
+            finally:
+                await voice_demo_service.shutdown()
+        logger.info("Shutting down %s", settings.APP_NAME)
 
 
 app = FastAPI(
@@ -118,7 +128,7 @@ async def readiness():
             detail={
                 "status": "not_ready",
                 "checks": {
-                    "database": f"error: {exc}",
+                    "database": "error",
                     "storage": storage_checks,
                 },
             },

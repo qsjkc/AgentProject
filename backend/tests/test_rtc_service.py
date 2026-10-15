@@ -1,5 +1,7 @@
+import base64
+import struct
 import sys
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -124,6 +126,39 @@ async def test_create_session_uses_safe_ai_user_id(monkeypatch):
     assert response.aiUserId.startswith("BOTUSER")
     assert "_" not in response.aiUserId
     assert response.petType == "dog"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("local_offset", [8, -7, 0])
+async def test_created_rtc_token_expiry_is_utc_independent_of_host_timezone(monkeypatch, local_offset):
+    from app.core.config import settings
+    from app.services.rtc import service
+
+    class LocalTimestampDateTime(datetime):
+        def timestamp(self):
+            # Emulate datetime's host-local interpretation of naive values,
+            # without changing the test runner's system timezone.
+            value = self if self.tzinfo else self.replace(tzinfo=timezone(timedelta(hours=local_offset)))
+            return datetime.timestamp(value)
+
+    now = LocalTimestampDateTime(2026, 9, 26, 23, 30, 0, 123456)
+    monkeypatch.setattr(service, "utc_now", lambda: now)
+    monkeypatch.setattr(settings, "VOLC_AI_RTC_APP_ID", "test-app-id-24-characters")
+    monkeypatch.setattr(settings, "VOLC_AI_RTC_APP_KEY", "isolated-test-key")
+    monkeypatch.setattr(settings, "VOLC_RTC_TOKEN_TTL_SECONDS", 3600)
+    isolated_service = service.VoiceDemoService()
+
+    response = await isolated_service.create_session(SimpleNamespace(id=7), pet_type="pig")
+    packed_token = base64.b64decode(response.token[3 + len(response.appId):])
+    message_size = struct.unpack_from("<H", packed_token)[0]
+    message = packed_token[2:2 + message_size]
+    token_expiry = struct.unpack_from("<I", message, 8)[0]
+    expected_expiry = int(datetime(2026, 9, 27, 0, 30, tzinfo=UTC).timestamp())
+
+    assert token_expiry == expected_expiry
+    assert response.expiresAt == datetime(2026, 9, 27, 0, 30, 0, 123456)
+    record = await isolated_service._store.get(response.sessionId)
+    assert record.expires_at == response.expiresAt
 
 
 @pytest.mark.asyncio

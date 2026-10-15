@@ -1,7 +1,76 @@
 const fs = require('node:fs')
 const path = require('node:path')
+const { performance } = require('node:perf_hooks')
+const { randomUUID } = require('node:crypto')
+const { pathToFileURL } = require('node:url')
 
-const { app, BrowserWindow, ipcMain, Menu, Notification, Tray, globalShortcut, nativeImage, screen } = require('electron')
+const {
+  clearPetMilestonePlaybackEntry,
+  clearPetMilestonePlaybackSnapshot,
+  readPetMilestonePlaybackEntry,
+  setPetMilestonePlaybackEntry,
+} = require('./pet-milestone-playback-store.cjs')
+
+const {
+  PET_ONBOARDING_CAPABILITIES,
+  ackPetOnboardingPresentation: ackPetOnboardingPresentationState,
+  calculatePetOnboardingEngagementSample,
+  claimPetOnboardingPresentation: claimPetOnboardingPresentationState,
+  createPetOnboardingKey,
+  createPetOnboardingState,
+  dismissPetOnboarding: dismissPetOnboardingState,
+  normalizePetOnboardingContext,
+  readPetOnboardingEntry,
+  recordPetOnboardingEngagement: recordPetOnboardingEngagementState,
+  recordPetOnboardingObservation: recordPetOnboardingObservationState,
+  releasePetOnboardingPresentation: releasePetOnboardingPresentationState,
+  snoozePetOnboarding: snoozePetOnboardingState,
+} = require('./pet-onboarding-store.cjs')
+const {
+  projectPetOnboardingStateForRole,
+} = require('./pet-onboarding-dto.cjs')
+const {
+  createPetOnboardingStateBroadcaster,
+} = require('./pet-onboarding-broadcast.cjs')
+const {
+  createRendererHeartbeatRecord,
+  createRendererTelemetryRecord,
+} = require('./renderer-telemetry.cjs')
+const {
+  authorizeAccountMutation,
+  authorizeNotification,
+  authorizeSessionClear,
+  authorizeSwitchPet,
+  createAuthoritativeOperationContextState,
+  createOperationCapabilityRegistry,
+  createRelationshipBroadcastOrchestrator,
+  createRuntimeStateForRole,
+  createStableAccountContextKey,
+  isExactSessionSnapshot,
+} = require('./account-boundary.cjs')
+const { createMainPanelIntentCoordinator } = require('./main-panel-intent.cjs')
+const { createFocusSessionController } = require('./focus-session.cjs')
+const { createReminderWakeupController } = require('./reminder-wakeup.cjs')
+const { createLoginAttemptController } = require('./login-attempt.cjs')
+const {
+  createBoundsPersistence,
+  fitWindowBounds,
+  recoverWindowBounds,
+  restoreWindowBounds,
+} = require('./window-bounds.cjs')
+
+const {
+  app,
+  BrowserWindow,
+  ipcMain,
+  Menu,
+  Notification,
+  Tray,
+  globalShortcut,
+  nativeImage,
+  powerMonitor,
+  screen,
+} = require('electron')
 
 let store
 let petWindow
@@ -11,9 +80,29 @@ let tray
 let quitting = false
 let debugLogPath = null
 let registeredVoiceGlobalShortcut = null
+let mainPanelIntentCoordinator = null
+let sessionGeneration = 0
+const authoritativeOperationContext = createAuthoritativeOperationContextState()
+const operationCapabilities = createOperationCapabilityRegistry({
+  authoritativeState: authoritativeOperationContext,
+  createId: randomUUID,
+})
+const loginAttempts = createLoginAttemptController({
+  readContext: () => ({ server: getStore().get('apiBaseUrl'), session: getCurrentSessionSnapshot() }),
+  readRendererNonce: (sender) => operationCapabilities.getRendererInstanceNonce(sender),
+  createId: randomUUID,
+})
+let relationshipBroadcastOrchestrator = null
+let petOnboardingStateBroadcaster = null
+const boundsPersistence = new Set()
+let displayRecoveryTimer = null
+let focusSessionController = null
+let reminderWakeupController = null
 
-const rendererHeartbeatState = {}
+const rendererHeartbeatState = Object.create(null)
+const petOnboardingEngagementSamples = new Map()
 const isDev = !app.isPackaged
+const isE2e = isDev && process.env.DETACHYM_E2E === '1'
 const rendererUrl = process.env.ELECTRON_RENDERER_URL
 const defaultApiBaseUrl =
   process.env.DETACHYM_API_BASE_URL ||
@@ -30,6 +119,12 @@ const DEFAULT_VOICE_SETTINGS = {
   desktop_voice_idle_timeout_seconds: 8,
   desktop_voice_output_mode: 'voice_and_text',
 }
+const COMPANION_MODES = ['off', 'low', 'standard']
+const DEFAULT_COMPANION_SETTINGS = {
+  mode: 'standard',
+  quietHoursStart: 23,
+  quietHoursEnd: 8,
+}
 const VOICE_SETTINGS_OUTPUT_MIGRATION_KEY = 'voiceSettingsOutputModeMigratedAt'
 const PET_WINDOW_WIDTH = 220
 const PET_WINDOW_HEIGHT = 240
@@ -39,6 +134,14 @@ const QUICK_CHAT_WIDTH = 430
 const QUICK_CHAT_HEIGHT = 420
 const MAIN_PANEL_WIDTH = 1100
 const MAIN_PANEL_HEIGHT = 780
+const MAIN_PANEL_INTENT_READY_TIMEOUT_MS = 5000
+const E2E_PROTOCOL_VERSION = 1
+const e2eRuntime = {
+  intentSequence: 0,
+  intent: { contextUserId: null, lastResult: null },
+  lastCompletedRequest: null,
+  activityJournal: [],
+}
 
 const trayMessages = {
   'zh-CN': {
@@ -109,6 +212,31 @@ function normalizeVoiceSettings(value = {}) {
   }
 }
 
+function normalizeCompanionHour(value, fallback) {
+  const number = Number(value)
+  if (!Number.isFinite(number)) {
+    return fallback
+  }
+  return Math.min(23, Math.max(0, Math.round(number)))
+}
+
+function normalizeCompanionSettings(value = {}) {
+  const source = value && typeof value === 'object' ? value : {}
+  return {
+    mode: COMPANION_MODES.includes(source.mode)
+      ? source.mode
+      : DEFAULT_COMPANION_SETTINGS.mode,
+    quietHoursStart: normalizeCompanionHour(
+      source.quietHoursStart,
+      DEFAULT_COMPANION_SETTINGS.quietHoursStart,
+    ),
+    quietHoursEnd: normalizeCompanionHour(
+      source.quietHoursEnd,
+      DEFAULT_COMPANION_SETTINGS.quietHoursEnd,
+    ),
+  }
+}
+
 function getLanguageMessages() {
   const language = normalizeLanguage(getStore().get('language'))
   return trayMessages[language] || trayMessages[DEFAULT_LANGUAGE]
@@ -134,7 +262,9 @@ function ensureDebugLogPath() {
   }
 
   const baseDir = process.env.APPDATA || process.env.LOCALAPPDATA || process.env.TEMP || process.cwd()
-  const logDir = path.join(baseDir, 'Detachym', 'logs')
+  const logDir = isE2e
+    ? path.join(app.getPath('userData'), 'logs')
+    : path.join(baseDir, 'Detachym', 'logs')
   fs.mkdirSync(logDir, { recursive: true })
   const stamp = new Date().toISOString().replace(/[:.]/g, '-')
   debugLogPath = path.join(logDir, `desktop-main-${stamp}-${process.pid}.log`)
@@ -190,6 +320,7 @@ async function createStore() {
       petState: {
         petType: 'cat',
         hasSession: false,
+        userId: null,
         language: DEFAULT_LANGUAGE,
         preferences: {
           pet_type: 'cat',
@@ -198,6 +329,11 @@ async function createStore() {
         },
       },
       petRelationshipCache: {},
+      petMilestonePlayback: {},
+      petOnboardingStates: {},
+      petCompanionSettings: DEFAULT_COMPANION_SETTINGS,
+      petCompanionState: {},
+      focusSessions: {},
       quickBounds: { width: QUICK_CHAT_WIDTH, height: QUICK_CHAT_HEIGHT },
       mainBounds: { width: MAIN_PANEL_WIDTH, height: MAIN_PANEL_HEIGHT },
       voiceSettings: DEFAULT_VOICE_SETTINGS,
@@ -217,11 +353,358 @@ function getStore() {
   return store
 }
 
+function normalizeUserId(value) {
+  const numericValue = Number(value)
+  return Number.isInteger(numericValue) && numericValue > 0 ? numericValue : null
+}
+
+function getUnverifiedJwtSubject(token) {
+  if (typeof token !== 'string') {
+    return null
+  }
+  const segments = token.split('.')
+  if (segments.length !== 3) {
+    return null
+  }
+  try {
+    // This is only a consistency hint for renderer IPC payloads. The API server,
+    // not this unverified decode, remains the authentication authority.
+    const payload = JSON.parse(Buffer.from(segments[1], 'base64url').toString('utf8'))
+    return normalizeUserId(payload?.sub)
+  } catch {
+    return null
+  }
+}
+
+function getCurrentSessionSubject() {
+  return getUnverifiedJwtSubject(getStore().get('sessionToken'))
+}
+
+function getCurrentStableAccountContext() {
+  const petState = getPetState()
+  const sessionSubject = getCurrentSessionSubject()
+  const hasStableAccount = Boolean(
+    petState.hasSession
+    && sessionSubject !== null
+    && petState.userId === sessionSubject
+  )
+  const relationship = getCachedPetRelationship(petState.petType)
+  const relationshipUserId = normalizeUserId(
+    relationship?.user_id ?? relationship?.userId,
+  )
+  return {
+    hasSession: hasStableAccount,
+    userId: hasStableAccount ? sessionSubject : null,
+    petType: petState.petType,
+    session: getCurrentSessionSnapshot(),
+    relationshipId: (
+      hasStableAccount
+      && relationshipUserId === sessionSubject
+      && relationship?.pet_type === petState.petType
+    )
+      ? normalizeUserId(relationship.id)
+      : null,
+  }
+}
+
+function broadcastFocusSession(snapshot) {
+  for (const windowInstance of [petWindow, mainPanelWindow]) {
+    if (windowInstance && !windowInstance.isDestroyed() && !windowInstance.webContents.isLoading()) {
+      windowInstance.webContents.send('desktop:focus-session-changed', snapshot)
+    }
+  }
+}
+
+function getFocusSessionController() {
+  if (!focusSessionController) {
+    focusSessionController = createFocusSessionController({
+      read: (key) => (getStore().get('focusSessions') || {})[key],
+      write: (key, state) => getStore().set('focusSessions', {
+        ...(getStore().get('focusSessions') || {}), [key]: state,
+      }),
+      createId: randomUUID,
+      onChange: broadcastFocusSession,
+      onComplete: (snapshot) => {
+        if (isE2e || getStore().get('mute') || !Notification.isSupported()) return
+        try {
+          const zh = normalizeLanguage(getStore().get('language')) === 'zh-CN'
+          const notification = new Notification({
+            title: zh ? '这一小段，我们完成啦' : 'We finished this little stretch',
+            body: zh ? '小猪陪你一起歇一会儿。喝口水，伸个懒腰吧。' : 'Take a breath with your pig. Some water and a stretch?',
+          })
+          notification.once('click', () => {
+            const current = getFocusSessionController().current()
+            if (current.server === snapshot.server && current.userId === snapshot.userId && current.generation === snapshot.generation) openMainPanel()
+          })
+          notification.show()
+        } catch (error) {
+          logDesktop('focus-notification-failed', { message: error?.message || 'unknown' })
+        }
+      },
+    })
+  }
+  return focusSessionController
+}
+
+function syncFocusSessionContext() {
+  return getFocusSessionController().setContext({
+    ...getCurrentStableAccountContext(), server: getStore().get('apiBaseUrl'),
+  })
+}
+
+function getReminderWakeupController() {
+  if (!reminderWakeupController) {
+    reminderWakeupController = createReminderWakeupController({
+      getContextKey: () => {
+        const context = getCurrentStableAccountContext()
+        return context.hasSession ? JSON.stringify([
+          getStore().get('apiBaseUrl'), context.userId, context.petType, context.session.generation,
+        ]) : null
+      },
+      isOwnerCurrent: (sender) => Boolean(
+        petWindow && !petWindow.isDestroyed() && sender === petWindow.webContents && !sender.isDestroyed(),
+      ),
+      onWake: (sender) => sender.send('desktop:reminder-wakeup'),
+    })
+  }
+  return reminderWakeupController
+}
+
+function requestPetReminderRefresh() {
+  if (petWindow && !petWindow.isDestroyed() && !petWindow.webContents.isLoading()) {
+    petWindow.webContents.send('desktop:reminder-wakeup')
+  }
+}
+
+function getFocusSessionForRenderer(event, expectedContext) {
+  const authorization = authorizeRendererAccountMutation(event, expectedContext, ['main-panel', 'pet'], { requiredScope: 'pet' })
+  if (!authorization.ok) return { ok: false, reason: authorization.reason }
+  if (!isApiServerCurrent(expectedContext)) return { ok: false, reason: 'server-changed' }
+  return { ok: true, ...syncFocusSessionContext() }
+}
+
+function isApiServerCurrent(expectedContext) {
+  return typeof expectedContext?.server === 'string' && Boolean(expectedContext.server)
+    && expectedContext.server.replace(/\/+$/, '') === String(getStore().get('apiBaseUrl') || '').replace(/\/+$/, '')
+}
+
+function updateFocusSessionForRenderer(event, command, payload, expectedContext) {
+  const authorization = authorizeRendererAccountMutation(event, expectedContext, ['main-panel'], { requiredScope: 'pet' })
+  if (!authorization.ok) return { ok: false, reason: authorization.reason }
+  if (!isApiServerCurrent(expectedContext)) return { ok: false, reason: 'server-changed' }
+  syncFocusSessionContext()
+  return getFocusSessionController().update(command, payload)
+}
+
+function observeAuthoritativeOperationContext(options = {}) {
+  return authoritativeOperationContext.observe(getCurrentStableAccountContext(), options)
+}
+
+function registerRendererInstanceForEvent(event, rendererInstanceNonce) {
+  const senderRole = getIpcSenderRole(event)
+  const registered = operationCapabilities.registerRendererInstance({
+    sender: event?.sender,
+    senderRole,
+    rendererInstanceNonce,
+  })
+  if (!registered || senderRole !== 'main-panel') return registered
+
+  const coordinator = getMainPanelIntentCoordinator()
+  const pending = coordinator.getPendingMetadata()
+  if (!pending) return true
+  const currentContext = getCurrentStableAccountContext()
+  const semantic = pending.semantic
+  const sameIdentity = Boolean(
+    semantic
+    && normalizeUserId(semantic.userId) === currentContext.userId
+    && semantic.petType === currentContext.petType
+    && normalizeUserId(semantic.relationshipId) === currentContext.relationshipId
+  )
+  const reboundCapability = sameIdentity
+    ? issueTrustedOperationCapabilityForWindow(mainPanelWindow, 'relationship', currentContext)
+    : null
+  if (!reboundCapability || !coordinator.rebindPendingContext(reboundCapability)) {
+    coordinator.failPending('renderer-instance-rebind-failed')
+  }
+  return true
+}
+
+function captureAuthoritativeOperationContextForRenderer(
+  event,
+  scope = 'pet',
+  expectedContext = null,
+  rendererInstanceNonce = null,
+) {
+  if (expectedContext?.authoritative) return null
+  if (!operationCapabilities.isRendererInstanceCurrent({
+    sender: event?.sender,
+    senderRole: getIpcSenderRole(event),
+    rendererInstanceNonce,
+  })) return null
+  return operationCapabilities.issue({
+    sender: event?.sender,
+    senderRole: getIpcSenderRole(event),
+    rendererInstanceNonce,
+    scope,
+    currentContext: getCurrentStableAccountContext(),
+    expectedContext,
+  })
+}
+
+function renewAuthoritativeOperationContextForRenderer(
+  event,
+  capability,
+  requiredScope,
+  semantic,
+  rendererInstanceNonce,
+) {
+  if (!operationCapabilities.isRendererInstanceCurrent({
+    sender: event?.sender,
+    senderRole: getIpcSenderRole(event),
+    rendererInstanceNonce,
+  })) return null
+  return operationCapabilities.renew({
+    sender: event?.sender,
+    senderRole: getIpcSenderRole(event),
+    rendererInstanceNonce,
+    capability,
+    requiredScope,
+    currentContext: getCurrentStableAccountContext(),
+    expectedSemantic: semantic,
+  })
+}
+
+function validateAuthoritativeOperationContextForRenderer(
+  event,
+  snapshot,
+  requiredScope,
+  semantic,
+  rendererInstanceNonce,
+) {
+  if (!operationCapabilities.isRendererInstanceCurrent({
+    sender: event?.sender,
+    senderRole: getIpcSenderRole(event),
+    rendererInstanceNonce,
+  })) return false
+  return operationCapabilities.authorize({
+    sender: event?.sender,
+    senderRole: getIpcSenderRole(event),
+    capability: snapshot,
+    requiredScope,
+    expectedSemantic: semantic,
+    currentContext: getCurrentStableAccountContext(),
+  }).ok
+}
+
+function authorizeRendererAccountMutation(
+  event,
+  expectedContext,
+  allowedRoles,
+  { requireRelationship = false, requiredScope = null } = {},
+) {
+  const capabilityAuthorization = operationCapabilities.authorize({
+    sender: event?.sender,
+    senderRole: getIpcSenderRole(event),
+    capability: expectedContext?.authoritative,
+    requiredScope,
+    currentContext: getCurrentStableAccountContext(),
+  })
+  if (!requiredScope || !capabilityAuthorization.ok) {
+    return capabilityAuthorization.ok
+      ? { ok: false, reason: 'required-scope-missing' }
+      : capabilityAuthorization
+  }
+  const authorization = authorizeAccountMutation({
+    senderRole: getIpcSenderRole(event),
+    allowedRoles,
+    expectedContext,
+    currentContext: getCurrentStableAccountContext(),
+    requireRelationship,
+  })
+  if (!authorization.ok) {
+    return authorization
+  }
+  return authorization
+}
+
+function getMainPanelIntentCoordinator() {
+  if (!mainPanelIntentCoordinator) {
+    mainPanelIntentCoordinator = createMainPanelIntentCoordinator({
+      timeoutMs: MAIN_PANEL_INTENT_READY_TIMEOUT_MS,
+      deliver: (payload) => {
+        if (!mainPanelWindow || mainPanelWindow.isDestroyed()) {
+          return false
+        }
+        mainPanelWindow.webContents.send('desktop:main-panel-intent', payload)
+        return true
+      },
+      validateContext: (context) => operationCapabilities.validate({
+        sender: mainPanelWindow?.webContents,
+        senderRole: 'main-panel',
+        rendererInstanceNonce: operationCapabilities.getRendererInstanceNonce(
+          mainPanelWindow?.webContents,
+        ),
+        capability: context,
+        currentContext: getCurrentStableAccountContext(),
+      }).ok,
+    })
+  }
+  return mainPanelIntentCoordinator
+}
+
+function resetPetOnboardingEngagementSamples() {
+  petOnboardingEngagementSamples.clear()
+}
+
+function clearAccountScopedPetContext() {
+  getStore().set('petRelationshipCache', {})
+  getStore().set('petMilestonePlayback', {})
+  getStore().set('petCompanionState', {})
+  resetPetOnboardingEngagementSamples()
+  observeAuthoritativeOperationContext()
+  for (const windowInstance of [petWindow, quickChatWindow, mainPanelWindow]) {
+    sendPetRelationshipToWindow(windowInstance, null)
+    sendCompanionStateToWindow(windowInstance, {
+      pet_type: null,
+      state: null,
+      cleared: true,
+    })
+  }
+}
+
 function getRendererEntry(fileName) {
   if (isDev && rendererUrl) {
     return `${rendererUrl}/${fileName}`
   }
   return path.join(__dirname, '..', 'dist', 'renderer', fileName)
+}
+
+function getRendererEntryUrl(fileName) {
+  const entry = getRendererEntry(fileName)
+  return isDev && rendererUrl ? new URL(entry).href : pathToFileURL(entry).href
+}
+
+function attachRendererNavigationGuard(windowInstance, fileName) {
+  const sender = windowInstance?.webContents
+  if (!sender) return
+  const allowedUrl = getRendererEntryUrl(fileName)
+  const blockUnexpectedNavigation = (event, targetUrl) => {
+    let normalizedTarget = null
+    try {
+      normalizedTarget = new URL(targetUrl).href
+    } catch {
+      // Invalid or non-URL navigation is never a renderer entry.
+    }
+    if (normalizedTarget === allowedUrl) return
+    event.preventDefault()
+    logDesktop('renderer-navigation-blocked', {
+      role: windowInstance.__role,
+      targetUrl: normalizedTarget || 'invalid',
+    })
+  }
+  sender.setWindowOpenHandler(() => ({ action: 'deny' }))
+  sender.on('will-navigate', blockUnexpectedNavigation)
+  sender.on('will-redirect', blockUnexpectedNavigation)
 }
 
 async function loadWindow(windowInstance, fileName) {
@@ -233,44 +716,50 @@ async function loadWindow(windowInstance, fileName) {
 }
 
 function persistBounds(key, windowInstance, options = { saveSize: true }) {
-  const save = () => {
-    if (!windowInstance || windowInstance.isDestroyed()) {
-      return
-    }
-
-    const bounds = windowInstance.getBounds()
-    const nextValue = options.saveSize
-      ? bounds
-      : { ...getStore().get(key), x: bounds.x, y: bounds.y }
-    getStore().set(key, nextValue)
-  }
-
-  windowInstance.on('move', save)
-  windowInstance.on('resize', save)
+  const persistence = createBoundsPersistence({
+    windowInstance,
+    read: () => getStore().get(key),
+    write: (bounds) => getStore().set(key, bounds),
+    saveSize: options.saveSize,
+  })
+  boundsPersistence.add(persistence)
+  windowInstance.once('closed', () => boundsPersistence.delete(persistence))
 }
 
 function clampWindowPosition(x, y, width, height, displayOverride = null) {
   const point = {
-    x: Math.round(Number(x) || 0),
-    y: Math.round(Number(y) || 0),
+    x: Number.isFinite(x) ? Math.round(x) : 0,
+    y: Number.isFinite(y) ? Math.round(y) : 0,
   }
   const display = displayOverride || screen.getDisplayNearestPoint(point)
-  const workArea = display.workArea
+  const fitted = fitWindowBounds({ ...point, width, height }, display.workArea, { resizeToFit: false })
+  return { x: fitted.x, y: fitted.y }
+}
 
-  return {
-    x: Math.min(Math.max(point.x, workArea.x), workArea.x + workArea.width - width),
-    y: Math.min(Math.max(point.y, workArea.y), workArea.y + workArea.height - height),
-  }
+function recoverDesktopWindowPositions() {
+  recoverWindowBounds(petWindow, screen, { resizeToFit: false })
+  recoverWindowBounds(quickChatWindow, screen, { resizeToFit: false })
+  recoverWindowBounds(mainPanelWindow, screen)
+  syncQuickChatPosition()
+}
+
+function scheduleDisplayRecovery() {
+  if (displayRecoveryTimer !== null) clearTimeout(displayRecoveryTimer)
+  displayRecoveryTimer = setTimeout(() => {
+    displayRecoveryTimer = null
+    if (!quitting) recoverDesktopWindowPositions()
+  }, 200)
 }
 
 function getPetBounds() {
   const petBounds = getStore().get('petBounds') || {}
-  return {
-    width: Math.max(PET_WINDOW_WIDTH, Number(petBounds.width) || 0),
-    height: Math.max(PET_WINDOW_HEIGHT, Number(petBounds.height) || 0),
+  const bounds = {
+    width: PET_WINDOW_WIDTH,
+    height: PET_WINDOW_HEIGHT,
     x: Number.isFinite(petBounds.x) ? petBounds.x : 90,
     y: Number.isFinite(petBounds.y) ? petBounds.y : 90,
   }
+  return restoreWindowBounds(screen, bounds, bounds, { resizeToFit: false })
 }
 
 function getPetState() {
@@ -280,6 +769,9 @@ function getPetState() {
   return {
     petType,
     hasSession: Boolean(petState.hasSession),
+    userId: Number.isInteger(petState.userId) && petState.userId > 0
+      ? petState.userId
+      : null,
     language: normalizeLanguage(petState.language || getStore().get('language')),
     preferences: {
       pet_type: petType,
@@ -293,10 +785,78 @@ function getVoiceSettings() {
   return normalizeVoiceSettings(getStore().get('voiceSettings') || DEFAULT_VOICE_SETTINGS)
 }
 
+function getCompanionSettings() {
+  return normalizeCompanionSettings(
+    getStore().get('petCompanionSettings') || DEFAULT_COMPANION_SETTINGS,
+  )
+}
+
+function getPetCompanionState(petType, accountUserId = null) {
+  const normalizedPetType = normalizePetType(petType)
+  const stateByPet = getStore().get('petCompanionState') || {}
+  const storageKey = normalizeUserId(accountUserId) === null
+    ? normalizedPetType
+    : `${normalizeUserId(accountUserId)}:${normalizedPetType}`
+  return stateByPet[storageKey] || null
+}
+
 function getCachedPetRelationship(petType) {
   const normalizedPetType = normalizePetType(petType)
   const cache = getStore().get('petRelationshipCache') || {}
   return cache[normalizedPetType] || null
+}
+
+function issueTrustedOperationCapabilityForWindow(windowInstance, scope, currentContext) {
+  const sender = windowInstance?.webContents
+  const rendererInstanceNonce = operationCapabilities.getRendererInstanceNonce(sender)
+  if (!sender || !rendererInstanceNonce) return null
+  return operationCapabilities.issueTrusted({
+    sender,
+    senderRole: windowInstance.__role,
+    rendererInstanceNonce,
+    scope,
+    currentContext,
+  })
+}
+
+function waitForRendererInstance(windowInstance, timeoutMs = MAIN_PANEL_INTENT_READY_TIMEOUT_MS) {
+  const sender = windowInstance?.webContents
+  if (!sender || sender.isDestroyed()) return Promise.resolve(false)
+  if (operationCapabilities.getRendererInstanceNonce(sender)) return Promise.resolve(true)
+
+  const boundedTimeoutMs = Math.max(0, Number(timeoutMs) || 0)
+  return new Promise((resolve) => {
+    const startedAt = Date.now()
+    let timer = null
+    let settled = false
+    const finish = (value) => {
+      if (settled) return
+      settled = true
+      if (timer) clearTimeout(timer)
+      sender.removeListener('destroyed', handleUnavailable)
+      sender.removeListener('render-process-gone', handleUnavailable)
+      resolve(value)
+    }
+    const handleUnavailable = () => finish(false)
+    const check = () => {
+      if (sender.isDestroyed()) {
+        finish(false)
+        return
+      }
+      if (operationCapabilities.getRendererInstanceNonce(sender)) {
+        finish(true)
+        return
+      }
+      if (Date.now() - startedAt >= boundedTimeoutMs) {
+        finish(false)
+        return
+      }
+      timer = setTimeout(check, 10)
+    }
+    sender.once('destroyed', handleUnavailable)
+    sender.once('render-process-gone', handleUnavailable)
+    check()
+  })
 }
 
 function sendPetRelationshipToWindow(windowInstance, relationship) {
@@ -304,24 +864,49 @@ function sendPetRelationshipToWindow(windowInstance, relationship) {
     return
   }
 
-  const emit = () => {
+  if (!relationshipBroadcastOrchestrator) {
+    relationshipBroadcastOrchestrator = createRelationshipBroadcastOrchestrator({
+      getCurrentRelationship: () => getCachedPetRelationship(getPetState().petType),
+      getCurrentContext: getCurrentStableAccountContext,
+      issueCapability: ({ target, currentContext }) => (
+        issueTrustedOperationCapabilityForWindow(target, 'relationship', currentContext)
+      ),
+      send: (target, payload) => {
+        if (!target.isDestroyed()) {
+          target.webContents.send('desktop:pet-relationship-changed', payload)
+        }
+      },
+    })
+  }
+
+  const emit = relationshipBroadcastOrchestrator.createDeferredEmit(windowInstance)
+  const guardedEmit = () => {
     if (!windowInstance || windowInstance.isDestroyed()) {
       return
     }
-    windowInstance.webContents.send('desktop:pet-relationship-changed', relationship)
+    if (relationship === null || relationship === undefined) {
+      windowInstance.webContents.send('desktop:pet-relationship-changed', null)
+      return
+    }
+    emit()
   }
 
   if (windowInstance.webContents.isLoading()) {
-    windowInstance.webContents.once('did-finish-load', emit)
+    windowInstance.webContents.once('did-finish-load', guardedEmit)
     return
   }
 
-  emit()
+  guardedEmit()
 }
 
 function cachePetRelationship(payload = {}) {
+  // A reload waits for this cache refresh before mounting its intent target.
+  // Preserve only an already-authorized, undelivered intent across this write.
+  const rebindPendingIntent = mainPanelIntentCoordinator?.preparePendingContextRebind()
+  const previousContext = rebindPendingIntent ? getCurrentStableAccountContext() : null
   const petType = normalizePetType(payload.pet_type || payload.petType)
   const cache = getStore().get('petRelationshipCache') || {}
+  const previousRelationship = cache[petType] || null
   const nextRelationship = {
     ...payload,
     pet_type: petType,
@@ -331,10 +916,630 @@ function cachePetRelationship(payload = {}) {
     ...cache,
     [petType]: nextRelationship,
   })
+  observeAuthoritativeOperationContext({ forceRelationshipRevision: true })
+  if (rebindPendingIntent) {
+    const currentContext = getCurrentStableAccountContext()
+    const previousKey = createStableAccountContextKey(previousContext, { requireRelationship: true })
+    const currentKey = createStableAccountContextKey(currentContext, { requireRelationship: true })
+    if (previousKey && previousKey === currentKey && isExactSessionSnapshot(previousContext.session, currentContext.session)) {
+      rebindPendingIntent(issueTrustedOperationCapabilityForWindow(mainPanelWindow, 'relationship', currentContext))
+    }
+  }
+  if (
+    normalizeUserId(previousRelationship?.id) !== normalizeUserId(nextRelationship.id)
+    || normalizeUserId(previousRelationship?.user_id ?? previousRelationship?.userId)
+      !== normalizeUserId(nextRelationship.user_id ?? nextRelationship.userId)
+  ) {
+    resetPetOnboardingEngagementSamples()
+  }
   sendPetRelationshipToWindow(petWindow, nextRelationship)
   sendPetRelationshipToWindow(quickChatWindow, nextRelationship)
   sendPetRelationshipToWindow(mainPanelWindow, nextRelationship)
+  broadcastPetOnboardingState()
   return nextRelationship
+}
+
+function cachePetRelationshipForRenderer(event, payload = {}, expectedContext = null) {
+  const authorization = authorizeRendererAccountMutation(
+    event,
+    expectedContext,
+    ['pet', 'quick-chat', 'main-panel'],
+    { requiredScope: 'pet' },
+  )
+  if (!authorization.ok) {
+    return authorization
+  }
+  const activeState = getPetState()
+  const sessionSubject = getCurrentSessionSubject()
+  const relationshipUserId = normalizeUserId(payload?.user_id ?? payload?.userId)
+  const rawPetType = payload?.pet_type ?? payload?.petType
+  if (
+    sessionSubject === null
+    || activeState.userId !== sessionSubject
+    || relationshipUserId !== sessionSubject
+  ) {
+    return { ok: false, reason: 'identity-mismatch' }
+  }
+  if (!PET_TYPES.includes(rawPetType) || rawPetType !== activeState.petType) {
+    return { ok: false, reason: 'pet-mismatch' }
+  }
+  const transition = operationCapabilities.transition({
+    sender: event?.sender,
+    senderRole: getIpcSenderRole(event),
+    capability: expectedContext?.authoritative,
+    requiredScope: 'pet',
+    currentContext: getCurrentStableAccountContext(),
+    nextScope: 'relationship',
+    apply: () => cachePetRelationship(payload),
+    getCurrentContext: getCurrentStableAccountContext,
+  })
+  if (!transition.ok) return transition
+  return {
+    ok: true,
+    relationship: transition.value,
+    authoritative: transition.capability,
+  }
+}
+
+function getCachedPetRelationshipForRenderer(event, petType, expectedContext = null) {
+  const authorization = authorizeRendererAccountMutation(
+    event,
+    expectedContext,
+    ['pet', 'quick-chat', 'main-panel'],
+    { requiredScope: 'pet' },
+  )
+  if (!authorization.ok) {
+    return null
+  }
+  const activeState = getPetState()
+  const sessionSubject = getCurrentSessionSubject()
+  if (
+    !PET_TYPES.includes(petType)
+    || petType !== activeState.petType
+    || sessionSubject === null
+    || activeState.userId !== sessionSubject
+  ) {
+    return null
+  }
+  const relationship = getCachedPetRelationship(petType)
+  return normalizeUserId(relationship?.user_id ?? relationship?.userId) === sessionSubject
+    ? relationship
+    : null
+}
+
+function getPetOnboardingContext() {
+  const petState = getPetState()
+  const relationship = getCachedPetRelationship('pig')
+  const sessionSubject = getCurrentSessionSubject()
+  return normalizePetOnboardingContext({
+    has_session: (
+      sessionSubject !== null
+      && sessionSubject === petState.userId
+      && petState.hasSession
+    ),
+    user_id: petState.userId,
+    pet_type: petState.petType,
+    relationship,
+  })
+}
+
+function loadPetOnboardingState({ createIfEligible = true } = {}) {
+  const context = getPetOnboardingContext()
+  if (!context) {
+    return {
+      state: null,
+      states: getStore().get('petOnboardingStates'),
+      changed: false,
+      reason: 'unavailable',
+      context: null,
+    }
+  }
+  const result = readPetOnboardingEntry({
+    states: getStore().get('petOnboardingStates'),
+    context,
+    now: new Date(),
+    createIfEligible,
+  })
+  if (result.changed) {
+    getStore().set('petOnboardingStates', result.states)
+  }
+  return { ...result, context }
+}
+
+function getPetOnboardingStateBroadcaster() {
+  if (!petOnboardingStateBroadcaster) {
+    petOnboardingStateBroadcaster = createPetOnboardingStateBroadcaster({
+      getCurrentState: () => loadPetOnboardingState().state,
+      projectStateForRole: projectPetOnboardingStateForRole,
+      send: (windowInstance, state) => {
+        windowInstance.webContents.send('desktop:pet-onboarding-changed', state)
+      },
+    })
+  }
+  return petOnboardingStateBroadcaster
+}
+
+function sendPetOnboardingStateToWindow(windowInstance) {
+  return getPetOnboardingStateBroadcaster().sendLatest(windowInstance)
+}
+
+function broadcastPetOnboardingState() {
+  const { state } = loadPetOnboardingState()
+  for (const windowInstance of [petWindow, mainPanelWindow]) {
+    sendPetOnboardingStateToWindow(windowInstance)
+  }
+  return state
+}
+
+function isPetOnboardingPetTypeCurrent(petType) {
+  const context = getPetOnboardingContext()
+  return petType === 'pig' && context?.pet_type === petType
+}
+
+function getPetOnboardingStateForRenderer(event, petType, expectedContext) {
+  const senderRole = getIpcSenderRole(event)
+  const authorization = authorizeRendererAccountMutation(
+    event,
+    expectedContext,
+    ['pet', 'main-panel'],
+    { requireRelationship: true, requiredScope: 'relationship' },
+  )
+  if (!authorization.ok) {
+    return rejectedPetOnboardingMutation(authorization.reason)
+  }
+  if (!isPetOnboardingPetTypeCurrent(petType)) {
+    return rejectedPetOnboardingMutation('invalid-pet')
+  }
+  const loaded = loadPetOnboardingState()
+  if (loaded.changed) {
+    for (const windowInstance of [petWindow, mainPanelWindow]) {
+      sendPetOnboardingStateToWindow(windowInstance)
+    }
+  }
+  return {
+    ok: true,
+    state: projectPetOnboardingStateForRole(loaded.state, senderRole),
+  }
+}
+
+function mutatePetOnboardingState(mutator, senderRole) {
+  const loaded = loadPetOnboardingState()
+  if (!loaded.context || !loaded.state) {
+    return rejectedPetOnboardingMutation(loaded.reason || 'unavailable')
+  }
+  const result = mutator(loaded.state)
+  if (!result || typeof result !== 'object') {
+    return rejectedPetOnboardingMutation('invalid-mutation')
+  }
+  if (result.changed && result.state) {
+    const key = createPetOnboardingKey(
+      loaded.context.user_id,
+      loaded.context.relationship_id,
+    )
+    getStore().set('petOnboardingStates', {
+      ...loaded.states,
+      [key]: result.state,
+    })
+    for (const windowInstance of [petWindow, mainPanelWindow]) {
+      sendPetOnboardingStateToWindow(windowInstance)
+    }
+  } else if (loaded.changed) {
+    for (const windowInstance of [petWindow, mainPanelWindow]) {
+      sendPetOnboardingStateToWindow(windowInstance)
+    }
+  }
+  if (!result.ok) {
+    return rejectedPetOnboardingMutation(result.reason || 'mutation-rejected')
+  }
+  if (senderRole === 'quick-chat') {
+    return { ok: true }
+  }
+  if (!['pet', 'main-panel'].includes(senderRole)) {
+    return rejectedPetOnboardingMutation('forbidden')
+  }
+  return {
+    ok: true,
+    state: projectPetOnboardingStateForRole(result.state ?? loaded.state, senderRole),
+  }
+}
+
+function getIpcSenderRole(event) {
+  const sender = event?.sender
+  if (petWindow && !petWindow.isDestroyed() && sender === petWindow.webContents) {
+    return 'pet'
+  }
+  if (
+    mainPanelWindow
+    && !mainPanelWindow.isDestroyed()
+    && sender === mainPanelWindow.webContents
+  ) {
+    return 'main-panel'
+  }
+  if (
+    quickChatWindow
+    && !quickChatWindow.isDestroyed()
+    && sender === quickChatWindow.webContents
+  ) {
+    return 'quick-chat'
+  }
+  return null
+}
+
+function attachRendererCapabilityLifecycle(windowInstance) {
+  const sender = windowInstance?.webContents
+  if (!sender) return
+  sender.on('did-start-navigation', (_event, _url, _isInPlace, isMainFrame) => {
+    if (isMainFrame !== false) {
+      loginAttempts.cancelOwner(sender)
+      operationCapabilities.revokeSender(sender)
+      reminderWakeupController?.cancelOwner(sender)
+    }
+  })
+  sender.on('render-process-gone', () => {
+    loginAttempts.cancelOwner(sender)
+    operationCapabilities.revokeSender(sender)
+    reminderWakeupController?.cancelOwner(sender)
+  })
+  sender.once('destroyed', () => {
+    loginAttempts.cancelOwner(sender)
+    operationCapabilities.revokeSender(sender)
+    reminderWakeupController?.cancelOwner(sender)
+  })
+}
+
+function rejectedPetOnboardingMutation(reason = 'forbidden') {
+  return { ok: false, reason }
+}
+
+function recordPetOnboardingObservation(
+  event,
+  petType,
+  capabilityId,
+  payload = {},
+  expectedContext = null,
+) {
+  const senderRole = getIpcSenderRole(event)
+  const allowedRoles = {
+    [PET_ONBOARDING_CAPABILITIES.PET_INTERACTION]: ['pet'],
+    [PET_ONBOARDING_CAPABILITIES.RELATIONSHIP_VIEWED]: ['main-panel'],
+    [PET_ONBOARDING_CAPABILITIES.REMINDER_CREATED]: ['main-panel', 'quick-chat'],
+    [PET_ONBOARDING_CAPABILITIES.REMINDER_COMPLETED]: ['main-panel'],
+  }
+  if (!senderRole) {
+    return rejectedPetOnboardingMutation('forbidden')
+  }
+  if (!allowedRoles[capabilityId]) {
+    return rejectedPetOnboardingMutation('invalid-capability')
+  }
+  if (!allowedRoles[capabilityId].includes(senderRole)) {
+    return rejectedPetOnboardingMutation('forbidden')
+  }
+  const authorization = authorizeRendererAccountMutation(
+    event,
+    expectedContext,
+    allowedRoles[capabilityId],
+    { requireRelationship: true, requiredScope: 'relationship' },
+  )
+  if (!authorization.ok) {
+    return rejectedPetOnboardingMutation(authorization.reason)
+  }
+  if (!isPetOnboardingPetTypeCurrent(petType)) {
+    return rejectedPetOnboardingMutation('invalid-pet')
+  }
+  return mutatePetOnboardingState((state) => (
+    recordPetOnboardingObservationState(state, capabilityId, payload, new Date())
+  ), senderRole)
+}
+
+function recordPetOnboardingEngagement(event, petType, deltaMs, expectedContext) {
+  if (getIpcSenderRole(event) !== 'pet') {
+    return rejectedPetOnboardingMutation('forbidden')
+  }
+  const authorization = authorizeRendererAccountMutation(
+    event,
+    expectedContext,
+    ['pet'],
+    { requireRelationship: true, requiredScope: 'relationship' },
+  )
+  if (!authorization.ok) {
+    return rejectedPetOnboardingMutation(authorization.reason)
+  }
+  if (!isPetOnboardingPetTypeCurrent(petType)) {
+    return rejectedPetOnboardingMutation('invalid-pet')
+  }
+  if (!petWindow || petWindow.isDestroyed() || !petWindow.isVisible()) {
+    return rejectedPetOnboardingMutation('pet-not-visible')
+  }
+  let idleSeconds = Number.POSITIVE_INFINITY
+  try {
+    idleSeconds = isE2e ? 0 : powerMonitor.getSystemIdleTime()
+  } catch {
+    // Fail closed: engagement is only trusted while an active user is observable.
+  }
+  if (!Number.isFinite(idleSeconds) || idleSeconds >= 60) {
+    return rejectedPetOnboardingMutation('system-idle')
+  }
+  const loaded = loadPetOnboardingState()
+  if (!loaded.context || !loaded.state) {
+    return rejectedPetOnboardingMutation(loaded.reason || 'unavailable')
+  }
+  if (loaded.changed) {
+    for (const windowInstance of [petWindow, mainPanelWindow]) {
+      sendPetOnboardingStateToWindow(windowInstance)
+    }
+  }
+  const contextKey = createPetOnboardingKey(
+    loaded.context.user_id,
+    loaded.context.relationship_id,
+  )
+  const sampleResult = calculatePetOnboardingEngagementSample({
+    previousSample: petOnboardingEngagementSamples.get(contextKey),
+    contextKey,
+    requestedDeltaMs: deltaMs,
+    monotonicNowMs: performance.now(),
+  })
+  if (sampleResult.reason === 'invalid-sample') {
+    return rejectedPetOnboardingMutation('invalid-delta')
+  }
+  petOnboardingEngagementSamples.set(contextKey, sampleResult.sample)
+  if (sampleResult.acceptedDeltaMs <= 0) {
+    return {
+      ok: true,
+      state: projectPetOnboardingStateForRole(loaded.state, 'pet'),
+    }
+  }
+  return mutatePetOnboardingState((state) => (
+    recordPetOnboardingEngagementState(
+      state,
+      sampleResult.acceptedDeltaMs,
+      new Date(),
+    )
+  ), 'pet')
+}
+
+function claimPetOnboardingPresentation(event, petType, stepId, token, expectedContext) {
+  if (getIpcSenderRole(event) !== 'pet') {
+    return rejectedPetOnboardingMutation('forbidden')
+  }
+  const authorization = authorizeRendererAccountMutation(
+    event,
+    expectedContext,
+    ['pet'],
+    { requireRelationship: true, requiredScope: 'relationship' },
+  )
+  if (!authorization.ok) {
+    return rejectedPetOnboardingMutation(authorization.reason)
+  }
+  if (!isPetOnboardingPetTypeCurrent(petType)) {
+    return rejectedPetOnboardingMutation('invalid-pet')
+  }
+  return mutatePetOnboardingState((state) => (
+    claimPetOnboardingPresentationState(state, petType, stepId, token, new Date())
+  ), 'pet')
+}
+
+function ackPetOnboardingPresentation(event, petType, stepId, token, expectedContext) {
+  if (getIpcSenderRole(event) !== 'pet') {
+    return rejectedPetOnboardingMutation('forbidden')
+  }
+  const authorization = authorizeRendererAccountMutation(
+    event,
+    expectedContext,
+    ['pet'],
+    { requireRelationship: true, requiredScope: 'relationship' },
+  )
+  if (!authorization.ok) {
+    return rejectedPetOnboardingMutation(authorization.reason)
+  }
+  if (!isPetOnboardingPetTypeCurrent(petType)) {
+    return rejectedPetOnboardingMutation('invalid-pet')
+  }
+  return mutatePetOnboardingState((state) => (
+    ackPetOnboardingPresentationState(state, petType, stepId, token, new Date())
+  ), 'pet')
+}
+
+function releasePetOnboardingPresentation(event, petType, stepId, token, expectedContext) {
+  if (getIpcSenderRole(event) !== 'pet') {
+    return rejectedPetOnboardingMutation('forbidden')
+  }
+  const authorization = authorizeRendererAccountMutation(
+    event,
+    expectedContext,
+    ['pet'],
+    { requireRelationship: true, requiredScope: 'relationship' },
+  )
+  if (!authorization.ok) {
+    return rejectedPetOnboardingMutation(authorization.reason)
+  }
+  if (!isPetOnboardingPetTypeCurrent(petType)) {
+    return rejectedPetOnboardingMutation('invalid-pet')
+  }
+  return mutatePetOnboardingState((state) => (
+    releasePetOnboardingPresentationState(state, petType, stepId, token, new Date())
+  ), 'pet')
+}
+
+function snoozePetOnboarding(event, petType, expectedContext) {
+  if (getIpcSenderRole(event) !== 'main-panel') {
+    return rejectedPetOnboardingMutation('forbidden')
+  }
+  const authorization = authorizeRendererAccountMutation(
+    event,
+    expectedContext,
+    ['main-panel'],
+    { requireRelationship: true, requiredScope: 'relationship' },
+  )
+  if (!authorization.ok) {
+    return rejectedPetOnboardingMutation(authorization.reason)
+  }
+  if (!isPetOnboardingPetTypeCurrent(petType)) {
+    return rejectedPetOnboardingMutation('invalid-pet')
+  }
+  return mutatePetOnboardingState(
+    (state) => snoozePetOnboardingState(state, new Date()),
+    'main-panel',
+  )
+}
+
+function dismissPetOnboarding(event, petType, expectedContext) {
+  if (getIpcSenderRole(event) !== 'main-panel') {
+    return rejectedPetOnboardingMutation('forbidden')
+  }
+  const authorization = authorizeRendererAccountMutation(
+    event,
+    expectedContext,
+    ['main-panel'],
+    { requireRelationship: true, requiredScope: 'relationship' },
+  )
+  if (!authorization.ok) {
+    return rejectedPetOnboardingMutation(authorization.reason)
+  }
+  if (!isPetOnboardingPetTypeCurrent(petType)) {
+    return rejectedPetOnboardingMutation('invalid-pet')
+  }
+  return mutatePetOnboardingState(
+    (state) => dismissPetOnboardingState(state, new Date()),
+    'main-panel',
+  )
+}
+
+function getPetMilestonePlaybackForRenderer(event, petType, expectedContext) {
+  const authorization = authorizeRendererAccountMutation(
+    event,
+    expectedContext,
+    ['pet'],
+    { requiredScope: 'relationship' },
+  )
+  const currentContext = getCurrentStableAccountContext()
+  if (
+    !authorization.ok
+    || petType !== 'pig'
+    || petType !== currentContext.petType
+  ) {
+    return null
+  }
+  const normalizedPetType = normalizePetType(petType)
+  const storageKey = createStableAccountContextKey(currentContext)
+  const playbackByPet = getStore().get('petMilestonePlayback') || {}
+  const result = readPetMilestonePlaybackEntry(playbackByPet, normalizedPetType, {
+    storageKey,
+    accountUserId: currentContext.userId,
+  })
+  if (result.changed) {
+    getStore().set('petMilestonePlayback', result.playbackByPet)
+  }
+  return result.playback
+}
+
+function setPetMilestonePlaybackForRenderer(
+  event,
+  petType,
+  playback = {},
+  expectedRevision = null,
+  expectedContext = null,
+) {
+  const authorization = authorizeRendererAccountMutation(
+    event,
+    expectedContext,
+    ['pet'],
+    { requiredScope: 'relationship' },
+  )
+  const currentContext = getCurrentStableAccountContext()
+  if (
+    !authorization.ok
+    || petType !== 'pig'
+    || petType !== currentContext.petType
+  ) {
+    return {
+      ok: false,
+      reason: authorization.ok ? 'pet-mismatch' : authorization.reason,
+      current: null,
+    }
+  }
+  const normalizedPetType = normalizePetType(petType)
+  const storageKey = createStableAccountContextKey(currentContext)
+  const playbackByPet = getStore().get('petMilestonePlayback') || {}
+  if (!getStore().get('sessionToken')) {
+    const current = readPetMilestonePlaybackEntry(
+      playbackByPet,
+      normalizedPetType,
+      { storageKey, accountUserId: currentContext.userId },
+    ).playback
+    return { ok: false, reason: 'no-session', current }
+  }
+  const result = setPetMilestonePlaybackEntry({
+    playbackByPet,
+    petType: normalizedPetType,
+    storageKey,
+    accountUserId: currentContext.userId,
+    playback,
+    expectedRevision,
+    updatedAt: new Date().toISOString(),
+  })
+  if (!result.ok) {
+    return { ok: false, reason: result.reason, current: result.current }
+  }
+  getStore().set('petMilestonePlayback', result.playbackByPet)
+  return { ok: true, playback: result.playback }
+}
+
+function clearPetMilestonePlaybackForRenderer(
+  event,
+  petType,
+  claimToken = '',
+  expectedRevision = null,
+  expectedContext = null,
+) {
+  const authorization = authorizeRendererAccountMutation(
+    event,
+    expectedContext,
+    ['pet'],
+    { requiredScope: 'relationship' },
+  )
+  const currentContext = getCurrentStableAccountContext()
+  if (
+    !authorization.ok
+    || petType !== 'pig'
+    || petType !== currentContext.petType
+  ) {
+    return {
+      ok: false,
+      reason: authorization.ok ? 'pet-mismatch' : authorization.reason,
+      current: null,
+    }
+  }
+  const normalizedPetType = normalizePetType(petType)
+  const storageKey = createStableAccountContextKey(currentContext)
+  const playbackByPet = getStore().get('petMilestonePlayback') || {}
+  const snapshot = readPetMilestonePlaybackEntry(playbackByPet, normalizedPetType, {
+    storageKey,
+    accountUserId: currentContext.userId,
+  })
+  if (snapshot.changed) {
+    getStore().set('petMilestonePlayback', snapshot.playbackByPet)
+  }
+  if (!snapshot.playback) {
+    return { ok: true, playback: null }
+  }
+  if (!getStore().get('sessionToken')) {
+    return { ok: false, reason: 'no-session', current: snapshot.playback }
+  }
+  const result = clearPetMilestonePlaybackSnapshot({
+    playbackByPet: snapshot.playbackByPet,
+    petType: normalizedPetType,
+    storageKey,
+    accountUserId: currentContext.userId,
+    claimToken,
+    expectedRevision,
+  })
+  if (!result.ok) {
+    return { ok: false, reason: result.reason, current: result.current }
+  }
+  if (result.changed) {
+    getStore().set('petMilestonePlayback', result.playbackByPet)
+  }
+  return { ok: true, playback: null }
 }
 
 function setVoiceSettings(patch = {}) {
@@ -381,11 +1586,18 @@ function setStoredPetState(payload = {}) {
 
   nextState.preferences.pet_type = nextState.petType
   nextState.hasSession = Boolean(nextState.hasSession)
+  if (Object.prototype.hasOwnProperty.call(payload, 'userId')) {
+    nextState.userId = Number.isInteger(payload.userId) && payload.userId > 0
+      ? payload.userId
+      : null
+  } else {
+    nextState.userId = currentState.userId
+  }
   getStore().set('petState', nextState)
   return nextState
 }
 
-function sendPetStateToWindow(windowInstance, state) {
+function sendPetStateToWindow(windowInstance, _state) {
   if (!windowInstance || windowInstance.isDestroyed()) {
     return
   }
@@ -394,7 +1606,18 @@ function sendPetStateToWindow(windowInstance, state) {
     if (!windowInstance || windowInstance.isDestroyed()) {
       return
     }
-    windowInstance.webContents.send('desktop:pet-state-changed', state)
+    const state = getPetState()
+    const currentContext = getCurrentStableAccountContext()
+    const authoritative = currentContext.hasSession
+      ? issueTrustedOperationCapabilityForWindow(windowInstance, 'pet', currentContext)
+      : null
+    windowInstance.webContents.send('desktop:pet-state-changed', {
+      ...state,
+      authoritative,
+      semantic: currentContext.hasSession
+        ? { userId: currentContext.userId, petType: currentContext.petType }
+        : null,
+    })
   }
 
   if (windowInstance.webContents.isLoading()) {
@@ -415,6 +1638,46 @@ function sendVoiceSettingsToWindow(windowInstance, settings) {
       return
     }
     windowInstance.webContents.send('desktop:voice-settings-changed', settings)
+  }
+
+  if (windowInstance.webContents.isLoading()) {
+    windowInstance.webContents.once('did-finish-load', emit)
+    return
+  }
+
+  emit()
+}
+
+function sendCompanionSettingsToWindow(windowInstance, settings) {
+  if (!windowInstance || windowInstance.isDestroyed()) {
+    return
+  }
+
+  const emit = () => {
+    if (!windowInstance || windowInstance.isDestroyed()) {
+      return
+    }
+    windowInstance.webContents.send('desktop:companion-settings-changed', settings)
+  }
+
+  if (windowInstance.webContents.isLoading()) {
+    windowInstance.webContents.once('did-finish-load', emit)
+    return
+  }
+
+  emit()
+}
+
+function sendCompanionStateToWindow(windowInstance, payload) {
+  if (!windowInstance || windowInstance.isDestroyed()) {
+    return
+  }
+
+  const emit = () => {
+    if (!windowInstance || windowInstance.isDestroyed()) {
+      return
+    }
+    windowInstance.webContents.send('desktop:companion-state-changed', payload)
   }
 
   if (windowInstance.webContents.isLoading()) {
@@ -467,6 +1730,23 @@ function sendReminderEventToPet(payload = {}) {
   return true
 }
 
+function sendReminderEventToPetForRenderer(event, payload = {}, expectedContext = null) {
+  const authorization = authorizeRendererAccountMutation(
+    event,
+    expectedContext,
+    ['main-panel', 'quick-chat'],
+    { requiredScope: 'pet' },
+  )
+  const currentContext = getCurrentStableAccountContext()
+  if (!authorization.ok || payload?.petType !== currentContext.petType) {
+    return false
+  }
+  return sendReminderEventToPet({
+    ...payload,
+    userId: currentContext.userId,
+  })
+}
+
 function broadcastVoiceSettings(patch = {}) {
   const nextSettings = setVoiceSettings(patch)
   sendVoiceSettingsToWindow(petWindow, nextSettings)
@@ -476,10 +1756,93 @@ function broadcastVoiceSettings(patch = {}) {
   return nextSettings
 }
 
+function broadcastCompanionSettings(patch = {}) {
+  const nextSettings = normalizeCompanionSettings({
+    ...getCompanionSettings(),
+    ...(patch || {}),
+  })
+  getStore().set('petCompanionSettings', nextSettings)
+  sendCompanionSettingsToWindow(petWindow, nextSettings)
+  sendCompanionSettingsToWindow(quickChatWindow, nextSettings)
+  sendCompanionSettingsToWindow(mainPanelWindow, nextSettings)
+  return nextSettings
+}
+
+function setPetCompanionState(petType, state = {}, accountUserId = null) {
+  const normalizedPetType = normalizePetType(petType)
+  const normalizedAccountUserId = normalizeUserId(accountUserId)
+  const storageKey = normalizedAccountUserId === null
+    ? normalizedPetType
+    : `${normalizedAccountUserId}:${normalizedPetType}`
+  const stateByPet = getStore().get('petCompanionState') || {}
+  const nextState = state && typeof state === 'object' ? { ...state } : {}
+  getStore().set('petCompanionState', {
+    ...stateByPet,
+    [storageKey]: nextState,
+  })
+
+  const payload = {
+    pet_type: normalizedPetType,
+    user_id: normalizedAccountUserId,
+    state: nextState,
+  }
+  sendCompanionStateToWindow(petWindow, payload)
+  sendCompanionStateToWindow(quickChatWindow, payload)
+  sendCompanionStateToWindow(mainPanelWindow, payload)
+  return nextState
+}
+
+function getPetCompanionStateForRenderer(event, petType, expectedContext) {
+  const authorization = authorizeRendererAccountMutation(
+    event,
+    expectedContext,
+    ['pet', 'main-panel'],
+    { requiredScope: 'pet' },
+  )
+  const currentContext = getCurrentStableAccountContext()
+  if (!authorization.ok || petType !== currentContext.petType) {
+    return null
+  }
+  return getPetCompanionState(petType, currentContext.userId)
+}
+
+function setPetCompanionStateForRenderer(event, petType, state, expectedContext) {
+  const authorization = authorizeRendererAccountMutation(
+    event,
+    expectedContext,
+    ['pet'],
+    { requiredScope: 'pet' },
+  )
+  const currentContext = getCurrentStableAccountContext()
+  if (!authorization.ok || petType !== currentContext.petType) {
+    return {
+      ok: false,
+      reason: authorization.ok ? 'pet-mismatch' : authorization.reason,
+    }
+  }
+  return {
+    ok: true,
+    state: setPetCompanionState(petType, state, currentContext.userId),
+  }
+}
+
 function broadcastPetState(payload = {}) {
+  const previousState = getPetState()
   const nextState = setStoredPetState(payload)
+  if (
+    previousState.hasSession !== nextState.hasSession
+    || previousState.userId !== nextState.userId
+    || previousState.petType !== nextState.petType
+  ) {
+    resetPetOnboardingEngagementSamples()
+  }
+  observeAuthoritativeOperationContext()
   sendPetStateToWindow(petWindow, nextState)
   sendPetStateToWindow(quickChatWindow, nextState)
+  sendPetStateToWindow(mainPanelWindow, nextState)
+  broadcastPetOnboardingState()
+  syncFocusSessionContext()
+  reminderWakeupController?.syncContext()
   return nextState
 }
 
@@ -491,13 +1854,6 @@ function setPetPosition(x, y) {
   const currentBounds = petWindow.getBounds()
   const nextPosition = clampWindowPosition(x, y, currentBounds.width, currentBounds.height)
   petWindow.setPosition(nextPosition.x, nextPosition.y)
-  getStore().set('petBounds', {
-    ...getStore().get('petBounds'),
-    width: currentBounds.width,
-    height: currentBounds.height,
-    x: nextPosition.x,
-    y: nextPosition.y,
-  })
   syncQuickChatPosition()
   return nextPosition
 }
@@ -539,7 +1895,6 @@ function syncQuickChatPosition() {
   const quickBounds = quickChatWindow.getBounds()
   const nextPosition = getQuickChatAnchorPosition(quickBounds.width, quickBounds.height)
   quickChatWindow.setPosition(nextPosition.x, nextPosition.y)
-  getStore().set('quickBounds', { ...getStore().get('quickBounds'), x: nextPosition.x, y: nextPosition.y })
   return nextPosition
 }
 
@@ -551,7 +1906,7 @@ function showPetWindow({ focus = false } = {}) {
     return null
   }
 
-  const bounds = getPetBounds()
+  const bounds = petWindow.getBounds()
   const nextPosition = clampWindowPosition(bounds.x, bounds.y, bounds.width, bounds.height)
   petWindow.setBounds({ ...bounds, ...nextPosition })
   getStore().set('petBounds', { ...bounds, ...nextPosition })
@@ -635,7 +1990,9 @@ function registerVoiceGlobalShortcut() {
 }
 
 function resetPetPosition() {
-  const nextPosition = { width: PET_WINDOW_WIDTH, height: PET_WINDOW_HEIGHT, x: 90, y: 90 }
+  const nextPosition = restoreWindowBounds(screen, {
+    width: PET_WINDOW_WIDTH, height: PET_WINDOW_HEIGHT, x: 90, y: 90,
+  }, {}, { resizeToFit: false })
   getStore().set('petBounds', nextPosition)
 
   if (!petWindow || petWindow.isDestroyed()) {
@@ -671,10 +2028,14 @@ function createPetWindow() {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
       nodeIntegration: false,
+      sandbox: false,
+      additionalArguments: isE2e ? ['--detachym-e2e=1'] : [],
     },
   })
 
   petWindow.__role = 'pet'
+  attachRendererNavigationGuard(petWindow, 'pet.html')
+  attachRendererCapabilityLifecycle(petWindow)
   petWindow.setAlwaysOnTop(true, 'screen-saver')
   persistBounds('petBounds', petWindow, { saveSize: false })
   petWindow.on('close', (event) => {
@@ -686,9 +2047,11 @@ function createPetWindow() {
   petWindow.on('move', () => {
     syncQuickChatPosition()
   })
+  petWindow.on('show', requestPetReminderRefresh)
   petWindow.webContents.on('did-finish-load', () => {
     sendPetStateToWindow(petWindow, getPetState())
     sendVoiceSettingsToWindow(petWindow, getVoiceSettings())
+    sendPetOnboardingStateToWindow(petWindow)
   })
 
   loadWindow(petWindow, 'pet.html')
@@ -720,10 +2083,14 @@ function createQuickChatWindow() {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
       nodeIntegration: false,
+      sandbox: false,
+      additionalArguments: isE2e ? ['--detachym-e2e=1'] : [],
     },
   })
 
   quickChatWindow.__role = 'quick-chat'
+  attachRendererNavigationGuard(quickChatWindow, 'quick-chat.html')
+  attachRendererCapabilityLifecycle(quickChatWindow)
   quickChatWindow.setTitle(getWindowTitle('quickChat'))
   quickChatWindow.removeMenu()
   quickChatWindow.setMenuBarVisibility(false)
@@ -749,10 +2116,9 @@ function createMainPanelWindow() {
 
   const mainBounds = getStore().get('mainBounds') || {}
   mainPanelWindow = new BrowserWindow({
-    width: Math.max(MAIN_PANEL_WIDTH, Number(mainBounds.width) || MAIN_PANEL_WIDTH),
-    height: Math.max(MAIN_PANEL_HEIGHT, Number(mainBounds.height) || MAIN_PANEL_HEIGHT),
-    x: Number.isFinite(mainBounds.x) ? mainBounds.x : undefined,
-    y: Number.isFinite(mainBounds.y) ? mainBounds.y : undefined,
+    ...restoreWindowBounds(screen, mainBounds, {
+      width: MAIN_PANEL_WIDTH, height: MAIN_PANEL_HEIGHT,
+    }),
     title: 'Detachym 桌宠客户端',
     icon: getWindowIconPath(),
     show: false,
@@ -762,10 +2128,15 @@ function createMainPanelWindow() {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
       nodeIntegration: false,
+      sandbox: false,
+      additionalArguments: isE2e ? ['--detachym-e2e=1'] : [],
     },
   })
 
   mainPanelWindow.__role = 'main-panel'
+  attachRendererNavigationGuard(mainPanelWindow, 'main-panel.html')
+  attachRendererCapabilityLifecycle(mainPanelWindow)
+  getMainPanelIntentCoordinator().markRendererNotReady()
   mainPanelWindow.setTitle(getWindowTitle('mainPanel'))
   mainPanelWindow.removeMenu()
   mainPanelWindow.setMenuBarVisibility(false)
@@ -776,11 +2147,36 @@ function createMainPanelWindow() {
       mainPanelWindow.hide()
     }
   })
+  mainPanelWindow.webContents.on('did-start-loading', () => {
+    getMainPanelIntentCoordinator().markRendererNotReady()
+  })
   mainPanelWindow.webContents.on('did-finish-load', () => {
+    sendPetStateToWindow(mainPanelWindow, getPetState())
     sendVoiceSettingsToWindow(mainPanelWindow, getVoiceSettings())
+    sendPetOnboardingStateToWindow(mainPanelWindow)
+  })
+  mainPanelWindow.webContents.on(
+    'did-fail-load',
+    (_event, _errorCode, _errorDescription, _validatedUrl, isMainFrame) => {
+      if (isMainFrame !== false) {
+        getMainPanelIntentCoordinator().failPending('main-frame-load-failed')
+      }
+    },
+  )
+  mainPanelWindow.webContents.on('render-process-gone', () => {
+    getMainPanelIntentCoordinator().failPending('renderer-process-gone')
+  })
+  mainPanelWindow.on('closed', () => {
+    getMainPanelIntentCoordinator().failPending('window-destroyed')
+    // attachRendererCapabilityLifecycle already revokes the captured sender on
+    // destruction. Accessing webContents here throws after BrowserWindow dies.
+    mainPanelWindow = null
   })
 
-  loadWindow(mainPanelWindow, 'main-panel.html')
+  void loadWindow(mainPanelWindow, 'main-panel.html').catch((error) => {
+    getMainPanelIntentCoordinator().failPending('main-frame-load-failed')
+    logDesktop('main-panel-load-failed', { message: error?.message || 'unknown' })
+  })
 }
 
 function openQuickChat() {
@@ -822,15 +2218,86 @@ function toggleQuickChat() {
   return openQuickChat()
 }
 
-function openMainPanel() {
+function openMainPanel(options = {}) {
   createMainPanelWindow()
-  if (!mainPanelWindow) {
+  if (!mainPanelWindow || mainPanelWindow.isDestroyed()) {
     return false
   }
 
+  if (mainPanelWindow.isMinimized()) mainPanelWindow.restore()
+  recoverWindowBounds(mainPanelWindow, screen)
   mainPanelWindow.show()
   mainPanelWindow.focus()
+  if (options?.intent === 'pet-onboarding-relationship') {
+    return getMainPanelIntentCoordinator().request(options.intent, {
+      context: options.expectedContext,
+      semantic: options.semantic,
+    })
+  }
   return true
+}
+
+async function openMainPanelForRenderer(event, options = {}) {
+  if (options?.intent === 'pet-onboarding-relationship') {
+    const authorizeSource = () => operationCapabilities.authorize({
+      sender: event?.sender,
+      senderRole: getIpcSenderRole(event),
+      capability: options.expectedContext,
+      requiredScope: 'relationship',
+      currentContext: getCurrentStableAccountContext(),
+    })
+    const authorization = authorizeSource()
+    if (getIpcSenderRole(event) !== 'pet' || !authorization.ok) {
+      return false
+    }
+    createMainPanelWindow()
+    if (!mainPanelWindow || mainPanelWindow.isDestroyed()) return false
+    const consumerWindow = mainPanelWindow
+    if (!await waitForRendererInstance(consumerWindow)) return false
+    if (
+      consumerWindow !== mainPanelWindow
+      || consumerWindow.isDestroyed()
+      || getIpcSenderRole(event) !== 'pet'
+      || !authorizeSource().ok
+    ) return false
+    const currentContext = getCurrentStableAccountContext()
+    const consumerCapability = issueTrustedOperationCapabilityForWindow(
+      consumerWindow,
+      'relationship',
+      currentContext,
+    )
+    if (!consumerCapability) return false
+    const intentSequence = e2eRuntime.intentSequence + 1
+    e2eRuntime.intentSequence = intentSequence
+    e2eRuntime.intent = {
+      contextUserId: currentContext.userId,
+      lastResult: e2eRuntime.intent.lastResult,
+    }
+    const opened = await openMainPanel({
+      ...options,
+      expectedContext: consumerCapability,
+      semantic: {
+        userId: currentContext.userId,
+        petType: currentContext.petType,
+        relationshipId: currentContext.relationshipId,
+      },
+    })
+    if (e2eRuntime.intentSequence === intentSequence) {
+      e2eRuntime.intent = {
+        contextUserId: currentContext.userId,
+        lastResult: opened === true,
+      }
+    }
+    if (isE2e && opened === true) {
+      e2eRuntime.activityJournal.push({
+        kind: 'intent',
+        userId: currentContext.userId,
+        afterAccountSwitch: getCurrentStableAccountContext().userId !== currentContext.userId,
+      })
+    }
+    return opened
+  }
+  return openMainPanel(options)
 }
 
 function hideMainPanel() {
@@ -919,15 +2386,150 @@ function switchPetFromMainPanel(payload = {}) {
   return { ok: true, state: nextState }
 }
 
+function switchPetFromMainPanelForRenderer(event, payload = {}) {
+  const sessionSubject = getCurrentSessionSubject()
+  const activeState = getPetState()
+  const authorization = authorizeSwitchPet({
+    senderRole: getIpcSenderRole(event),
+    expectedUserId: payload.expectedUserId ?? payload.userId,
+    currentSessionSubject: sessionSubject,
+    activeUserId: activeState.userId,
+    expectedSession: payload.expectedSession,
+    currentSession: getCurrentSessionSnapshot(),
+    expectedFromPet: payload.expectedFromPet,
+    currentPet: activeState.petType,
+  })
+  if (!authorization.ok) {
+    return authorization
+  }
+  const capabilityAuthorization = operationCapabilities.authorize({
+    sender: event?.sender,
+    senderRole: getIpcSenderRole(event),
+    capability: payload.expectedContext,
+    requiredScope: 'pet',
+    currentContext: getCurrentStableAccountContext(),
+  })
+  if (!capabilityAuthorization.ok) return capabilityAuthorization
+  const transition = operationCapabilities.transition({
+    sender: event?.sender,
+    senderRole: getIpcSenderRole(event),
+    capability: payload.expectedContext,
+    requiredScope: 'pet',
+    currentContext: getCurrentStableAccountContext(),
+    nextScope: 'pet',
+    apply: () => switchPetFromMainPanel(payload),
+    getCurrentContext: getCurrentStableAccountContext,
+  })
+  if (!transition.ok) return transition
+  return { ...transition.value, authoritative: transition.capability }
+}
+
 function syncPetState(payload = {}) {
   return broadcastPetState(payload)
+}
+
+function syncPetStateForRenderer(event, payload = {}) {
+  if (getIpcSenderRole(event) !== 'main-panel') {
+    return { ok: false, reason: 'forbidden' }
+  }
+  const incomingHasSession = payload?.hasSession === true
+  const incomingUserId = normalizeUserId(payload?.userId)
+  const sessionSubject = getCurrentSessionSubject()
+  if (
+    (incomingHasSession && (sessionSubject === null || incomingUserId !== sessionSubject))
+    || (!incomingHasSession && (sessionSubject !== null || incomingUserId !== null))
+  ) {
+    return { ok: false, reason: 'identity-mismatch' }
+  }
+  if (
+    incomingHasSession
+    && !isExactSessionSnapshot(payload?.expectedSession, getCurrentSessionSnapshot())
+  ) {
+    return { ok: false, reason: 'session-mismatch' }
+  }
+  if (incomingHasSession) {
+    const transition = operationCapabilities.transition({
+      sender: event?.sender,
+      senderRole: getIpcSenderRole(event),
+      capability: payload.expectedContext,
+      requiredScope: 'account',
+      currentContext: getCurrentStableAccountContext(),
+      nextScope: 'pet',
+      apply: () => syncPetState(payload),
+      getCurrentContext: getCurrentStableAccountContext,
+    })
+    if (!transition.ok) return transition
+    return { ok: true, state: transition.value, authoritative: transition.capability }
+  }
+  return syncPetState(payload)
+}
+
+function setSessionTokenForRenderer(event, token, attempt, rendererInstanceNonce) {
+  if (getIpcSenderRole(event) !== 'main-panel') {
+    return false
+  }
+  const sessionSubject = getUnverifiedJwtSubject(token)
+  if (sessionSubject === null) {
+    return false
+  }
+  return loginAttempts.commitSession({
+    sender: event.sender, senderRole: getIpcSenderRole(event), rendererInstanceNonce, attempt,
+  }, () => {
+    if (token !== getStore().get('sessionToken')) {
+      operationCapabilities.resetCapabilities()
+      broadcastPetState({ hasSession: false, userId: null })
+      clearAccountScopedPetContext()
+      getStore().set('sessionToken', token)
+      sessionGeneration += 1
+      broadcastPetState({ hasSession: true, userId: sessionSubject })
+    }
+    return getCurrentSessionSnapshot()
+  })
+}
+
+function getCurrentSessionSnapshot() {
+  const token = getStore().get('sessionToken')
+  return { token: typeof token === 'string' && token ? token : null, generation: sessionGeneration }
+}
+
+function clearSessionTokenForRenderer(event, expectedSession) {
+  const currentToken = getStore().get('sessionToken')
+  if (!authorizeSessionClear({
+    senderRole: getIpcSenderRole(event),
+    expectedSession,
+    currentSession: getCurrentSessionSnapshot(),
+  })) {
+    return false
+  }
+  const changed = Boolean(currentToken)
+  loginAttempts.invalidate()
+  getStore().set('sessionToken', null)
+  if (changed) {
+    sessionGeneration += 1
+    operationCapabilities.resetCapabilities()
+  }
+  clearAccountScopedPetContext()
+  syncPetState({
+    hasSession: false,
+    userId: null,
+    petType: 'cat',
+    preferences: {
+      pet_type: 'cat',
+      quick_chat_enabled: true,
+      bubble_frequency: 120,
+    },
+  })
+  return true
 }
 
 function getRuntimeState() {
   return {
     petState: getPetState(),
     petRelationshipCache: getStore().get('petRelationshipCache') || {},
+    petMilestonePlayback: getStore().get('petMilestonePlayback') || {},
     voiceSettings: getVoiceSettings(),
+    companionSettings: getCompanionSettings(),
+    companionState: getStore().get('petCompanionState') || {},
     voiceGlobalShortcut: {
       registered: registeredVoiceGlobalShortcut,
     },
@@ -940,8 +2542,272 @@ function getRuntimeState() {
   }
 }
 
+function getRuntimeStateForRenderer(event) {
+  return createRuntimeStateForRole({
+    role: getIpcSenderRole(event),
+    runtimeState: getRuntimeState(),
+  })
+}
+
+function getWindowForRole(role) {
+  if (role === 'pet') return petWindow
+  if (role === 'quick-chat') return quickChatWindow
+  if (role === 'main-panel') return mainPanelWindow
+  return null
+}
+
+function sendE2eLocalReset() {
+  for (const windowInstance of [petWindow, quickChatWindow, mainPanelWindow]) {
+    if (windowInstance && !windowInstance.isDestroyed()) {
+      windowInstance.webContents.send('desktop:e2e-reset-local')
+    }
+  }
+}
+
+function getE2eOnboardingSnapshot() {
+  const state = loadPetOnboardingState({ createIfEligible: false }).state
+  if (!state) return null
+  const observed = state.observed_capability_ids || []
+  return {
+    ...state,
+    status: state.status === 'finished' && state.finish_reason === 'completed'
+      ? 'completed'
+      : state.status,
+    observedRelationship: observed.includes(PET_ONBOARDING_CAPABILITIES.RELATIONSHIP_VIEWED),
+  }
+}
+
+function getE2eSnapshot() {
+  const context = getCurrentStableAccountContext()
+  const relationship = context.hasSession ? getCachedPetRelationship(context.petType) : null
+  return {
+    account: context.hasSession
+      ? { userId: context.userId, petType: context.petType }
+      : null,
+    relationship: relationship ? { ...relationship } : null,
+    onboarding: getE2eOnboardingSnapshot(),
+    intent: {
+      pending: getMainPanelIntentCoordinator().hasPending(),
+      contextUserId: e2eRuntime.intent.contextUserId,
+      lastResult: e2eRuntime.intent.lastResult,
+    },
+    lastCompletedRequest: e2eRuntime.lastCompletedRequest
+      ? { ...e2eRuntime.lastCompletedRequest }
+      : null,
+    activityJournal: e2eRuntime.activityJournal.map((entry) => ({ ...entry })),
+  }
+}
+
+function applyE2eAccountFixture(fixture = {}, { reset = false } = {}) {
+  if (!isE2e) return false
+  const account = fixture?.account
+  const hasAccount = Boolean(account)
+  const userId = hasAccount ? normalizeUserId(account.userId) : null
+  const petType = hasAccount ? normalizePetType(account.petType) : 'cat'
+  const token = hasAccount && typeof account.token === 'string' ? account.token : null
+  const relationship = hasAccount && fixture?.relationship && typeof fixture.relationship === 'object'
+    ? { ...fixture.relationship, pet_type: petType }
+    : null
+  if (
+    hasAccount
+    && (
+      userId === null
+      || getUnverifiedJwtSubject(token) !== userId
+      || normalizeUserId(relationship?.user_id ?? relationship?.userId) !== userId
+      || normalizeUserId(relationship?.id) === null
+    )
+  ) return false
+
+  if (reset) {
+    getMainPanelIntentCoordinator().failPending('e2e-reset')
+    e2eRuntime.intentSequence += 1
+    e2eRuntime.intent = { contextUserId: null, lastResult: null }
+    e2eRuntime.lastCompletedRequest = null
+    e2eRuntime.activityJournal = []
+    getStore().set('petOnboardingStates', {})
+    getStore().set('apiBaseUrl', defaultApiBaseUrl)
+  }
+
+  operationCapabilities.resetCapabilities()
+  sessionGeneration += 1
+  resetPetOnboardingEngagementSamples()
+  getStore().set('sessionToken', token)
+  getStore().set('petRelationshipCache', relationship ? { [petType]: relationship } : {})
+  getStore().set('petMilestonePlayback', {})
+  getStore().set('petCompanionState', {})
+  const nextState = {
+    petType,
+    hasSession: hasAccount,
+    userId,
+    language: DEFAULT_LANGUAGE,
+    preferences: {
+      pet_type: petType,
+      quick_chat_enabled: true,
+      bubble_frequency: 120,
+    },
+  }
+  getStore().set('petState', nextState)
+  broadcastPetState(nextState)
+  for (const windowInstance of [petWindow, quickChatWindow, mainPanelWindow]) {
+    sendPetRelationshipToWindow(windowInstance, relationship)
+  }
+  broadcastPetOnboardingState()
+  sendE2eLocalReset()
+  return getE2eSnapshot()
+}
+
+function prepareE2ePetOnboarding(options = {}) {
+  if (!isE2e || !['meet_pet', 'relationship'].includes(options?.scene)) return false
+  const context = getPetOnboardingContext()
+  const key = context ? createPetOnboardingKey(context.user_id, context.relationship_id) : null
+  const base = context ? createPetOnboardingState(context, new Date()) : null
+  if (!key || !base) return false
+  const visibleEngagementMs = Number.isFinite(Number(options.visibleEngagementMs))
+    ? Math.max(0, Math.min(179_999, Math.floor(Number(options.visibleEngagementMs))))
+    : 0
+  const relationshipScene = options.scene === 'relationship'
+  const state = {
+    ...base,
+    engaged_elapsed_ms: visibleEngagementMs,
+    shown_step_ids: relationshipScene ? ['meet_pet'] : [],
+    observed_capability_ids: relationshipScene
+      ? [PET_ONBOARDING_CAPABILITIES.PET_INTERACTION]
+      : [],
+    revision: (loadPetOnboardingState({ createIfEligible: false }).state?.revision || 0) + 1,
+  }
+  getStore().set('petOnboardingStates', {
+    ...(getStore().get('petOnboardingStates') || {}),
+    [key]: state,
+  })
+  petOnboardingEngagementSamples.set(key, {
+    context_key: key,
+    monotonic_ms: performance.now() + 10_000,
+  })
+  broadcastPetOnboardingState()
+  return true
+}
+
+function recordE2eRequestCompletion(event, payload = {}) {
+  if (!isE2e || !getIpcSenderRole(event)) return false
+  const userId = normalizeUserId(payload.userId)
+  const pathValue = typeof payload.path === 'string' ? payload.path.split('?')[0] : ''
+  if (!userId || !pathValue.startsWith('/') || pathValue.length > 256) return false
+  const entry = {
+    kind: 'request',
+    userId,
+    afterAccountSwitch: getCurrentStableAccountContext().userId !== userId,
+    path: pathValue,
+    ok: payload.ok === true,
+  }
+  e2eRuntime.lastCompletedRequest = { path: entry.path, ok: entry.ok }
+  e2eRuntime.activityJournal.push(entry)
+  if (e2eRuntime.activityJournal.length > 128) e2eRuntime.activityJournal.shift()
+  return true
+}
+
+function showE2eWindow(role) {
+  if (role === 'pet') return Boolean(showPetWindow({ focus: true }))
+  if (role === 'quick-chat') return openQuickChat()
+  if (role === 'main-panel') return openMainPanel()
+  return false
+}
+
+function hideE2eWindow(role) {
+  const windowInstance = getWindowForRole(role)
+  if (!windowInstance || windowInstance.isDestroyed()) return false
+  windowInstance.hide()
+  return true
+}
+
+function destroyE2eWindow(role) {
+  const windowInstance = getWindowForRole(role)
+  if (!windowInstance || windowInstance.isDestroyed()) return false
+  windowInstance.destroy()
+  return true
+}
+
+function recreateE2eWindow(role) {
+  if (role === 'pet') createPetWindow()
+  else if (role === 'quick-chat') createQuickChatWindow()
+  else if (role === 'main-panel') createMainPanelWindow()
+  else return false
+  const windowInstance = getWindowForRole(role)
+  return Boolean(windowInstance && !windowInstance.isDestroyed())
+}
+
+function broadcastE2eRelationship(role, relationship) {
+  if (!isE2e || !relationship || typeof relationship !== 'object') return false
+  const windowInstance = getWindowForRole(role)
+  const current = getCurrentStableAccountContext()
+  if (
+    !windowInstance
+    || windowInstance.isDestroyed()
+    || normalizeUserId(relationship.user_id ?? relationship.userId) !== current.userId
+    || normalizePetType(relationship.pet_type ?? relationship.petType) !== current.petType
+    || normalizeUserId(relationship.id) !== current.relationshipId
+  ) return false
+  sendPetRelationshipToWindow(windowInstance, relationship)
+  return true
+}
+
+async function handleE2eControl(event, method, ...args) {
+  if (!isE2e || !getIpcSenderRole(event)) return null
+  if (method === 'describe') {
+    return { protocolVersion: E2E_PROTOCOL_VERSION, role: getIpcSenderRole(event) }
+  }
+  if (method === 'reset') {
+    const fixture = args[0]
+    if (fixture?.protocolVersion !== E2E_PROTOCOL_VERSION) return false
+    return applyE2eAccountFixture(fixture, { reset: true })
+  }
+  if (method === 'snapshot') return getE2eSnapshot()
+  if (method === 'showWindow') return showE2eWindow(args[0])
+  if (method === 'hideWindow') return hideE2eWindow(args[0])
+  if (method === 'prepareOnboarding') return prepareE2ePetOnboarding(args[0])
+  if (method === 'expireOperationCapabilities') {
+    return { expired: operationCapabilities.expireAll() }
+  }
+  if (method === 'switchAccount') {
+    return applyE2eAccountFixture({ account: args[0], relationship: args[0]?.relationship })
+  }
+  if (method === 'destroyWindow') return destroyE2eWindow(args[0])
+  if (method === 'recreateWindow') return recreateE2eWindow(args[0])
+  if (method === 'broadcastRelationshipTo') return broadcastE2eRelationship(args[0], args[1])
+  if (method === 'rejectMainPanelIntent') {
+    return getMainPanelIntentCoordinator().failPending('e2e-renderer-rejected')
+  }
+  if (method === 'recordRequestCompletion') return recordE2eRequestCompletion(event, args[0])
+  return null
+}
+
 function registerIpc() {
-  ipcMain.handle('desktop:open-main-panel', async () => openMainPanel())
+  ipcMain.handle('desktop:get-focus-session', async (event, expectedContext) => getFocusSessionForRenderer(event, expectedContext))
+  ipcMain.handle('desktop:update-focus-session', async (event, command, payload, expectedContext) => updateFocusSessionForRenderer(event, command, payload, expectedContext))
+  if (isE2e) {
+    ipcMain.handle('desktop:e2e-control', handleE2eControl)
+  }
+  ipcMain.handle('desktop:open-main-panel', async (event, options) => (
+    openMainPanelForRenderer(event, options)
+  ))
+  ipcMain.handle('desktop:main-panel-intent-ready', async (event) => {
+    if (getIpcSenderRole(event) !== 'main-panel') {
+      return false
+    }
+    return getMainPanelIntentCoordinator().markRendererReady()
+  })
+  ipcMain.handle('desktop:main-panel-intent-not-ready', async (event) => {
+    if (getIpcSenderRole(event) !== 'main-panel') {
+      return false
+    }
+    getMainPanelIntentCoordinator().markRendererNotReady()
+    return true
+  })
+  ipcMain.handle('desktop:main-panel-intent-ack', async (event, id) => {
+    if (getIpcSenderRole(event) !== 'main-panel') {
+      return false
+    }
+    return getMainPanelIntentCoordinator().acknowledge(id)
+  })
   ipcMain.handle('desktop:minimize-main-panel', async () => minimizeMainPanel())
   ipcMain.handle('desktop:hide-main-panel', async () => hideMainPanel())
   ipcMain.handle('desktop:open-quick-chat', async () => openQuickChat())
@@ -960,12 +2826,160 @@ function registerIpc() {
     petWindow.setIgnoreMouseEvents(!interactive)
     return Boolean(interactive)
   })
-  ipcMain.handle('desktop:switch-pet-from-main-panel', async (_event, payload) => switchPetFromMainPanel(payload))
-  ipcMain.handle('desktop:sync-pet-state', async (_event, payload) => syncPetState(payload))
-  ipcMain.handle('desktop:notify-pet-reminder-event', async (_event, payload) => sendReminderEventToPet(payload))
-  ipcMain.handle('desktop:get-pet-state', async () => getPetState())
-  ipcMain.handle('desktop:get-cached-pet-relationship', async (_event, petType) => getCachedPetRelationship(petType))
-  ipcMain.handle('desktop:cache-pet-relationship', async (_event, payload) => cachePetRelationship(payload))
+  ipcMain.handle('desktop:switch-pet-from-main-panel', async (event, payload) => (
+    switchPetFromMainPanelForRenderer(event, payload)
+  ))
+  ipcMain.handle('desktop:sync-pet-state', async (event, payload) => (
+    syncPetStateForRenderer(event, payload)
+  ))
+  ipcMain.handle(
+    'desktop:notify-pet-reminder-event',
+    async (event, payload, expectedContext) => (
+      sendReminderEventToPetForRenderer(event, payload, expectedContext)
+    ),
+  )
+  ipcMain.handle('desktop:schedule-reminder-wakeup', async (
+    event, at, expectedContext, sequence, rendererInstanceNonce,
+  ) => {
+    if (!operationCapabilities.isRendererInstanceCurrent({
+      sender: event.sender, senderRole: getIpcSenderRole(event), rendererInstanceNonce,
+    })) return false
+    const authorization = authorizeRendererAccountMutation(event, expectedContext, ['pet'], { requiredScope: 'pet' })
+    if (!authorization.ok || !isApiServerCurrent(expectedContext)) return false
+    return getReminderWakeupController().schedule(event.sender, at, sequence)
+  })
+  ipcMain.handle('desktop:get-pet-state', async (event) => (
+    getIpcSenderRole(event) ? getPetState() : null
+  ))
+  ipcMain.handle('desktop:register-renderer-instance', async (event, rendererInstanceNonce) => (
+    registerRendererInstanceForEvent(event, rendererInstanceNonce)
+  ))
+  ipcMain.handle('desktop:capture-operation-context', async (
+    event,
+    scope,
+    expectedContext,
+    rendererInstanceNonce,
+  ) => captureAuthoritativeOperationContextForRenderer(
+    event,
+    scope,
+    expectedContext,
+    rendererInstanceNonce,
+  ))
+  ipcMain.handle('desktop:renew-operation-context', async (
+    event,
+    capability,
+    requiredScope,
+    semantic,
+    rendererInstanceNonce,
+  ) => renewAuthoritativeOperationContextForRenderer(
+    event,
+    capability,
+    requiredScope,
+    semantic,
+    rendererInstanceNonce,
+  ))
+  ipcMain.handle('desktop:validate-operation-context', async (
+    event,
+    snapshot,
+    requiredScope,
+    semantic,
+    rendererInstanceNonce,
+  ) => (
+    validateAuthoritativeOperationContextForRenderer(
+      event,
+      snapshot,
+      requiredScope,
+      semantic,
+      rendererInstanceNonce,
+    )
+  ))
+  ipcMain.handle('desktop:get-cached-pet-relationship', async (event, petType, expectedContext) => (
+    getCachedPetRelationshipForRenderer(event, petType, expectedContext)
+  ))
+  ipcMain.handle('desktop:cache-pet-relationship', async (event, payload, expectedContext) => (
+    cachePetRelationshipForRenderer(event, payload, expectedContext)
+  ))
+  ipcMain.handle('desktop:get-pet-milestone-playback', async (event, petType, expectedContext) => (
+    getPetMilestonePlaybackForRenderer(event, petType, expectedContext)
+  ))
+  ipcMain.handle('desktop:set-pet-milestone-playback', async (
+    event,
+    petType,
+    playback,
+    expectedRevision,
+    expectedContext,
+  ) => (
+    setPetMilestonePlaybackForRenderer(
+      event,
+      petType,
+      playback,
+      expectedRevision,
+      expectedContext,
+    )
+  ))
+  ipcMain.handle('desktop:clear-pet-milestone-playback', async (
+    event,
+    petType,
+    claimToken,
+    expectedRevision,
+    expectedContext,
+  ) => (
+    clearPetMilestonePlaybackForRenderer(
+      event,
+      petType,
+      claimToken,
+      expectedRevision,
+      expectedContext,
+    )
+  ))
+  ipcMain.handle(
+    'desktop:get-pet-onboarding-state',
+    async (event, petType, expectedContext) => (
+      getPetOnboardingStateForRenderer(event, petType, expectedContext)
+    ),
+  )
+  ipcMain.handle(
+    'desktop:record-pet-onboarding-observation',
+    async (event, petType, capabilityId, payload, expectedContext) => (
+      recordPetOnboardingObservation(event, petType, capabilityId, payload, expectedContext)
+    ),
+  )
+  ipcMain.handle(
+    'desktop:record-pet-onboarding-engagement',
+    async (event, petType, deltaMs, expectedContext) => (
+      recordPetOnboardingEngagement(event, petType, deltaMs, expectedContext)
+    ),
+  )
+  ipcMain.handle(
+    'desktop:claim-pet-onboarding-presentation',
+    async (event, petType, stepId, token, expectedContext) => (
+      claimPetOnboardingPresentation(event, petType, stepId, token, expectedContext)
+    ),
+  )
+  ipcMain.handle(
+    'desktop:ack-pet-onboarding-presentation',
+    async (event, petType, stepId, token, expectedContext) => (
+      ackPetOnboardingPresentation(event, petType, stepId, token, expectedContext)
+    ),
+  )
+  ipcMain.handle(
+    'desktop:release-pet-onboarding-presentation',
+    async (event, petType, stepId, token, expectedContext) => (
+      releasePetOnboardingPresentation(event, petType, stepId, token, expectedContext)
+    ),
+  )
+  ipcMain.handle(
+    'desktop:snooze-pet-onboarding',
+    async (event, petType, expectedContext) => (
+      snoozePetOnboarding(event, petType, expectedContext)
+    ),
+  )
+  ipcMain.handle(
+    'desktop:dismiss-pet-onboarding',
+    async (event, petType, expectedContext) => (
+      dismissPetOnboarding(event, petType, expectedContext)
+    ),
+  )
 
   ipcMain.handle('desktop:toggle-auto-launch', async (_event, enabled) => {
     getStore().set('autoLaunch', enabled)
@@ -975,9 +2989,22 @@ function registerIpc() {
 
   ipcMain.handle('desktop:get-app-version', async () => app.getVersion())
   ipcMain.handle('desktop:get-api-base-url', async () => getStore().get('apiBaseUrl'))
-  ipcMain.handle('desktop:set-api-base-url', async (_event, value) => {
-    getStore().set('apiBaseUrl', value)
-    return value
+  ipcMain.handle('desktop:begin-login-attempt', (event, server, rendererInstanceNonce) => loginAttempts.begin({
+    sender: event.sender, senderRole: getIpcSenderRole(event), rendererInstanceNonce, server,
+  }))
+  ipcMain.handle('desktop:cancel-login-attempt', (event, attempt, rendererInstanceNonce) => loginAttempts.cancel({
+    sender: event.sender, senderRole: getIpcSenderRole(event), rendererInstanceNonce, attempt,
+  }))
+  ipcMain.handle('desktop:set-api-base-url', (event, value, attempt, rendererInstanceNonce) => {
+    if (typeof value !== 'string') throw new TypeError('The service address must be a string.')
+    return loginAttempts.saveServer({
+      sender: event.sender, senderRole: getIpcSenderRole(event), rendererInstanceNonce, attempt,
+    }, value, () => {
+      getStore().set('apiBaseUrl', value)
+      syncFocusSessionContext()
+      reminderWakeupController?.syncContext()
+      requestPetReminderRefresh()
+    })
   })
   ipcMain.handle('desktop:get-language', async () => normalizeLanguage(getStore().get('language')))
   ipcMain.handle('desktop:set-language', async (_event, value) => {
@@ -995,6 +3022,25 @@ function registerIpc() {
   })
   ipcMain.handle('desktop:get-voice-settings', async () => getVoiceSettings())
   ipcMain.handle('desktop:update-voice-settings', async (_event, patch) => broadcastVoiceSettings(patch))
+  ipcMain.handle('desktop:get-companion-settings', async () => getCompanionSettings())
+  ipcMain.handle('desktop:update-companion-settings', async (_event, patch) =>
+    broadcastCompanionSettings(patch),
+  )
+  ipcMain.handle('desktop:get-companion-state', async (event, petType, expectedContext) =>
+    getPetCompanionStateForRenderer(event, petType, expectedContext),
+  )
+  ipcMain.handle('desktop:set-companion-state', async (event, petType, state, expectedContext) =>
+    setPetCompanionStateForRenderer(event, petType, state, expectedContext),
+  )
+  ipcMain.handle('desktop:get-system-idle-seconds', async () => {
+    try {
+      // CDP input does not reset the Windows idle clock. The isolated E2E
+      // fixture models an active user; real idle/sleep is a separate smoke check.
+      return isE2e ? 0 : powerMonitor.getSystemIdleTime()
+    } catch {
+      return 0
+    }
+  })
   ipcMain.handle('desktop:set-pet-position', async (_event, position) => {
     if (!position || typeof position !== 'object') {
       return null
@@ -1002,7 +3048,26 @@ function registerIpc() {
     return setPetPosition(position.x, position.y)
   })
 
-  ipcMain.handle('desktop:show-notification', async (_event, payload) => {
+  ipcMain.handle('desktop:show-notification', async (event, payload, expectedContext) => {
+    const senderRole = getIpcSenderRole(event)
+    const isLoginNotification = senderRole === 'main-panel' && !expectedContext
+      && isExactSessionSnapshot(payload?.loginSession, getCurrentSessionSnapshot())
+      && isApiServerCurrent({ server: payload?.loginServer })
+    const notificationAuthorization = isLoginNotification
+      ? { ok: true }
+      : operationCapabilities.authorize({
+          sender: event?.sender,
+          senderRole,
+          capability: expectedContext,
+          requiredScope: 'pet',
+          currentContext: getCurrentStableAccountContext(),
+        })
+    if (!notificationAuthorization.ok || (!isLoginNotification && senderRole !== 'pet')) {
+      return false
+    }
+    if (payload?.reminderServer !== undefined && !isApiServerCurrent({ server: payload.reminderServer })) {
+      return false
+    }
     if (getStore().get('mute')) {
       return false
     }
@@ -1015,40 +3080,41 @@ function registerIpc() {
     return true
   })
 
-  ipcMain.handle('desktop:get-session-token', async () => getStore().get('sessionToken'))
-  ipcMain.handle('desktop:set-session-token', async (_event, token) => {
-    getStore().set('sessionToken', token)
-    syncPetState({ hasSession: Boolean(token) })
-    return true
-  })
-  ipcMain.handle('desktop:clear-session-token', async () => {
-    getStore().set('sessionToken', null)
-    getStore().set('petRelationshipCache', {})
-    syncPetState({
-      hasSession: false,
-      petType: 'cat',
-      preferences: {
-        pet_type: 'cat',
-        quick_chat_enabled: true,
-        bubble_frequency: 120,
-      },
-    })
-    return true
-  })
+  ipcMain.handle('desktop:get-session-token', async (event) => (
+    getIpcSenderRole(event) ? getStore().get('sessionToken') : null
+  ))
+  ipcMain.handle('desktop:get-session-snapshot', async (event) => (
+    getIpcSenderRole(event) ? getCurrentSessionSnapshot() : null
+  ))
+  ipcMain.handle('desktop:set-session-token', (event, token, attempt, rendererInstanceNonce) => (
+    setSessionTokenForRenderer(event, token, attempt, rendererInstanceNonce)
+  ))
+  ipcMain.handle('desktop:clear-session-token', async (event, expectedToken) => (
+    clearSessionTokenForRenderer(event, expectedToken)
+  ))
 
-  ipcMain.handle('desktop:log-debug', async (_event, payload) => {
-    logDesktop('renderer-debug', payload || {})
-    return true
-  })
-  ipcMain.handle('desktop:renderer-heartbeat', async (_event, payload) => {
-    const key = payload?.view || 'unknown'
-    rendererHeartbeatState[key] = {
-      ts: new Date().toISOString(),
+  ipcMain.handle('desktop:log-debug', async (event, payload) => {
+    const result = createRendererTelemetryRecord({
+      role: getIpcSenderRole(event),
+      event: 'renderer-debug',
       payload,
-    }
+    })
+    if (!result.ok) return false
+    logDesktop('renderer-debug', result.record)
     return true
   })
-  ipcMain.handle('desktop:get-runtime-state', async () => getRuntimeState())
+  ipcMain.handle('desktop:renderer-heartbeat', async (event, payload) => {
+    const result = createRendererHeartbeatRecord({
+      role: getIpcSenderRole(event),
+      payload,
+    })
+    if (!result.ok) return false
+    rendererHeartbeatState[result.key] = result.heartbeat
+    return true
+  })
+  ipcMain.handle('desktop:get-runtime-state', async (event) => (
+    getRuntimeStateForRenderer(event)
+  ))
   ipcMain.handle('desktop:get-log-paths', async () => ({
     logPath: ensureDebugLogPath(),
   }))
@@ -1056,11 +3122,11 @@ function registerIpc() {
 
 function bootstrap() {
   Menu.setApplicationMenu(null)
+  registerIpc()
   createPetWindow()
   createQuickChatWindow()
   createMainPanelWindow()
   createTray()
-  registerIpc()
   registerVoiceGlobalShortcut()
 }
 
@@ -1077,6 +3143,15 @@ if (!app.requestSingleInstanceLock()) {
     migrateVoiceSettings()
     app.setLoginItemSettings({ openAtLogin: Boolean(getStore().get('autoLaunch')) })
     bootstrap()
+    syncFocusSessionContext()
+    screen.on('display-added', scheduleDisplayRecovery)
+    screen.on('display-removed', scheduleDisplayRecovery)
+    screen.on('display-metrics-changed', scheduleDisplayRecovery)
+    powerMonitor.on('resume', scheduleDisplayRecovery)
+    powerMonitor.on('resume', () => focusSessionController?.resume())
+    powerMonitor.on('resume', () => {
+      if (!reminderWakeupController?.wake()) requestPetReminderRefresh()
+    })
   })
 
   app.on('activate', () => {
@@ -1087,6 +3162,11 @@ if (!app.requestSingleInstanceLock()) {
 
   app.on('before-quit', () => {
     quitting = true
+    if (displayRecoveryTimer !== null) clearTimeout(displayRecoveryTimer)
+    displayRecoveryTimer = null
+    for (const persistence of boundsPersistence) persistence.flush()
+    focusSessionController?.dispose()
+    reminderWakeupController?.dispose()
   })
 
   app.on('will-quit', () => {
