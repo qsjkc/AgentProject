@@ -1,4 +1,4 @@
-import VERTC, { AudioProfileType, MediaType, StreamIndex } from '@volcengine/rtc'
+import { createVoiceStartGuard, loadVoiceSdk } from './voice-sdk-loader.js'
 
 import {
   createVoiceDemoSession,
@@ -29,10 +29,6 @@ function sleep(durationMs) {
   return new Promise((resolve) => {
     window.setTimeout(resolve, durationMs)
   })
-}
-
-function hasAudio(mediaType) {
-  return (Number(mediaType) & Number(MediaType.AUDIO)) === Number(MediaType.AUDIO)
 }
 
 function ensureHiddenAudioElement() {
@@ -66,6 +62,13 @@ function makeSessionNotActiveError() {
 }
 
 function buildDesktopVoiceSession(options = {}) {
+  const loadSdk = options.loadSdk || loadVoiceSdk
+  const startupGuard = createVoiceStartGuard()
+  let VERTC = null
+  let AudioProfileType = null
+  let MediaType = null
+  let StreamIndex = null
+  const hasAudio = (mediaType) => (Number(mediaType) & Number(MediaType.AUDIO)) === Number(MediaType.AUDIO)
   const callbacks = {
     onLog: options.onLog || (() => {}),
     onEvent: options.onEvent || (() => {}),
@@ -82,17 +85,19 @@ function buildDesktopVoiceSession(options = {}) {
   let settings = normalizeVoiceSettings(options.settings || DEFAULT_VOICE_SETTINGS)
   let engine = null
   let session = null
+  let sessionOperationContext = null
   let joined = false
-  let listening = false
   let localAudioCapturing = false
   let localAudioPublished = false
   let cleaningUp = null
   let starting = null
-  let destroyed = false
   let inactivityTimer = null
   let remoteAudioElement = ensureHiddenAudioElement()
   let currentSubtitleSequence = null
   let boundListeners = null
+  let pressToTalkTurnId = 0
+  let activePressToTalkTurn = null
+  const localAudioOperations = new WeakMap()
 
   const emitEvent = (event, details = {}) => {
     callbacks.onEvent(event, details)
@@ -403,107 +408,119 @@ function buildDesktopVoiceSession(options = {}) {
     stream.getTracks().forEach((track) => track.stop())
   }
 
-  const ensureActiveSession = async () => {
-    if (destroyed) {
-      throw new Error('桌宠语音会话已经销毁。')
-    }
-
-    if (joined && session?.sessionId) {
-      try {
-        const status = await getVoiceDemoSession(
-          session.sessionId,
-          await getOperationContext(),
-        )
-        if (status?.sessionActive && status?.state === 'active') {
-          resetInactivityTimer()
-          return { session, status, reused: true }
-        }
-      } catch (error) {
-        if (isVoiceAuthError(error)) {
-          throw error
-        }
-        emitEvent('voice:session-status-stale', {
-          sessionId: session?.sessionId ?? null,
-        })
+  const ensureActiveSession = () => {
+    if (starting) return starting
+    const generation = startupGuard.capture()
+    const assertCurrent = () => startupGuard.assertCurrent(generation)
+    const waitFor = (value) => startupGuard.waitFor(value, generation)
+    const request = (async () => {
+      // Capture the account before loading anything; never adopt a later login.
+      const operationContext = await waitFor(getOperationContext())
+      assertCurrent()
+      const petType = getPetType()
+      if (cleaningUp) {
+        await waitFor(cleaningUp)
+        assertCurrent()
       }
 
-      await shutdownVoiceSession({ reason: 'stale-session' })
-    }
+      if (joined && session?.sessionId) {
+        try {
+          const status = await waitFor(getVoiceDemoSession(session.sessionId, operationContext))
+          assertCurrent()
+          if (status?.sessionActive && status?.state === 'active') {
+            resetInactivityTimer()
+            return { session, status, reused: true, generation }
+          }
+        } catch (error) {
+          assertCurrent()
+          if (isVoiceAuthError(error)) throw error
+          emitEvent('voice:session-status-stale', { sessionId: session?.sessionId ?? null })
+        }
+        await waitFor(cleanupVoiceSession({ reason: 'stale-session' }))
+        assertCurrent()
+      }
 
-    if (starting) {
-      return starting
-    }
-
-    starting = (async () => {
       emitEvent('voice:session-create')
       try {
-        await ensureMicPermission()
+        await waitFor(ensureMicPermission())
+        assertCurrent()
       } catch (error) {
-        emitEvent('voice:mic-permission-error', {
-          message: formatVoiceError(error, '麦克风权限检查失败。'),
-        })
+        assertCurrent()
+        emitEvent('voice:mic-permission-error', { message: formatVoiceError(error, '麦克风权限检查失败。') })
         throw error
       }
 
-      if (!(await VERTC.isSupported())) {
-        throw new Error('当前环境不支持火山 RTC。')
-      }
+      const sdk = await waitFor(loadSdk())
+      assertCurrent()
+      VERTC = sdk.default
+      AudioProfileType = sdk.AudioProfileType
+      MediaType = sdk.MediaType
+      StreamIndex = sdk.StreamIndex
+      const supported = await waitFor(VERTC.isSupported())
+      assertCurrent()
+      if (!supported) throw new Error('当前环境不支持火山 RTC。')
 
-      const createdSession = await createVoiceDemoSession(
-        { pet_type: getPetType() },
-        await getOperationContext(),
-      )
+      const creatingSession = createVoiceDemoSession({ pet_type: petType }, operationContext)
+      let createdSession
+      try {
+        createdSession = await waitFor(creatingSession)
+        assertCurrent()
+      } catch (error) {
+        if (!startupGuard.isCurrent(generation)) {
+          // A server-side create can finish after cancellation. Stop only that
+          // old session with its original account capability, never a new login.
+          void creatingSession.then((created) => stopVoiceDemoSession(
+            created.sessionId, operationContext,
+          )).catch(() => undefined)
+        }
+        throw error
+      }
       session = createdSession
+      sessionOperationContext = operationContext
       currentSubtitleSequence = null
 
-      engine = VERTC.createEngine(createdSession.appId)
+      const startingEngine = VERTC.createEngine(createdSession.appId)
+      engine = startingEngine
       bindEngineListeners()
-
-      await engine.setAudioProfile(AudioProfileType.fluent)
-      await engine.joinRoom(
+      await waitFor(startingEngine.setAudioProfile(AudioProfileType.fluent))
+      assertCurrent()
+      await waitFor(startingEngine.joinRoom(
         createdSession.token,
         createdSession.roomId,
         { userId: createdSession.userId },
-        {
-          isAutoPublish: false,
-          isAutoSubscribeAudio: false,
-          isAutoSubscribeVideo: false,
-        },
-      )
+        { isAutoPublish: false, isAutoSubscribeAudio: false, isAutoSubscribeVideo: false },
+      ))
+      assertCurrent()
       joined = true
-      emitEvent('voice:rtc-join', {
-        roomId: createdSession.roomId,
-        userId: createdSession.userId,
-      })
-
+      emitEvent('voice:rtc-join', { roomId: createdSession.roomId, userId: createdSession.userId })
       localAudioCapturing = false
       localAudioPublished = false
       setCaptureVolume(IDLE_CAPTURE_VOLUME)
 
-      const startedSession = await startVoiceDemoSession(
-        createdSession.sessionId,
-        await getOperationContext(),
-      )
+      const startedSession = await waitFor(startVoiceDemoSession(createdSession.sessionId, operationContext))
+      assertCurrent()
       emitEvent('voice:session-start', {
         sessionId: createdSession.sessionId,
         state: startedSession?.state ?? createdSession.state ?? null,
       })
-
       resetInactivityTimer()
-      return {
-        session: createdSession,
-        status: startedSession,
-        reused: false,
+      return { session: createdSession, status: startedSession, reused: false, generation }
+    })().catch(async (error) => {
+      // Cancellation has already scheduled cleanup. Avoid cleaning a newer start.
+      if (startupGuard.isCurrent(generation)) {
+        await cleanupVoiceSession({ reason: 'start-failed' })
       }
-    })().finally(() => {
-      starting = null
+      throw error
+    }).finally(() => {
+      if (starting === request) starting = null
     })
-
-    return starting
+    starting = request
+    return request
   }
 
   async function enterVoiceMode() {
     const result = await ensureActiveSession()
+    startupGuard.assertCurrent(result.generation)
     resetInactivityTimer()
     return {
       sessionId: result.session.sessionId,
@@ -514,97 +531,133 @@ function buildDesktopVoiceSession(options = {}) {
     }
   }
 
-  async function startPressToTalk() {
-    const result = await ensureActiveSession()
-    if (!engine || !joined) {
-      throw new Error('语音连接尚未就绪。')
-    }
+  const isTurnSessionCurrent = (turn) => startupGuard.isCurrent(turn.generation)
+    && engine === turn.engine && session === turn.session && joined
 
+  const isPressToTalkTurnCurrent = (turn) => activePressToTalkTurn === turn
+    && pressToTalkTurnId === turn.id
+    && startupGuard.isCurrent(turn.generation)
+    && (!turn.engine || isTurnSessionCurrent(turn))
+
+  const cancelPressToTalkTurn = () => {
+    const turn = activePressToTalkTurn
+    pressToTalkTurnId += 1
+    activePressToTalkTurn = null
+    return turn
+  }
+
+  // Serialize only operations on the same RTC instance. A cancelled capture may
+  // still settle, but its cleanup must finish before a new turn uses that mic.
+  // A replacement session has a different queue and never adopts the old work.
+  const runLocalAudioOperation = (targetEngine, operation) => {
+    const previous = localAudioOperations.get(targetEngine) || Promise.resolve()
+    const request = previous.catch(() => undefined).then(operation)
+    localAudioOperations.set(targetEngine, request)
+    void request.finally(() => {
+      if (localAudioOperations.get(targetEngine) === request) localAudioOperations.delete(targetEngine)
+    }).catch(() => undefined)
+    return request
+  }
+
+  const releaseTurnAudio = async (turn) => {
     try {
-      listening = true
-      currentSubtitleSequence = null
-      if (!localAudioCapturing) {
-        await engine.startAudioCapture()
-        localAudioCapturing = true
-        emitEvent('voice:local-audio-start', {
-          mode: 'push-to-talk',
-        })
-      }
-      if (!localAudioPublished) {
-        await engine.publishStream(MediaType.AUDIO)
-        localAudioPublished = true
-        emitEvent('voice:local-audio-publish', {
-          mode: 'push-to-talk',
-        })
-      }
-      setCaptureVolume(ACTIVE_CAPTURE_VOLUME)
-      emitEvent('voice:key-down', {
-        sessionId: result.session.sessionId,
-      })
-      resetInactivityTimer()
-      return { accepted: true }
-    } catch (error) {
-      listening = false
+      turn.engine.setCaptureVolume(turn.streamIndex, IDLE_CAPTURE_VOLUME)
+    } catch {
+      // The original engine may already have been destroyed by shutdown.
+    }
+    if (turn.published) {
       try {
-        setCaptureVolume(IDLE_CAPTURE_VOLUME)
+        await turn.engine.unpublishStream(turn.mediaType)
       } catch {
         // best effort
+      } finally {
+        turn.published = false
+        if (isTurnSessionCurrent(turn)) localAudioPublished = false
       }
-      if (localAudioPublished) {
+    }
+    if (turn.capturing) {
+      try {
+        await turn.engine.stopAudioCapture()
+      } catch {
+        // best effort
+      } finally {
+        turn.capturing = false
+        if (isTurnSessionCurrent(turn)) localAudioCapturing = false
+      }
+    }
+  }
+
+  async function startPressToTalk() {
+    if (activePressToTalkTurn) return { accepted: false }
+    const turn = {
+      id: ++pressToTalkTurnId,
+      generation: startupGuard.capture(),
+      engine: null,
+      session: null,
+      capturing: false,
+      published: false,
+      activated: false,
+    }
+    // Register before checking status: key-up must also cancel a pending start.
+    activePressToTalkTurn = turn
+    try {
+      const result = await ensureActiveSession()
+      if (!isPressToTalkTurnCurrent(turn)) return { accepted: false }
+      if (!engine || !joined) throw new Error('语音连接尚未就绪。')
+      turn.engine = engine
+      turn.session = result.session
+      turn.mediaType = MediaType.AUDIO
+      turn.streamIndex = StreamIndex.STREAM_INDEX_MAIN
+
+      return await runLocalAudioOperation(turn.engine, async () => {
+        if (!isPressToTalkTurnCurrent(turn)) return { accepted: false }
         try {
-          await engine.unpublishStream(MediaType.AUDIO)
-        } catch {
-          // best effort
+          currentSubtitleSequence = null
+          // Even an SDK operation that rejects can have acquired resources.
+          turn.capturing = true
+          await turn.engine.startAudioCapture()
+          if (!isPressToTalkTurnCurrent(turn)) return { accepted: false }
+          localAudioCapturing = true
+          emitEvent('voice:local-audio-start', { mode: 'push-to-talk' })
+
+          turn.published = true
+          await turn.engine.publishStream(turn.mediaType)
+          if (!isPressToTalkTurnCurrent(turn)) return { accepted: false }
+          localAudioPublished = true
+          emitEvent('voice:local-audio-publish', { mode: 'push-to-talk' })
+          turn.engine.setCaptureVolume(turn.streamIndex, ACTIVE_CAPTURE_VOLUME)
+          turn.activated = true
+          emitEvent('voice:key-down', { sessionId: turn.session.sessionId })
+          resetInactivityTimer()
+          return { accepted: true }
         } finally {
-          localAudioPublished = false
+          if (!turn.activated) await releaseTurnAudio(turn)
         }
-      }
-      if (localAudioCapturing) {
-        try {
-          await engine.stopAudioCapture()
-        } catch {
-          // best effort
-        } finally {
-          localAudioCapturing = false
-        }
-      }
+      })
+    } catch (error) {
+      if (!isPressToTalkTurnCurrent(turn)) return { accepted: false }
+      cancelPressToTalkTurn()
       throw error
     }
   }
 
   async function stopPressToTalk() {
-    if (!engine || !joined || !listening) {
-      return { accepted: false }
-    }
+    const turn = cancelPressToTalkTurn()
+    if (!turn) return { accepted: false, hadAudio: false }
+    if (!turn.engine) return { accepted: true, hadAudio: false }
+    const hadAudio = turn.activated
 
-    listening = false
-    await sleep(POST_TALK_DRAIN_MS)
-    setCaptureVolume(IDLE_CAPTURE_VOLUME)
-    if (localAudioPublished) {
-      try {
-        await engine.unpublishStream(MediaType.AUDIO)
-      } finally {
-        localAudioPublished = false
-        emitEvent('voice:local-audio-unpublish', {
-          mode: 'push-to-talk',
-        })
+    return runLocalAudioOperation(turn.engine, async () => {
+      if (turn.activated && isTurnSessionCurrent(turn)) await sleep(POST_TALK_DRAIN_MS)
+      await releaseTurnAudio(turn)
+      if (isTurnSessionCurrent(turn)) {
+        emitEvent('voice:local-audio-unpublish', { mode: 'push-to-talk' })
+        emitEvent('voice:key-up', { sessionId: turn.session.sessionId })
+        emitEvent('voice:local-audio-stop', { mode: 'push-to-talk' })
+        resetInactivityTimer()
       }
-    }
-    if (localAudioCapturing) {
-      try {
-        await engine.stopAudioCapture()
-      } finally {
-        localAudioCapturing = false
-      }
-    }
-    emitEvent('voice:key-up', {
-      sessionId: session?.sessionId ?? null,
+      return { accepted: true, hadAudio }
     })
-    emitEvent('voice:local-audio-stop', {
-      mode: 'push-to-talk',
-    })
-    resetInactivityTimer()
-    return { accepted: true }
   }
 
   async function interruptVoiceReply() {
@@ -637,7 +690,14 @@ function buildDesktopVoiceSession(options = {}) {
     }
   }
 
-  async function shutdownVoiceSession(options = {}) {
+  function shutdownVoiceSession(options = {}) {
+    cancelPressToTalkTurn()
+    startupGuard.cancel()
+    starting = null
+    return cleanupVoiceSession(options)
+  }
+
+  async function cleanupVoiceSession(options = {}) {
     const { reason = 'manual' } = options
 
     if (cleaningUp) {
@@ -646,7 +706,6 @@ function buildDesktopVoiceSession(options = {}) {
 
     cleaningUp = (async () => {
       clearInactivityTimer()
-      listening = false
 
       if (engine && joined) {
         try {
@@ -660,7 +719,7 @@ function buildDesktopVoiceSession(options = {}) {
         try {
           const result = await stopVoiceDemoSession(
             session.sessionId,
-            await getOperationContext(),
+            sessionOperationContext,
           )
           emitEvent('voice:stop', {
             sessionId: session.sessionId,
@@ -723,6 +782,7 @@ function buildDesktopVoiceSession(options = {}) {
       clearRemoteAudio()
       const previousSessionId = session?.sessionId ?? null
       session = null
+      sessionOperationContext = null
       currentSubtitleSequence = null
       callbacks.onCleanup({
         reason,
@@ -749,7 +809,9 @@ function buildDesktopVoiceSession(options = {}) {
   }
 
   function destroy() {
-    destroyed = true
+    cancelPressToTalkTurn()
+    startupGuard.destroy()
+    starting = null
     clearInactivityTimer()
     clearRemoteAudio()
     if (remoteAudioElement?.id === HIDDEN_AUDIO_ID) {

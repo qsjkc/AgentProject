@@ -184,10 +184,11 @@ export function createStubFixture(now = new Date()) {
         ['dog', createRelationship(user, 'dog', now)],
       ]),
       sessions: [],
+      documents: [],
       reminders: [],
     })
   }
-  return { accounts, nextReminderId: 1, nextSessionId: 1, now }
+  return { accounts, nextReminderId: 1, nextSessionId: 1, nextDocumentId: 1, now }
 }
 
 export function mainProcessResetFixture(user = USERS.A) {

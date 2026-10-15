@@ -1,4 +1,18 @@
 import assert from 'node:assert/strict'
+import './window-bounds.test.mjs'
+import './focus-session.test.mjs'
+import './voice-auth.test.mjs'
+import './voice-rtc-loading.test.mjs'
+import './voice-session-cleanup.test.mjs'
+import './renderer-reliability.test.mjs'
+import './login-boundary.test.mjs'
+import './reminder-dst.test.mjs'
+import './reminder-weekly-clock.test.mjs'
+import './reminder-intent.test.mjs'
+import './reminder-relative.test.mjs'
+import './upcoming-reminders.test.mjs'
+import './pet-onboarding-timezone.test.mjs'
+import './reminder-schedule.test.mjs'
 
 import petMilestonePlaybackStore from '../electron/pet-milestone-playback-store.cjs'
 import petOnboardingBroadcast from '../electron/pet-onboarding-broadcast.cjs'
@@ -3634,6 +3648,84 @@ assert.equal(reboundCoordinator.acknowledge('reload-intent'), true)
 assert.equal(await reboundResult, true)
 assert.equal(reboundCoordinator.rebindPendingContext({ id: 'reload-cap-3' }), false)
 
+function createPendingContextRebindHarness() {
+  const state = createAuthoritativeOperationContextState()
+  const context = {
+    hasSession: true,
+    userId: 17,
+    petType: 'pig',
+    relationshipId: 29,
+    session: { token: 'rebind-session', generation: 1 },
+  }
+  const delivered = []
+  let nextId = 0
+  const coordinator = createMainPanelIntentCoordinator({
+    createId: () => `revision-intent-${++nextId}`,
+    scheduleTimeout: () => 1,
+    cancelTimeout: () => undefined,
+    validateContext: (snapshot) => state.validate(snapshot, context, 'relationship'),
+    deliver: (payload) => delivered.push(payload),
+  })
+  const capture = () => state.capture(context, 'relationship')
+  const initial = capture()
+  const result = coordinator.request('pet-onboarding-relationship', { context: initial })
+  return { state, context, coordinator, delivered, capture, initial, result }
+}
+
+// A ticket issued before a real relationship revision advances preserves only
+// that pending intent, and its replacement still needs a valid current context.
+const revisionRebind = createPendingContextRebindHarness()
+const revisionTicket = revisionRebind.coordinator.preparePendingContextRebind()
+assert.equal(typeof revisionTicket, 'function')
+revisionRebind.state.observe(revisionRebind.context, { forceRelationshipRevision: true })
+assert.equal(revisionRebind.state.validate(revisionRebind.initial, revisionRebind.context, 'relationship'), false)
+const refreshedIntentContext = revisionRebind.capture()
+assert.equal(revisionTicket(refreshedIntentContext), true)
+assert.equal(revisionTicket(refreshedIntentContext), false)
+assert.deepEqual(revisionRebind.delivered, [])
+revisionRebind.coordinator.markRendererReady()
+assert.equal(revisionRebind.delivered.length, 1)
+assert.equal(revisionRebind.delivered[0].authoritative, refreshedIntentContext)
+assert.equal(revisionRebind.coordinator.preparePendingContextRebind(), null)
+assert.equal(revisionRebind.coordinator.acknowledge('revision-intent-1'), true)
+assert.equal(await revisionRebind.result, true)
+assert.equal(revisionRebind.coordinator.preparePendingContextRebind(), null)
+
+const invalidOldRebind = createPendingContextRebindHarness()
+invalidOldRebind.state.observe(invalidOldRebind.context, { forceRelationshipRevision: true })
+assert.equal(invalidOldRebind.coordinator.preparePendingContextRebind(), null)
+invalidOldRebind.coordinator.failPending()
+assert.equal(await invalidOldRebind.result, false)
+
+const replacedRebind = createPendingContextRebindHarness()
+const replacedTicket = replacedRebind.coordinator.preparePendingContextRebind()
+const replacementContext = replacedRebind.capture()
+const replacementIntent = replacedRebind.coordinator.request('new-intent', { context: replacementContext })
+assert.equal(await replacedRebind.result, false)
+assert.equal(replacedTicket(replacementContext), false)
+replacedRebind.coordinator.markRendererReady()
+assert.equal(replacedRebind.delivered[0].id, 'revision-intent-2')
+assert.equal(replacedRebind.coordinator.acknowledge('revision-intent-2'), true)
+assert.equal(await replacementIntent, true)
+
+const deliveredRebind = createPendingContextRebindHarness()
+const deliveredTicket = deliveredRebind.coordinator.preparePendingContextRebind()
+deliveredRebind.coordinator.markRendererReady()
+assert.equal(deliveredTicket(deliveredRebind.capture()), false)
+// A refused ticket stays spent even if the renderer becomes unready again.
+deliveredRebind.coordinator.markRendererNotReady()
+assert.equal(deliveredTicket(deliveredRebind.capture()), false)
+deliveredRebind.coordinator.failPending()
+assert.equal(await deliveredRebind.result, false)
+
+const invalidNewRebind = createPendingContextRebindHarness()
+const invalidNewTicket = invalidNewRebind.coordinator.preparePendingContextRebind()
+invalidNewRebind.state.observe(invalidNewRebind.context, { forceRelationshipRevision: true })
+assert.equal(invalidNewTicket(invalidNewRebind.initial), false)
+assert.equal(invalidNewTicket(invalidNewRebind.capture()), false)
+invalidNewRebind.coordinator.failPending()
+assert.equal(await invalidNewRebind.result, false)
+
 const listenerEvents = []
 const listenerRegistry = createMainPanelIntentListenerRegistry({
   onReady: () => listenerEvents.push('ready'),
@@ -3941,4 +4033,36 @@ assert.deepEqual(takeoverEvents, [
   'clear:new-dom-intent',
 ])
 
+for (const [input, expectedMinute] of [
+  ['明天九点十五分提醒我开会', 15],
+  ['明天9点45分提醒我开会', 45],
+  ['明天九点零五分提醒我开会', 5],
+  ['明天九点五十九分提醒我开会', 59],
+  ['明天九点十分提醒我开会', 10],
+  ['明天九点二十分提醒我开会', 20],
+  ['明天9点00分提醒我开会', 0],
+  ['明天九点半提醒我开会', 30],
+  ['明天9:15提醒我开会', 15],
+]) {
+  const result = parseOneTimeReminder(input, fixedNow)
+  assert.equal(result.ok, true, input)
+  assert.equal(result.title, '开会', input)
+  assert.equal(result.remindAt.getTime(), new Date(2026, 6, 7, 9, expectedMinute).getTime(), input)
+}
+
+for (const input of [
+  '明天9点60分提醒我开会',
+  '明天九点六十分提醒我开会',
+  '明天9点100分提醒我开会',
+  '明天25点15分提醒我开会',
+]) {
+  const result = parseOneTimeReminder(input, fixedNow)
+  assert.equal(result.ok, false, input)
+  assert.equal(result.reason, 'missing_time', input)
+}
+
 console.log('desktop tests passed')
+
+import './reminder-wakeup.test.mjs'
+import './reminder-server-boundary.test.mjs'
+import './pet-animation-playback.test.mjs'

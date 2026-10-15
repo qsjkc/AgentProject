@@ -1,3 +1,6 @@
+import { runWithRequestDeadline } from './request-deadline.js'
+import { formatApiErrorDetail } from './api-error.js'
+
 function normalizePositiveInteger(value) {
   const number = Number(value)
   return Number.isInteger(number) && number > 0 ? number : null
@@ -85,7 +88,9 @@ export async function executeSessionBoundRequest({
   clearSessionSnapshot,
   renewOperationContext,
   validateOperationContext,
+  timeoutMs,
 }) {
+  let requestContext = operationContext ? { ...operationContext } : null
   const initiatingSnapshot = normalizeSessionSnapshot(
     operationContext?.session ?? await getSessionSnapshot(),
   )
@@ -100,16 +105,14 @@ export async function executeSessionBoundRequest({
     if (!isSessionSnapshotCurrent(initiatingSnapshot, await getSessionSnapshot())) {
       throw createAuthContextChangedError()
     }
-    if (
-      operationContext?.authoritative
-      && renewOperationContext
-      && !await renewOperationContext(operationContext)
-    ) {
-      throw createAuthContextChangedError()
+    if (requestContext?.authoritative && renewOperationContext) {
+      const renewed = await renewOperationContext(requestContext)
+      if (!renewed) throw createAuthContextChangedError()
+      if (renewed.id) requestContext = { ...requestContext, authoritative: renewed }
     }
     if (
       validateOperationContext
-      && !await validateOperationContext(operationContext)
+      && !await validateOperationContext(requestContext)
     ) {
       throw createAuthContextChangedError()
     }
@@ -125,30 +128,36 @@ export async function executeSessionBoundRequest({
     headers.set('Authorization', `Bearer ${initiatingSnapshot.token}`)
   }
 
-  const response = await fetchImpl(`${apiBaseUrl}${path}`, {
-    ...options,
-    headers,
-    cache: 'no-store',
-  })
-  await assertCurrent()
-  if (!response.ok) {
-    const payload = await response.json().catch(() => ({ detail: '请求失败' }))
+  return runWithRequestDeadline(async (signal) => {
+    const response = await fetchImpl(`${apiBaseUrl}${path}`, {
+      ...options,
+      headers,
+      cache: 'no-store',
+      signal,
+    })
+    signal.throwIfAborted()
     await assertCurrent()
-    if (response.status === 401 || response.status === 403) {
-      await clearSessionSnapshot?.(initiatingSnapshot).catch(() => undefined)
-      throw new Error('登录已过期，请重新登录。')
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({ detail: '请求失败' }))
+      signal.throwIfAborted()
+      await assertCurrent()
+      if (response.status === 401) {
+        await clearSessionSnapshot?.(initiatingSnapshot).catch(() => undefined)
+        throw new Error('登录已过期，请重新登录。')
+      }
+      const error = new Error(formatApiErrorDetail(payload.detail))
+      error.status = response.status
+      error.detail = payload.detail
+      throw error
     }
-    const error = new Error(payload.detail || '请求失败')
-    error.status = response.status
-    error.detail = payload.detail
-    throw error
-  }
-  if (response.status === 204) {
-    return null
-  }
-  const payload = await response.json()
-  await assertCurrent()
-  return payload
+    if (response.status === 204) {
+      return null
+    }
+    const payload = await response.json()
+    signal.throwIfAborted()
+    await assertCurrent()
+    return payload
+  }, { signal: options.signal, timeoutMs })
 }
 
 export function createPetAccountContextKey({ hasSession, userId, petType } = {}) {

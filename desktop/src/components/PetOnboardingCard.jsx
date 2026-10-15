@@ -34,8 +34,8 @@ function getSceneCopy(language, scene, relationship) {
     return {
       title: isChinese ? '我记住了' : 'I remembered',
       body: isChinese
-        ? '一分钟后我会来提醒。到时喝完水点一下完成，我就知道这件事收尾了。'
-        : 'I will remind you in one minute. When you are done, mark it complete so I know it is wrapped up.',
+        ? '这条提醒已经记下。事项完成后点一下完成，我就知道这件事收尾了。'
+        : 'Your reminder is saved. When the task is done, mark it complete so I know it is wrapped up.',
     }
   }
 

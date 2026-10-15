@@ -68,6 +68,31 @@ function normalizeTimestamp(value) {
   return date ? date.toISOString() : null
 }
 
+function normalizeRelationshipTimestamp(value) {
+  if (typeof value !== 'string') {
+    return normalizeTimestamp(value)
+  }
+  // The backend emits naive UTC for relationship.created_at. Apply that
+  // contract only to this API field, not to local clock inputs or store state.
+  const parts = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(\.\d{1,9})?(Z|[+-]\d{2}:\d{2})?$/i.exec(value.trim())
+  if (!parts) {
+    return null
+  }
+  const [, year, month, day, hour, minute, second, fraction = '', zone = 'Z'] = parts
+  const wallTime = `${year}-${month}-${day}T${hour}:${minute}:${second}${fraction}`
+  // Date.parse silently normalizes some invalid dates, such as February 30.
+  // Validate the written calendar fields before applying an explicit offset.
+  const calendar = new Date(`${wallTime}Z`)
+  const actualParts = [
+    calendar.getUTCFullYear(), calendar.getUTCMonth() + 1, calendar.getUTCDate(),
+    calendar.getUTCHours(), calendar.getUTCMinutes(), calendar.getUTCSeconds(),
+  ]
+  if (!actualParts.every((part, index) => part === Number(parts[index + 1]))) {
+    return null
+  }
+  return normalizeTimestamp(`${wallTime}${zone}`)
+}
+
 function getNow(now = new Date()) {
   const date = parseDate(now)
   if (!date) {
@@ -197,7 +222,7 @@ function normalizePetOnboardingContext(value) {
     relationship_level: normalizePositiveInteger(
       value.relationship_level ?? value.relationshipLevel ?? value.relationship?.level,
     ),
-    relationship_created_at: normalizeTimestamp(
+    relationship_created_at: normalizeRelationshipTimestamp(
       value.relationship_created_at
         ?? value.relationshipCreatedAt
         ?? value.relationship?.created_at,

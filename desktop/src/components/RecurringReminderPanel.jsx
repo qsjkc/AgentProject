@@ -13,17 +13,12 @@ import {
   pauseReminderSeries,
   resumeReminderSeries,
 } from '../shared/reminders-api'
-import {
-  createAccountOperationGate,
-  runAccountOperation,
-} from '../shared/pet-account-context'
+import { runAccountOperation } from '../shared/pet-account-context'
+import { createReminderPanelOperations } from '../shared/reminder-panel-operations'
+import { formatReminderSeriesSchedule } from '../shared/reminder-schedule'
 import { captureApiOperationContext } from '../shared/api'
 
 const REFRESH_INTERVAL_MS = 30000
-const WEEKDAYS = {
-  'zh-CN': ['周一', '周二', '周三', '周四', '周五', '周六', '周日'],
-  en: ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'],
-}
 
 function getCopy(language) {
   if (language === 'zh-CN') {
@@ -36,6 +31,7 @@ function getCopy(language) {
       weekdays: '工作日',
       weekly: '每周',
       refresh: '刷新重复提醒',
+      loading: '正在查看重复提醒…',
       pause: (title) => `暂停：${title}`,
       resume: (title) => `恢复：${title}`,
       cancel: (title) => `终止：${title}`,
@@ -53,6 +49,7 @@ function getCopy(language) {
     weekdays: 'Weekdays',
     weekly: 'Weekly',
     refresh: 'Refresh recurring reminders',
+    loading: 'Checking recurring reminders…',
     pause: (title) => `Pause: ${title}`,
     resume: (title) => `Resume: ${title}`,
     cancel: (title) => `End: ${title}`,
@@ -62,41 +59,26 @@ function getCopy(language) {
   }
 }
 
-function formatSchedule(series, language, copy) {
-  const time = `${String(series.local_hour).padStart(2, '0')}:${String(series.local_minute).padStart(2, '0')}`
-  if (series.recurrence_type === 'daily') {
-    return `${copy.daily} ${time}`
-  }
-  if (series.recurrence_type === 'weekdays') {
-    return `${copy.weekdays} ${time}`
-  }
-  const locale = language === 'zh-CN' ? 'zh-CN' : 'en'
-  const weekday = WEEKDAYS[locale][series.weekdays?.[0]] || copy.weekly
-  return language === 'zh-CN'
-    ? `每${weekday} ${time}`
-    : `Every ${weekday} ${time}`
-}
-
 export function RecurringReminderPanel({ language, petType, accountContext, onUpdated }) {
   const [seriesItems, setSeriesItems] = useState([])
   const [loading, setLoading] = useState(true)
   const [savingId, setSavingId] = useState(null)
   const [error, setError] = useState('')
   const currentContextRef = useRef(accountContext)
-  const loadGateRef = useRef(null)
-  const actionGateRef = useRef(null)
-  if (!loadGateRef.current) loadGateRef.current = createAccountOperationGate()
-  if (!actionGateRef.current) actionGateRef.current = createAccountOperationGate()
+  const operationsRef = useRef(null)
+  if (!operationsRef.current) operationsRef.current = createReminderPanelOperations()
+  const { loadGate, actionGate } = operationsRef.current
   currentContextRef.current = accountContext
   const copy = getCopy(language)
 
   const loadSeries = useCallback(async ({ silent = false } = {}) => {
-    const requestContext = loadGateRef.current.begin(currentContextRef.current)
+    const requestContext = operationsRef.current.beginLoad(currentContextRef.current)
+    if (!requestContext) return
     if (!silent) {
       setLoading(true)
     }
     await runAccountOperation({
-      gate: loadGateRef.current,
+      gate: loadGate,
       requestContext,
       getCurrentContext: () => currentContextRef.current,
       operation: async () => getReminderSeries(
@@ -108,16 +90,16 @@ export function RecurringReminderPanel({ language, petType, accountContext, onUp
         setError('')
       },
       onError: () => setError(copy.loadFailed),
-      onFinally: () => {
-        if (!silent) setLoading(false)
-      },
+      onFinally: () => setLoading(false),
     })
+    operationsRef.current.finishLoad(requestContext)
   }, [
     accountContext?.session?.generation,
     accountContext?.session?.token,
     accountContext?.userId,
     accountContext?.epoch,
     copy.loadFailed,
+    loadGate,
     petType,
   ])
 
@@ -137,8 +119,7 @@ export function RecurringReminderPanel({ language, petType, accountContext, onUp
   }, [loadSeries])
 
   useEffect(() => () => {
-    loadGateRef.current.invalidate()
-    actionGateRef.current.invalidate()
+    operationsRef.current.invalidate()
   }, [
     accountContext?.session?.generation,
     accountContext?.session?.token,
@@ -151,11 +132,13 @@ export function RecurringReminderPanel({ language, petType, accountContext, onUp
     if (savingId !== null) {
       return
     }
+    const requestContext = operationsRef.current.beginAction(currentContextRef.current)
+    if (!requestContext) return
+    setLoading(false)
     setSavingId(series.id)
     setError('')
-    const requestContext = actionGateRef.current.begin(accountContext)
     await runAccountOperation({
-      gate: actionGateRef.current,
+      gate: actionGate,
       requestContext,
       getCurrentContext: () => currentContextRef.current,
       operation: async () => action(
@@ -173,6 +156,7 @@ export function RecurringReminderPanel({ language, petType, accountContext, onUp
       onError: () => setError(copy.updateFailed),
       onFinally: () => setSavingId(null),
     })
+    operationsRef.current.finishAction(requestContext)
   }
 
   const handleCancel = (series) => {
@@ -194,7 +178,7 @@ export function RecurringReminderPanel({ language, petType, accountContext, onUp
           className="pending-reminder-icon-button"
           title={copy.refresh}
           aria-label={copy.refresh}
-          disabled={loading}
+          disabled={loading || savingId !== null}
           onClick={() => {
             void loadSeries()
           }}
@@ -202,6 +186,7 @@ export function RecurringReminderPanel({ language, petType, accountContext, onUp
           <RefreshCw size={15} aria-hidden="true" />
         </button>
       </div>
+      {loading && <div className="pending-reminder-empty" role="status">{copy.loading}</div>}
       {error && <div className="pending-reminder-error" role="status">{error}</div>}
       {!loading && seriesItems.length === 0 && !error && (
         <div className="pending-reminder-empty">{copy.empty}</div>
@@ -211,11 +196,11 @@ export function RecurringReminderPanel({ language, petType, accountContext, onUp
           {seriesItems.map((series) => {
             const isPaused = series.status === 'paused'
             return (
-              <div className="recurring-reminder-item" key={series.id}>
+              <div className="recurring-reminder-item" key={series.id} aria-busy={savingId === series.id}>
                 <div className="pending-reminder-copy">
                   <div className="pending-reminder-title">{series.title}</div>
                   <div className="recurring-reminder-schedule">
-                    {formatSchedule(series, language, copy)}
+                    {formatReminderSeriesSchedule(series, language, copy)}
                     <span className={isPaused ? 'is-paused' : 'is-active'}>
                       {isPaused ? copy.paused : copy.active}
                     </span>

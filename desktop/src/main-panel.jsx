@@ -1,13 +1,20 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import ReactDOM from 'react-dom/client'
+import { MessageCircle, Minus, Plus, Settings2, Sprout, X } from 'lucide-react'
 
 import './desktop.css'
+import './main-panel.css'
 import { PetOnboardingCard } from './components/PetOnboardingCard'
 import { PendingReminderPanel } from './components/PendingReminderPanel'
 import { RecurringReminderPanel } from './components/RecurringReminderPanel'
 import { PetOutfitPanel } from './components/PetOutfitPanel'
+import { PetWeeklySummaryPanel } from './components/PetWeeklySummaryPanel'
+import { FocusSessionPanel } from './components/FocusSessionPanel'
+import { ChatMessageStream } from './components/ChatMessageStream'
 import {
   checkApiConnection,
+  beginLoginAttempt,
+  cancelLoginAttempt,
   captureApiOperationContext,
   assertApiOperationContextCurrent,
   clearSessionToken,
@@ -34,6 +41,7 @@ import {
   normalizeCompanionState,
 } from './shared/pet-companion'
 import { normalizeLanguage, SUPPORTED_LANGUAGES, t } from './shared/i18n'
+import { restoreFailedChatDraft, shouldSubmitChatInput } from './shared/chat-input'
 import { getPetReminderCopy } from './shared/pet-personality'
 import {
   createRewardIdempotencyKey,
@@ -43,12 +51,15 @@ import {
 import {
   commitAccountOperation,
   createAccountOperationGate,
+  createLocalOperationContext,
   adoptRelationshipCapability,
   createMainPanelRelationshipNullReset,
   isPetAccountOperationCurrent,
   isSessionSnapshotCurrent,
+  runAccountOperation,
 } from './shared/pet-account-context'
 import { createMainPanelIntentConsumerController } from './shared/main-panel-intent-controller'
+import { createLoginOperations } from './shared/login-operations'
 import {
   getPetDailySummaryHighlights,
   getPetDailySummaryMessage,
@@ -74,6 +85,7 @@ import {
   unwrapPetOnboardingStateResponse,
 } from './shared/pet-onboarding-main'
 import { parseReminder } from './shared/reminder-parser'
+import { getReminderParseFeedback } from './shared/reminder-feedback'
 import {
   getBrowserTimeZone,
   getReminderRecurrenceLabel,
@@ -104,10 +116,10 @@ async function logDesktopDebug(payload) {
   }
 }
 
-function LanguageSelector({ language, onChange }) {
+function LanguageSelector({ language, onChange, compact = false }) {
   return (
-    <label style={{ display: 'grid', gap: 6, minWidth: 164 }}>
-      <span style={{ fontSize: 12, color: '#64748b', letterSpacing: '0.14em', textTransform: 'uppercase' }}>
+    <label className={compact ? 'main-header-language' : undefined} style={compact ? undefined : { display: 'grid', gap: 6, minWidth: 164 }}>
+      <span className={compact ? 'main-visually-hidden' : undefined} style={compact ? undefined : { fontSize: 12, color: '#64748b', letterSpacing: '0.14em', textTransform: 'uppercase' }}>
         {t(language, 'language')}
       </span>
       <select className="select" value={language} onChange={(event) => onChange(event.target.value)}>
@@ -242,87 +254,163 @@ function LoginView({
   const [loading, setLoading] = useState(false)
   const [testing, setTesting] = useState(false)
   const [error, setError] = useState('')
+  const formRef = useRef(null)
+  const [operations] = useState(() => createLoginOperations(cancelLoginAttempt))
+
+  useEffect(() => {
+    operations.mount()
+    return () => operations.unmount()
+  }, [operations])
+
+  const validateFields = (includeCredentials) => {
+    const fields = [
+      { name: 'server', value: apiBaseUrl.trim(), message: language === 'zh-CN' ? '请输入服务地址。' : 'Enter a service address.' },
+      ...(includeCredentials ? [
+        { name: 'username', value: username.trim(), message: language === 'zh-CN' ? '请输入用户名或邮箱。' : 'Enter your username or email.' },
+        { name: 'password', value: password, message: language === 'zh-CN' ? '请输入密码。' : 'Enter your password.' },
+      ] : []),
+    ]
+    const invalidField = fields.find((field) => !field.value)
+    if (!invalidField) return true
+    setError(invalidField.message)
+    formRef.current?.elements.namedItem(invalidField.name)?.focus()
+    return false
+  }
 
   const handleTestConnection = async () => {
+    if (!validateFields(false)) return
+    const operation = operations.begin()
+    if (!operation) return
     setTesting(true)
     setError('')
     try {
-      await onSaveApiBaseUrl()
+      await onSaveApiBaseUrl(apiBaseUrl, operation)
     } catch (connectionError) {
-      setError(formatError(connectionError, t(language, 'unableToReachService')))
+      if (operation.isCurrent()) setError(formatError(connectionError, t(language, 'unableToReachService')))
     } finally {
-      setTesting(false)
+      if (operation.isCurrent()) setTesting(false)
+      operation.finish()
     }
   }
 
   const handleSubmit = async (event) => {
     event.preventDefault()
+    if (!validateFields(true)) return
+    const operation = operations.begin()
+    if (!operation) return
     setLoading(true)
     setError('')
 
     try {
-      await onSaveApiBaseUrl()
-      await login(username, password)
+      const attempt = await onSaveApiBaseUrl(apiBaseUrl, operation)
+      operation.assertCurrent()
+      const receipt = await login(username, password, { attempt, isCurrent: operation.isCurrent, signal: operation.signal })
+      operation.assertCurrent()
       await window.desktopBridge?.showNotification?.({
         title: t(language, 'appName'),
         body: t(language, 'desktopClientLoginSucceeded'),
+        loginSession: receipt.session,
+        loginServer: receipt.server,
       })
-      await onLoggedIn()
+      operation.assertCurrent()
+      await onLoggedIn(receipt)
     } catch (loginError) {
-      setError(formatError(loginError, t(language, 'loginFailed')))
+      if (operation.isCurrent()) setError(formatError(loginError, t(language, 'loginFailed')))
     } finally {
-      setLoading(false)
+      if (operation.isCurrent()) setLoading(false)
+      operation.finish()
     }
   }
 
   return (
-    <div className="window-shell" style={{ display: 'grid', placeItems: 'center' }}>
-      <div className="panel" style={{ width: 560, padding: 28 }}>
-        <div className="toolbar" style={{ alignItems: 'flex-start' }}>
-          <div>
-            <div style={{ fontSize: 12, letterSpacing: '0.24em', textTransform: 'uppercase', color: '#64748b' }}>
-              {t(language, 'desktopAccess')}
-            </div>
-            <div style={{ marginTop: 16, fontSize: 36, fontWeight: 700 }}>{t(language, 'desktopTitle')}</div>
-          </div>
-          <LanguageSelector language={language} onChange={onLanguageChange} />
+    <div className="window-shell desktop-login">
+      <header className="desktop-login-windowbar">
+        <span>Detachym</span>
+        <div className="window-titlebar-actions">
+          <button type="button" className="main-header-icon" data-e2e="login-minimize" title={t(language, 'minimizeWindow')} aria-label={t(language, 'minimizeWindow')} onClick={() => void window.desktopBridge?.minimizeMainPanel?.()}>
+            <Minus size={17} aria-hidden="true" />
+          </button>
+          <button type="button" className="main-header-icon" data-e2e="login-hide" title={t(language, 'hideWindow')} aria-label={t(language, 'hideWindow')} onClick={() => void window.desktopBridge?.hideMainPanel?.()}>
+            <X size={17} aria-hidden="true" />
+          </button>
         </div>
-        <p style={{ marginTop: 12, color: '#475569', lineHeight: 1.8 }}>{t(language, 'desktopIntro')}</p>
+      </header>
+      <main className="panel desktop-login-card">
+        <div className="desktop-login-meta">
+          <span>{t(language, 'desktopAccess')}</span>
+          <LanguageSelector language={language} onChange={onLanguageChange} compact />
+        </div>
+        <div className="desktop-login-brand">
+          <img src={getPetVisual('pig', 'happy').image} alt="" />
+          <h1>{t(language, 'desktopTitle')}</h1>
+        </div>
+        <p className="desktop-login-intro">{t(language, 'desktopIntro')}</p>
 
-        <form onSubmit={handleSubmit} style={{ display: 'grid', gap: 14, marginTop: 24 }}>
-          <input
-            className="input"
-            data-e2e="login-api-base-url"
-            value={apiBaseUrl}
-            onChange={(event) => onApiBaseUrlChange(event.target.value)}
-            placeholder={t(language, 'serverUrlPlaceholder')}
-          />
-          <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-            <button className="button-secondary" type="button" onClick={handleTestConnection} disabled={testing || loading}>
-              {testing ? t(language, 'testing') : t(language, 'testConnection')}
-            </button>
+        <form ref={formRef} onSubmit={handleSubmit}>
+          <div className="desktop-login-field">
+            <label htmlFor="desktop-login-server">{language === 'zh-CN' ? '服务地址' : 'Service address'}</label>
+            <div className="desktop-login-server-row">
+              <input
+                id="desktop-login-server"
+                name="server"
+                autoComplete="off"
+                required
+                aria-describedby={error || statusText ? 'desktop-login-feedback' : undefined}
+                className="input"
+                data-e2e="login-api-base-url"
+                disabled={testing || loading}
+                value={apiBaseUrl}
+                onChange={(event) => onApiBaseUrlChange(event.target.value)}
+                placeholder={t(language, 'serverUrlPlaceholder')}
+              />
+              <button className="button-secondary" data-e2e="login-test-connection" type="button" onClick={handleTestConnection} disabled={testing || loading}>
+                {testing ? t(language, 'testing') : t(language, 'testConnection')}
+              </button>
+            </div>
           </div>
-          <input
-            className="input"
-            data-e2e="login-username"
-            value={username}
-            onChange={(event) => setUsername(event.target.value)}
-            placeholder={t(language, 'usernameOrEmail')}
-          />
-          <input
-            className="input"
-            data-e2e="login-password"
-            type="password"
-            value={password}
-            onChange={(event) => setPassword(event.target.value)}
-            placeholder={t(language, 'password')}
-          />
-          {(error || statusText) && <div style={{ color: error ? '#be123c' : '#475569', fontSize: 14 }}>{error || statusText}</div>}
-          <button className="button-primary" data-e2e="login-submit" type="submit" disabled={loading}>
+          <div className="desktop-login-field">
+            <label htmlFor="desktop-login-username">{t(language, 'usernameOrEmail')}</label>
+            <input
+              id="desktop-login-username"
+              name="username"
+              autoComplete="username"
+              required
+              aria-describedby={error || statusText ? 'desktop-login-feedback' : undefined}
+              className="input"
+              data-e2e="login-username"
+              disabled={testing || loading}
+              value={username}
+              onChange={(event) => setUsername(event.target.value)}
+              placeholder={t(language, 'usernameOrEmail')}
+            />
+          </div>
+          <div className="desktop-login-field">
+            <label htmlFor="desktop-login-password">{t(language, 'password')}</label>
+            <input
+              id="desktop-login-password"
+              name="password"
+              autoComplete="current-password"
+              required
+              aria-describedby={error || statusText ? 'desktop-login-feedback' : undefined}
+              className="input"
+              data-e2e="login-password"
+              disabled={testing || loading}
+              type="password"
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+              placeholder={t(language, 'password')}
+            />
+          </div>
+          {(error || statusText) && (
+            <div id="desktop-login-feedback" role={error ? 'alert' : 'status'} aria-live={error ? 'assertive' : 'polite'} aria-atomic="true" style={{ color: error ? '#be123c' : '#475569', fontSize: 14 }}>
+              {error || statusText}
+            </div>
+          )}
+          <button className="button-primary" data-e2e="login-submit" type="submit" disabled={testing || loading}>
             {loading ? t(language, 'signingIn') : t(language, 'signIn')}
           </button>
         </form>
-      </div>
+      </main>
     </div>
   )
 }
@@ -558,14 +646,26 @@ function MainPanelApp() {
   const [tab, setTab] = useState('chat')
   const [sessions, setSessions] = useState([])
   const [activeSessionId, setActiveSessionId] = useState(null)
+  const conversationRef = useRef({ sessionId: null, selecting: false, pending: new Map(), revision: 0 })
+  const updateActiveSessionId = (sessionId) => {
+    conversationRef.current.sessionId = sessionId
+    setActiveSessionId(sessionId)
+  }
   const [messages, setMessages] = useState([])
   const [prompt, setPrompt] = useState('')
+  const [reminderDraftError, setReminderDraftError] = useState(null)
+  const promptInputRef = useRef(null)
   const [useRag, setUseRag] = useState(true)
   const [documents, setDocuments] = useState([])
+  const [knowledgeBusy, setKnowledgeBusy] = useState(false)
+  const knowledgeMutationRef = useRef(null)
+  const knowledgeFileRef = useRef(null)
   const [statusText, setStatusText] = useState('')
   const [knowledgeStatusText, setKnowledgeStatusText] = useState('')
   const [knowledgeSources, setKnowledgeSources] = useState([])
   const [loading, setLoading] = useState(false)
+  const [selectingSession, setSelectingSession] = useState(false)
+  const [newChatVersion, setNewChatVersion] = useState(0)
   const [savingPet, setSavingPet] = useState(false)
   const [savingOutfit, setSavingOutfit] = useState(false)
   const [savingVoiceSettings, setSavingVoiceSettings] = useState(false)
@@ -577,6 +677,8 @@ function MainPanelApp() {
   const [companionState, setCompanionState] = useState(DEFAULT_COMPANION_STATE)
   const [petRelationship, setPetRelationship] = useState(null)
   const [petRelationshipLoading, setPetRelationshipLoading] = useState(false)
+  const [petRelationshipError, setPetRelationshipError] = useState(false)
+  const [readyRelationshipContext, setReadyRelationshipContext] = useState(null)
   const [petDailySummary, setPetDailySummary] = useState(null)
   const [petDailySummaryLoading, setPetDailySummaryLoading] = useState(false)
   const [petOnboardingState, setPetOnboardingState] = useState(null)
@@ -585,6 +687,8 @@ function MainPanelApp() {
   const [documentVisible, setDocumentVisible] = useState(document.visibilityState === 'visible')
   const [onboardingClock, setOnboardingClock] = useState(() => Date.now())
   const [intentOverride, setIntentOverride] = useState(null)
+  const [focusNavigationVersion, setFocusNavigationVersion] = useState(0)
+  const pendingFocusNavigationRef = useRef(false)
   const tabRef = useRef('chat')
   const intentOverrideRef = useRef(null)
   const intentConsumerRef = useRef(null)
@@ -595,10 +699,12 @@ function MainPanelApp() {
   const activeSessionSnapshotRef = useRef(null)
   const activeAuthoritativeContextRef = useRef(null)
   const knowledgeSelectGateRef = useRef(null)
+  const sessionListGateRef = useRef(null)
   const knowledgeUploadGateRef = useRef(null)
   const knowledgeDeleteGateRef = useRef(null)
   const companionLoadGateRef = useRef(null)
   if (!knowledgeSelectGateRef.current) knowledgeSelectGateRef.current = createAccountOperationGate()
+  if (!sessionListGateRef.current) sessionListGateRef.current = createAccountOperationGate()
   if (!knowledgeUploadGateRef.current) knowledgeUploadGateRef.current = createAccountOperationGate()
   if (!knowledgeDeleteGateRef.current) knowledgeDeleteGateRef.current = createAccountOperationGate()
   if (!companionLoadGateRef.current) companionLoadGateRef.current = createAccountOperationGate()
@@ -622,6 +728,8 @@ function MainPanelApp() {
     [sessions, activeSessionId],
   )
   const currentPetType = user?.preferences?.pet_type ?? 'cat'
+  const reminderDraftFeedback = getReminderParseFeedback(reminderDraftError, language)
+  useEffect(() => { setReminderDraftError(null) }, [prompt, currentPetType, activeSessionId])
   const currentPetLabel = useMemo(() => t(language, getPetVisual(currentPetType, 'idle').labelKey), [currentPetType, language])
   const petOnboardingContextKey = useMemo(() => createPetOnboardingContextKey({
     userId: user?.id,
@@ -646,6 +754,31 @@ function MainPanelApp() {
     && Number(intentOverride.semantic?.relationshipId) === Number(petRelationship?.id)
   )
   const effectiveTab = intentOverrideIsCurrent ? 'chat' : tab
+  const petDataReady = Boolean(
+    authenticated
+    && readyRelationshipContext
+    && readyRelationshipContext.epoch === accountRequestEpochRef.current
+    && Number(readyRelationshipContext.userId) === Number(user?.id)
+    && readyRelationshipContext.petType === currentPetType
+    && isSessionSnapshotCurrent(readyRelationshipContext.session, activeSessionSnapshotRef.current)
+  )
+
+  useEffect(() => {
+    if (!pendingFocusNavigationRef.current || !authenticated || effectiveTab !== 'chat' || currentPetType !== 'pig') return undefined
+    const frame = window.requestAnimationFrame(() => {
+      const target = document.querySelector('[data-e2e="focus-panel"]')
+        || document.querySelector('[data-e2e="companion-sync-retry"]')
+      if (!target) return
+      pendingFocusNavigationRef.current = false
+      target.scrollIntoView({ block: 'center', behavior: 'auto' })
+      target.focus({ preventScroll: true })
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [authenticated, currentPetType, effectiveTab, focusNavigationVersion, petDataReady, petRelationshipError])
+
+  useEffect(() => {
+    pendingFocusNavigationRef.current = false
+  }, [authenticated, currentPetType, user?.id])
 
   useEffect(() => window.desktopBridge?.e2e?.onSnapshot?.(() => ({
     authenticated: authenticatedRef.current,
@@ -847,17 +980,30 @@ function MainPanelApp() {
     const requestContext = {
       ...getCurrentMainPanelAccountContext(),
       petType,
+      // The destination relationship is what this request discovers. During a
+      // pet switch React may still hold the previous pet's relationship id.
+      relationshipId: null,
       epoch: accountRequestEpochRef.current,
       session: activeSessionSnapshotRef.current,
     }
     setPetRelationshipLoading(true)
+    setPetRelationshipError(false)
 
     let cachedRelationship = null
     try {
+      const operationContext = await captureApiOperationContext(requestContext, 'pet')
+      if (
+        relationshipRequestRef.current !== requestId
+        || !isMainPanelAccountRequestCurrent(requestContext)
+      ) return false
       cachedRelationship = normalizePetRelationship(
-        await window.desktopBridge?.getCachedPetRelationship?.(petType, requestContext),
+        await window.desktopBridge?.getCachedPetRelationship?.(petType, operationContext),
         petType,
       )
+      if (
+        relationshipRequestRef.current !== requestId
+        || !isMainPanelAccountRequestCurrent(requestContext)
+      ) return false
       if (
         cachedRelationship
         && relationshipRequestRef.current === requestId
@@ -867,42 +1013,52 @@ function MainPanelApp() {
         setPetRelationship(cachedRelationship)
       }
 
-      const remoteRelationship = await getPetRelationship(petType, requestContext)
+      const remoteRelationship = await getPetRelationship(petType, operationContext)
       if (
         relationshipRequestRef.current !== requestId
         || !isMainPanelAccountRequestCurrent(requestContext)
-        || Number(remoteRelationship?.user_id) !== Number(requestContext.userId)
-        || remoteRelationship?.pet_type !== requestContext.petType
       ) {
-        return
+        return false
       }
+      if (
+        Number(remoteRelationship?.user_id) !== Number(requestContext.userId)
+        || remoteRelationship?.pet_type !== requestContext.petType
+      ) throw new Error('relationship_context_mismatch')
       setPetRelationship(remoteRelationship)
       const cacheResult = await window.desktopBridge?.cachePetRelationship?.(
         remoteRelationship,
-        requestContext,
+        operationContext,
       )
-      if (!cacheResult?.ok || !isMainPanelAccountRequestCurrent(requestContext)) {
-        return
+      if (
+        relationshipRequestRef.current !== requestId
+        || !isMainPanelAccountRequestCurrent(requestContext)
+      ) {
+        return false
       }
       if (
-        !cacheResult.authoritative
+        !cacheResult?.ok
+        || !cacheResult.authoritative
         || Number(cacheResult.relationship?.id) !== Number(remoteRelationship.id)
         || Number(cacheResult.relationship?.user_id) !== Number(requestContext.userId)
-      ) return
+      ) throw new Error('relationship_cache_unavailable')
       activeAuthoritativeContextRef.current = cacheResult.authoritative
+      setReadyRelationshipContext(requestContext)
+      setPetRelationshipError(false)
+      return true
     } catch (error) {
       if (
-        !cachedRelationship
-        && relationshipRequestRef.current === requestId
+        relationshipRequestRef.current === requestId
         && isMainPanelAccountRequestCurrent(requestContext)
       ) {
-        setPetRelationship(null)
+        if (!cachedRelationship) setPetRelationship(null)
+        setPetRelationshipError(true)
       }
       await logDesktopDebug({
         event: 'main-panel-relationship-load-failed',
         petType,
         reason: error instanceof Error ? error.message : String(error),
       })
+      return false
     } finally {
       if (
         relationshipRequestRef.current === requestId
@@ -957,10 +1113,17 @@ function MainPanelApp() {
     }
   }
 
-  const loadDashboard = async () => {
+  const loadDashboard = async (loginReceipt = null) => {
+    if (loginReceipt && (
+      !isSessionSnapshotCurrent(loginReceipt.session, await getSessionSnapshot())
+      || loginReceipt.server !== await getApiBaseUrl()
+    )) return false
     const requestEpoch = accountRequestEpochRef.current + 1
     accountRequestEpochRef.current = requestEpoch
-    const operationContext = await captureApiOperationContext({ epoch: requestEpoch }, 'account')
+    const operationContext = await captureApiOperationContext({
+      epoch: requestEpoch,
+      ...(loginReceipt ? { session: loginReceipt.session, server: loginReceipt.server } : {}),
+    }, 'account')
     const expectedToken = operationContext?.session?.token
     if (!expectedToken) {
       return false
@@ -982,17 +1145,6 @@ function MainPanelApp() {
     activeSessionSnapshotRef.current = operationContext.session
     activeUserIdRef.current = me?.id ?? null
     activePetTypeRef.current = me?.preferences?.pet_type || 'cat'
-    setUser(me)
-    setSessions(sessionList)
-    setDocuments(documentList)
-    if (sessionList.length > 0) {
-      setActiveSessionId(sessionList[0].id)
-      setMessages(sessionList[0].messages || [])
-    } else {
-      setActiveSessionId(null)
-      setMessages([])
-    }
-    setAuthenticated(true)
     const synchronizedState = await window.desktopBridge?.syncPetState?.({
       source: 'main-panel',
       hasSession: true,
@@ -1005,17 +1157,38 @@ function MainPanelApp() {
     })
     const synchronizedCapability = synchronizedState?.authoritative
     if (
-      !synchronizedState?.ok
-      || !synchronizedCapability
-      ||
       accountRequestEpochRef.current !== requestEpoch
       || !isSessionSnapshotCurrent(operationContext.session, activeSessionSnapshotRef.current)
     ) {
       return false
     }
+    if (!synchronizedState?.ok || !synchronizedCapability) {
+      throw new Error(language === 'zh-CN'
+        ? '暂时无法同步桌宠状态，请重新登录后再试。'
+        : 'Unable to sync your companion. Please sign in again.')
+    }
     activeAuthoritativeContextRef.current = synchronizedCapability
-    void loadPetRelationship(me?.preferences?.pet_type || 'cat')
-    void loadPetDailySummary(me?.preferences?.pet_type || 'cat')
+    // Child panels can request account-bound data as soon as they mount.
+    // Publish the dashboard only after the main process has synchronized it.
+    activeUserIdRef.current = me?.id ?? null
+    activePetTypeRef.current = me?.preferences?.pet_type || 'cat'
+    setUser(me)
+    setSessions(sessionList)
+    setDocuments(documentList)
+    updateActiveSessionId(sessionList[0]?.id ?? null)
+    setMessages(sessionList[0]?.messages || [])
+    setAuthenticated(true)
+    // List rows are summaries. Restore only the newest conversation, without
+    // making its optional history read a prerequisite for account recovery.
+    if (sessionList[0]?.id) void handleSelectSession(sessionList[0].id)
+    // The first relationship cache write consumes the shared pet capability.
+    // Finish that transition before child panels derive their read capabilities.
+    const relationshipReady = await loadPetRelationship(me?.preferences?.pet_type || 'cat')
+    if (
+      accountRequestEpochRef.current !== requestEpoch
+      || !isSessionSnapshotCurrent(operationContext.session, activeSessionSnapshotRef.current)
+    ) return false
+    if (relationshipReady) void loadPetDailySummary(me?.preferences?.pet_type || 'cat')
     await logDesktopDebug({
       event: 'main-panel-load-dashboard',
       petType: me?.preferences?.pet_type || 'cat',
@@ -1024,12 +1197,15 @@ function MainPanelApp() {
     return true
   }
 
-  const handleSaveApiBaseUrl = async () => {
-    const verifiedApiBaseUrl = await checkApiConnection(apiBaseUrl)
-    await setApiBaseUrl(verifiedApiBaseUrl)
+  const handleSaveApiBaseUrl = async (requestedUrl, operation) => {
+    const attempt = operation.ownAttempt(await beginLoginAttempt(requestedUrl))
+    const verifiedApiBaseUrl = await checkApiConnection(attempt.server, { signal: operation.signal })
+    operation.assertCurrent()
+    await setApiBaseUrl(verifiedApiBaseUrl, attempt)
+    operation.assertCurrent()
     setApiBaseUrlState(verifiedApiBaseUrl)
     setStatusText(t(language, 'serverConnectionVerified'))
-    return verifiedApiBaseUrl
+    return attempt
   }
 
   const handleShowPet = async () => {
@@ -1102,10 +1278,12 @@ function MainPanelApp() {
 
   useEffect(() => {
     // A mounted renderer is not yet ready to consume account-bound navigation.
-    // Register after dashboard hydration so a reload cannot discard the pending
-    // intent while authentication/relationship state is still empty.
+    // Cached relationship data arrives before its capability transition settles.
+    // Wait for the same gate that mounts the target cards: announcing readiness
+    // earlier would consume an intent while its scroll target is still absent.
     if (
       !authenticated
+      || !petDataReady
       || !user?.id
       || !petRelationship?.id
       || Number(petRelationship.user_id) !== Number(user.id)
@@ -1118,7 +1296,7 @@ function MainPanelApp() {
       return intentConsumerRef.current.consume(payload)
     })
     return () => unsubscribe?.()
-  }, [authenticated, user?.id, currentPetType, petRelationship?.id, petRelationship?.user_id, petRelationship?.pet_type])
+  }, [authenticated, petDataReady, user?.id, currentPetType, petRelationship?.id, petRelationship?.user_id, petRelationship?.pet_type])
 
   useEffect(() => {
     intentConsumerRef.current.cancel()
@@ -1155,7 +1333,8 @@ function MainPanelApp() {
 
   useEffect(() => {
     if (
-      !petOnboardingIsCurrent
+      !petDataReady
+      || !petOnboardingIsCurrent
       || effectiveTab !== 'chat'
       || petOnboardingScene !== PET_ONBOARDING_SCENES.RELATIONSHIP
       || !relationshipSummaryRef.current
@@ -1225,6 +1404,7 @@ function MainPanelApp() {
     }
   }, [
     applyPetOnboardingResponse,
+    petDataReady,
     petOnboardingIsCurrent,
     petOnboardingContextKey,
     petOnboardingScene,
@@ -1247,9 +1427,16 @@ function MainPanelApp() {
         setAuthenticated(false)
         setUser(null)
         setSessions([])
-        setActiveSessionId(null)
+        conversationRef.current.pending.clear()
+        conversationRef.current.selecting = false
+        updateActiveSessionId(null)
         setMessages([])
+        setPrompt('')
+        setSelectingSession(false)
+        knowledgeSelectGateRef.current.invalidate()
         setDocuments([])
+        knowledgeMutationRef.current = null
+        setKnowledgeBusy(false)
         setLoading(false)
         setSavingPet(runtimeReset.savingPet)
         setSavingOutfit(runtimeReset.savingOutfit)
@@ -1259,22 +1446,33 @@ function MainPanelApp() {
         setPetOnboardingBusy(runtimeReset.petOnboardingBusy)
         setPetOnboardingError(runtimeReset.petOnboardingError)
         setCompanionState(DEFAULT_COMPANION_STATE)
+        setReadyRelationshipContext(null)
+        setPetRelationshipError(false)
         setPetRelationship(null)
         setPetDailySummary(null)
         setPetOnboardingState(null)
         return
       }
       void (async () => {
+        const requestContext = {
+          ...getCurrentMainPanelAccountContext(),
+          epoch: accountRequestEpochRef.current,
+        }
         const adopted = await adoptRelationshipCapability({
           payload,
-          currentContext: getCurrentMainPanelAccountContext(),
+          currentContext: requestContext,
           validateCapability: (capability, requiredScope, semantic) => (
             window.desktopBridge?.renewOperationContext?.(capability, requiredScope, semantic)
           ),
         })
-        if (!adopted) return
+        if (!adopted || !isMainPanelAccountRequestCurrent(requestContext)) return
         const relationship = normalizePetRelationship(adopted.relationship, currentPetType)
         activeAuthoritativeContextRef.current = adopted.authoritative
+        setReadyRelationshipContext({
+          ...getCurrentMainPanelAccountContext(),
+          epoch: accountRequestEpochRef.current,
+        })
+        setPetRelationshipError(false)
         setPetRelationship(relationship)
         void loadPetDailySummary(currentPetType)
       })()
@@ -1293,6 +1491,7 @@ function MainPanelApp() {
   }, [])
 
   useEffect(() => {
+    if (!authenticated || !petDataReady) return undefined
     let mounted = true
     const loadCompanionState = async () => {
       try {
@@ -1335,6 +1534,8 @@ function MainPanelApp() {
       companionLoadGateRef.current.invalidate()
     }
   }, [
+    authenticated,
+    petDataReady,
     currentPetType,
     user?.id,
     activeSessionSnapshotRef.current?.generation,
@@ -1413,11 +1614,20 @@ function MainPanelApp() {
   ])
 
   const handleSend = async () => {
-    if (!prompt.trim() || loading) {
+    if (!prompt.trim() || loading || selectingSession) {
       return
     }
 
     const outgoingMessage = prompt.trim()
+    setReminderDraftError(null)
+    const conversationRequest = knowledgeSelectGateRef.current.begin({
+      ...getCurrentMainPanelAccountContext(),
+      epoch: accountRequestEpochRef.current,
+    })
+    const isConversationCurrent = () => (
+      isMainPanelAccountRequestCurrent(conversationRequest)
+      && knowledgeSelectGateRef.current.isCurrent(conversationRequest, getCurrentMainPanelAccountContext())
+    )
     const parsedReminder = parseReminder(outgoingMessage)
     if (parsedReminder.ok) {
       const reminderUserIdAtSend = user?.id
@@ -1433,6 +1643,7 @@ function MainPanelApp() {
       setStatusText(t(language, 'waitingResponse'))
       setKnowledgeStatusText('')
       setKnowledgeSources([])
+      let reminderCreated = false
       try {
         const reminder = await createReminder({
           pet_type: reminderPetTypeAtSend,
@@ -1444,12 +1655,39 @@ function MainPanelApp() {
             ? null
             : getBrowserTimeZone(),
         }, reminderRequestContext)
+        reminderCreated = true
         if (
           !isMainPanelAccountRequestCurrent(reminderRequestContext)
           || Number(reminder.user_id) !== Number(reminderRequestContext.userId)
         ) {
           return
         }
+        const confirmedRemindAt = new Date(reminder.remind_at)
+        const timeText = confirmedRemindAt.toLocaleString(language === 'zh-CN' ? 'zh-CN' : 'en-US', {
+          month: 'numeric',
+          day: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit',
+        })
+        const copy = getPetReminderCopy(reminderPetTypeAtSend).createdReminder(
+          reminder.title,
+          timeText,
+          reminder.email_enabled,
+          getReminderRecurrenceLabel(
+            reminder.recurrence_type,
+            reminder.remind_at,
+            language,
+          ),
+        )
+        if (isConversationCurrent()) {
+          setMessages((current) => [
+            ...current,
+            { role: 'user', content: outgoingMessage },
+            { role: 'assistant', content: copy },
+          ])
+          setStatusText(copy)
+        }
+        window.dispatchEvent(new Event('detachym:reminders-changed'))
         if (reminder.series_id) {
           window.dispatchEvent(new Event('detachym:reminder-series-changed'))
         }
@@ -1504,29 +1742,6 @@ function MainPanelApp() {
           return
         }
         void loadPetDailySummary(reminderPetTypeAtSend)
-        const confirmedRemindAt = new Date(reminder.remind_at)
-        const timeText = confirmedRemindAt.toLocaleString(language === 'zh-CN' ? 'zh-CN' : 'en-US', {
-          month: 'numeric',
-          day: 'numeric',
-          hour: '2-digit',
-          minute: '2-digit',
-        })
-        const copy = getPetReminderCopy(reminderPetTypeAtSend).createdReminder(
-          reminder.title,
-          timeText,
-          reminder.email_enabled,
-          getReminderRecurrenceLabel(
-            reminder.recurrence_type,
-            reminder.remind_at,
-            language,
-          ),
-        )
-        setMessages((current) => [
-          ...current,
-          { role: 'user', content: outgoingMessage },
-          { role: 'assistant', content: copy },
-        ])
-        setStatusText(copy)
         await window.desktopBridge?.notifyPetReminderEvent?.({
           type: 'created',
           petType: reminderPetTypeAtSend,
@@ -1538,30 +1753,20 @@ function MainPanelApp() {
           return
         }
       } catch (error) {
-        if (isMainPanelAccountRequestCurrent(reminderRequestContext)) {
+        if (isConversationCurrent() && !reminderCreated) {
+          setPrompt((current) => restoreFailedChatDraft(current, outgoingMessage))
           setStatusText(formatError(error, t(language, 'messageDeliveryFailed')))
         }
       } finally {
-        if (isMainPanelAccountRequestCurrent(reminderRequestContext)) {
+        if (isConversationCurrent()) {
           setLoading(false)
         }
       }
       return
     }
-    if (parsedReminder.reason === 'missing_time') {
-      const copy = getPetReminderCopy(currentPetType).parseFailed
-      setPrompt('')
-      setMessages((current) => [
-        ...current,
-        { role: 'user', content: outgoingMessage },
-        { role: 'assistant', content: copy },
-      ])
-      setStatusText(copy)
-      await window.desktopBridge?.notifyPetReminderEvent?.({
-        type: 'parse_failed',
-        petType: currentPetType,
-        message: copy,
-      }, getCurrentMainPanelAccountContext())
+    if (getReminderParseFeedback(parsedReminder.reason, language)) {
+      setReminderDraftError(parsedReminder.reason)
+      promptInputRef.current?.focus()
       return
     }
 
@@ -1576,7 +1781,19 @@ function MainPanelApp() {
       epoch: accountRequestEpochRef.current,
       session: activeSessionSnapshotRef.current,
     }
+    const chatRequest = { sessionId: activeSessionId, context: messageRequestContext }
+    if (chatRequest.sessionId !== null) {
+      conversationRef.current.pending.set(chatRequest.sessionId, chatRequest)
+    }
+    const isReplyConversationVisible = () => (
+      isMainPanelAccountRequestCurrent(messageRequestContext)
+      && !conversationRef.current.selecting
+      && chatRequest.sessionId !== null
+      && conversationRef.current.sessionId === chatRequest.sessionId
+      && conversationRef.current.pending.get(chatRequest.sessionId) === chatRequest
+    )
 
+    let messageDelivered = false
     try {
       const response = await desktopApi.sendMessage({
         message: outgoingMessage,
@@ -1585,23 +1802,60 @@ function MainPanelApp() {
         pet_type: currentPetType,
         compact_response: false,
       }, messageRequestContext)
+      messageDelivered = true
       if (!isMainPanelAccountRequestCurrent(messageRequestContext)) {
         return
       }
       const nextSessionId = response.session_id
+      chatRequest.sessionId = nextSessionId
+      conversationRef.current.pending.set(nextSessionId, chatRequest)
+      conversationRef.current.revision += 1
       void loadPetRelationship(currentPetType)
       void loadPetDailySummary(currentPetType)
-      setActiveSessionId(nextSessionId)
-      setMessages((current) => [...current, { role: 'assistant', content: response.content }])
-      const nextSessions = await desktopApi.getSessions(messageRequestContext)
+      if (isConversationCurrent()) {
+        updateActiveSessionId(nextSessionId)
+        setMessages((current) => [...current, { role: 'assistant', content: response.content }])
+        setStatusText(t(language, 'latestResponseReceived'))
+      } else if (isReplyConversationVisible()) {
+        // The selected history can already contain this exchange, or have been
+        // read before its user message was saved. Preserve the known reply even
+        // if the optional session-list refresh below fails.
+        setMessages((current) => {
+          const last = current.at(-1)
+          const previous = current.at(-2)
+          if (last?.role === 'assistant' && last.content === response.content
+            && previous?.role === 'user' && previous.content === outgoingMessage) return current
+          const withQuestion = last?.role === 'user' && last.content === outgoingMessage
+            ? current
+            : [...current, { role: 'user', content: outgoingMessage }]
+          return [...withQuestion, { role: 'assistant', content: response.content }]
+        })
+        setStatusText(t(language, 'latestResponseReceived'))
+      }
+      const sessionListRequest = sessionListGateRef.current.begin(messageRequestContext)
+      const shouldReadConversation = isConversationCurrent() || isReplyConversationVisible()
+      const [listResult, detailResult] = await Promise.allSettled([
+        desktopApi.getSessions(messageRequestContext),
+        shouldReadConversation
+          ? desktopApi.getSession(nextSessionId, messageRequestContext)
+          : Promise.resolve(null),
+      ])
       if (!isMainPanelAccountRequestCurrent(messageRequestContext)) {
         return
       }
-      setSessions(nextSessions)
-      const currentSession = nextSessions.find((session) => session.id === nextSessionId)
-      if (currentSession) {
+      if (listResult.status === 'fulfilled') {
+        commitAccountOperation(sessionListGateRef.current, sessionListRequest, getCurrentMainPanelAccountContext(), () => {
+          setSessions(listResult.value)
+        })
+      }
+      if (!isConversationCurrent() && !isReplyConversationVisible()) return
+      const currentSession = detailResult.status === 'fulfilled' ? detailResult.value : null
+      if (currentSession?.id === nextSessionId && Array.isArray(currentSession.messages)) {
         setMessages(currentSession.messages || [])
       }
+      // Revisited history receives the completed exchange, while the original
+      // send alone owns its transient status and knowledge-source presentation.
+      if (!isConversationCurrent()) return
       if (useRag) {
         const nextSources = response.sources || []
         setKnowledgeSources(nextSources)
@@ -1618,11 +1872,19 @@ function MainPanelApp() {
         setStatusText(t(language, 'latestResponseReceived'))
       }
     } catch (error) {
-      if (isMainPanelAccountRequestCurrent(messageRequestContext)) {
+      if ((isConversationCurrent() || isReplyConversationVisible()) && !messageDelivered) {
+        setPrompt((current) => restoreFailedChatDraft(current, outgoingMessage))
         setStatusText(formatError(error, t(language, 'messageDeliveryFailed')))
       }
     } finally {
-      if (isMainPanelAccountRequestCurrent(messageRequestContext)) {
+      if (!messageDelivered && isMainPanelAccountRequestCurrent(messageRequestContext)) {
+        conversationRef.current.revision += 1
+      }
+      const visible = isReplyConversationVisible()
+      if (conversationRef.current.pending.get(chatRequest.sessionId) === chatRequest) {
+        conversationRef.current.pending.delete(chatRequest.sessionId)
+      }
+      if (isConversationCurrent() || visible) {
         setLoading(false)
       }
     }
@@ -1654,6 +1916,7 @@ function MainPanelApp() {
       ) {
         throw new Error('onboarding_context_changed')
       }
+      window.dispatchEvent(new Event('detachym:reminders-changed'))
       const result = await window.desktopBridge?.recordPetOnboardingObservation?.(
         'pig',
         PET_ONBOARDING_CAPABILITIES.REMINDER_CREATED,
@@ -1807,101 +2070,143 @@ function MainPanelApp() {
   }
 
   const handlePromptKeyDown = (event) => {
-    if (event.key === 'Enter' && !event.shiftKey) {
+    if (shouldSubmitChatInput(event)) {
       event.preventDefault()
       void handleSend()
     }
   }
 
   const handleSelectSession = async (sessionId) => {
-    let requestContext = null
+    // Capture the click order before IPC: slower capability capture must not win.
+    const requestContext = knowledgeSelectGateRef.current.begin(getCurrentMainPanelAccountContext())
+    conversationRef.current.selecting = true
+    setLoading(false)
+    setSelectingSession(true)
     try {
       const operationContext = await captureApiOperationContext(
-        getCurrentMainPanelAccountContext(),
+        requestContext,
         'account',
       )
-      requestContext = knowledgeSelectGateRef.current.begin(operationContext)
-      const session = await desktopApi.getSession(sessionId, operationContext)
-      await assertApiOperationContextCurrent(operationContext)
+      let session
+      let revision
+      do {
+        revision = conversationRef.current.revision
+        session = await desktopApi.getSession(sessionId, operationContext)
+        await assertApiOperationContextCurrent(operationContext)
+        if (!knowledgeSelectGateRef.current.isCurrent(requestContext, getCurrentMainPanelAccountContext())) return
+        // A reply may commit while this history read is in flight. Re-read it
+        // before showing the selected conversation so its answer is not lost.
+      } while (revision !== conversationRef.current.revision)
       commitAccountOperation(
         knowledgeSelectGateRef.current,
         requestContext,
         getCurrentMainPanelAccountContext(),
         () => {
-          setActiveSessionId(session.id)
+          updateActiveSessionId(session.id)
           setMessages(session.messages || [])
+          setStatusText('')
           setKnowledgeStatusText('')
           setKnowledgeSources([])
         },
       )
     } catch (error) {
-      if (!requestContext) return
       commitAccountOperation(
         knowledgeSelectGateRef.current,
         requestContext,
         getCurrentMainPanelAccountContext(),
         () => setStatusText(formatError(error, t(language, 'unableToLoadSession'))),
       )
-    }
-  }
-
-  const handleUpload = async (event) => {
-    const file = event.target.files?.[0]
-    if (!file) {
-      return
-    }
-
-    let requestContext = null
-    try {
-      const operationContext = await captureApiOperationContext(
-        getCurrentMainPanelAccountContext(),
-        'account',
-      )
-      requestContext = knowledgeUploadGateRef.current.begin(operationContext)
-      await desktopApi.uploadDocument(file, operationContext)
-      await assertApiOperationContextCurrent(operationContext)
-      if (!knowledgeUploadGateRef.current.isCurrent(requestContext, getCurrentMainPanelAccountContext())) return
-      const nextDocuments = await desktopApi.getDocuments(operationContext)
-      await assertApiOperationContextCurrent(operationContext)
+    } finally {
       commitAccountOperation(
-        knowledgeUploadGateRef.current,
+        knowledgeSelectGateRef.current,
         requestContext,
         getCurrentMainPanelAccountContext(),
         () => {
-          setDocuments(nextDocuments)
-          setStatusText(t(language, 'documentUploadedIndexed'))
+          conversationRef.current.selecting = false
+          setSelectingSession(false)
+          const pendingChat = conversationRef.current.pending.get(conversationRef.current.sessionId)
+          setLoading(Boolean(pendingChat && isMainPanelAccountRequestCurrent(pendingChat.context)))
         },
       )
+    }
+  }
+
+  const handleNewChat = () => {
+    knowledgeSelectGateRef.current.invalidate()
+    conversationRef.current.selecting = false
+    setSelectingSession(false)
+    setLoading(false)
+    updateActiveSessionId(null)
+    setMessages([])
+    setPrompt('')
+    setKnowledgeStatusText('')
+    setKnowledgeSources([])
+    setStatusText('')
+    setNewChatVersion((current) => current + 1)
+    intentConsumerRef.current.cancel()
+    setTab('chat')
+  }
+
+  const handleUpload = async (event) => {
+    const input = event.currentTarget
+    const file = input.files?.[0]
+    if (!file || knowledgeMutationRef.current) return
+    const initialContext = getCurrentMainPanelAccountContext()
+    const requestContext = knowledgeUploadGateRef.current.begin({
+      ...initialContext, local: createLocalOperationContext(initialContext, 'account'),
+    })
+    knowledgeMutationRef.current = requestContext
+    setKnowledgeBusy(true)
+    setStatusText(language === 'zh-CN' ? '正在上传并整理文档…' : 'Uploading and indexing your document…')
+    let operationContext = null
+    let uploadError = null
+    const current = () => knowledgeMutationRef.current === requestContext
+      && knowledgeUploadGateRef.current.isCurrent(requestContext, getCurrentMainPanelAccountContext())
+    try {
+      operationContext = await captureApiOperationContext(requestContext, 'account')
+      if (!current()) return
+      await desktopApi.uploadDocument(file, operationContext)
+      await assertApiOperationContextCurrent(operationContext)
     } catch (error) {
-      if (!requestContext) return
-      commitAccountOperation(
-        knowledgeUploadGateRef.current,
-        requestContext,
-        getCurrentMainPanelAccountContext(),
-        () => setStatusText(formatError(error, t(language, 'uploadFailed'))),
-      )
+      uploadError = error
     } finally {
-      if (!requestContext) {
-        event.target.value = ''
-        return
+      // The backend keeps failed uploads as removable documents. Refresh after
+      // either outcome so a failed file cannot silently consume the quota.
+      if (current() && operationContext) {
+        try {
+          const nextDocuments = await desktopApi.getDocuments(operationContext)
+          await assertApiOperationContextCurrent(operationContext)
+          if (current()) setDocuments(nextDocuments)
+        } catch (refreshError) {
+          if (!uploadError) uploadError = refreshError
+        }
       }
-      commitAccountOperation(
-        knowledgeUploadGateRef.current,
-        requestContext,
-        getCurrentMainPanelAccountContext(),
-        () => { event.target.value = '' },
-      )
+      if (current()) setStatusText(uploadError
+        ? formatError(uploadError, t(language, 'uploadFailed'))
+        : t(language, 'documentUploadedIndexed'))
+      if (knowledgeMutationRef.current === requestContext) {
+        knowledgeMutationRef.current = null
+        setKnowledgeBusy(false)
+        input.value = ''
+      }
     }
   }
 
   const handleDeleteDocument = async (documentId) => {
-    let requestContext = null
+    if (knowledgeMutationRef.current) return
+    const initialContext = getCurrentMainPanelAccountContext()
+    const requestContext = knowledgeDeleteGateRef.current.begin({
+      ...initialContext, local: createLocalOperationContext(initialContext, 'account'),
+    })
+    knowledgeMutationRef.current = requestContext
+    setKnowledgeBusy(true)
     try {
       const operationContext = await captureApiOperationContext(
-        getCurrentMainPanelAccountContext(),
+        requestContext,
         'account',
       )
-      requestContext = knowledgeDeleteGateRef.current.begin(operationContext)
+      if (knowledgeMutationRef.current !== requestContext
+        || !knowledgeDeleteGateRef.current.isCurrent(requestContext, getCurrentMainPanelAccountContext())) return
       await desktopApi.deleteDocument(documentId, operationContext)
       await assertApiOperationContextCurrent(operationContext)
       commitAccountOperation(
@@ -1914,13 +2219,46 @@ function MainPanelApp() {
         },
       )
     } catch (error) {
-      if (!requestContext) return
       commitAccountOperation(
         knowledgeDeleteGateRef.current,
         requestContext,
         getCurrentMainPanelAccountContext(),
         () => setStatusText(formatError(error, t(language, 'deleteFailed'))),
       )
+    } finally {
+      if (knowledgeMutationRef.current === requestContext) {
+        knowledgeMutationRef.current = null
+        setKnowledgeBusy(false)
+      }
+    }
+  }
+
+  const handleRefreshDocuments = async () => {
+    if (knowledgeMutationRef.current) return
+    const initialContext = getCurrentMainPanelAccountContext()
+    const requestContext = knowledgeUploadGateRef.current.begin({
+      ...initialContext, local: createLocalOperationContext(initialContext, 'account'),
+    })
+    knowledgeMutationRef.current = requestContext
+    setKnowledgeBusy(true)
+    try {
+      const operationContext = await captureApiOperationContext(requestContext, 'account')
+      if (knowledgeMutationRef.current !== requestContext) return
+      const nextDocuments = await desktopApi.getDocuments(operationContext)
+      await assertApiOperationContextCurrent(operationContext)
+      commitAccountOperation(knowledgeUploadGateRef.current, requestContext, getCurrentMainPanelAccountContext(), () => {
+        setDocuments(nextDocuments)
+        setStatusText(language === 'zh-CN' ? '文档列表已更新。' : 'Document list updated.')
+      })
+    } catch (error) {
+      commitAccountOperation(knowledgeUploadGateRef.current, requestContext, getCurrentMainPanelAccountContext(), () => {
+        setStatusText(formatError(error, language === 'zh-CN' ? '更新文档列表失败，请重试。' : 'Unable to refresh documents. Try again.'))
+      })
+    } finally {
+      if (knowledgeMutationRef.current === requestContext) {
+        knowledgeMutationRef.current = null
+        setKnowledgeBusy(false)
+      }
     }
   }
 
@@ -2021,6 +2359,9 @@ function MainPanelApp() {
       }
       switchCommitted = true
       accountRequestEpochRef.current += 1
+      knowledgeSelectGateRef.current.invalidate()
+      setSelectingSession(false)
+      setLoading(false)
       activePetTypeRef.current = nextPetType
       const switchedCapability = switchedResult.authoritative
       if (
@@ -2035,9 +2376,13 @@ function MainPanelApp() {
         throw new Error('account-context-changed')
       }
       activeAuthoritativeContextRef.current = switchedCapability
+      setReadyRelationshipContext(null)
+      setPetRelationship(null)
+      setPetDailySummary(null)
       setUser((current) => (current ? { ...current, preferences: nextPreferences } : current))
-      void loadPetRelationship(nextPetType)
-      void loadPetDailySummary(nextPetType)
+      void loadPetRelationship(nextPetType).then((ready) => {
+        if (ready && activePetTypeRef.current === nextPetType) void loadPetDailySummary(nextPetType)
+      })
       await logDesktopDebug({
         event: 'main-panel-switch-success',
         petType: switchedResult?.state?.petType || nextPetType,
@@ -2354,6 +2699,12 @@ function MainPanelApp() {
   }
 
   const handleLogout = async () => {
+    knowledgeMutationRef.current = null
+    setKnowledgeBusy(false)
+    knowledgeSelectGateRef.current.invalidate()
+    setPrompt('')
+    setLoading(false)
+    setSelectingSession(false)
     accountRequestEpochRef.current += 1
     activeSessionTokenRef.current = null
     activeSessionSnapshotRef.current = null
@@ -2366,12 +2717,16 @@ function MainPanelApp() {
     setAuthenticated(false)
     setUser(null)
     setSessions([])
-    setActiveSessionId(null)
+    conversationRef.current.pending.clear()
+    conversationRef.current.selecting = false
+    updateActiveSessionId(null)
     setMessages([])
     setDocuments([])
     setKnowledgeStatusText('')
     setKnowledgeSources([])
     setPetRelationship(null)
+    setReadyRelationshipContext(null)
+    setPetRelationshipError(false)
     setPetDailySummary(null)
     setPetOnboardingState(null)
     await window.desktopBridge?.syncPetState?.({
@@ -2391,6 +2746,12 @@ function MainPanelApp() {
   }
 
   const handleServerSetup = async () => {
+    knowledgeMutationRef.current = null
+    setKnowledgeBusy(false)
+    knowledgeSelectGateRef.current.invalidate()
+    setPrompt('')
+    setLoading(false)
+    setSelectingSession(false)
     accountRequestEpochRef.current += 1
     activeSessionTokenRef.current = null
     activeSessionSnapshotRef.current = null
@@ -2403,12 +2764,16 @@ function MainPanelApp() {
     setAuthenticated(false)
     setUser(null)
     setSessions([])
-    setActiveSessionId(null)
+    conversationRef.current.pending.clear()
+    conversationRef.current.selecting = false
+    updateActiveSessionId(null)
     setMessages([])
     setDocuments([])
     setKnowledgeStatusText('')
     setKnowledgeSources([])
     setPetRelationship(null)
+    setReadyRelationshipContext(null)
+    setPetRelationshipError(false)
     setPetDailySummary(null)
     setPetOnboardingState(null)
     await window.desktopBridge?.syncPetState?.({
@@ -2443,6 +2808,26 @@ function MainPanelApp() {
     setStatusText(language === 'zh-CN' ? '快捷聊天已打开。' : 'Quick chat opened.')
   }
 
+  const handleOpenFocus = () => {
+    intentConsumerRef.current.cancel()
+    pendingFocusNavigationRef.current = true
+    tabRef.current = 'chat'
+    setTab('chat')
+    setFocusNavigationVersion((value) => value + 1)
+  }
+
+  const handleRetryCompanionSync = async () => {
+    if (petRelationshipLoading) return
+    const requestContext = {
+      ...getCurrentMainPanelAccountContext(),
+      epoch: accountRequestEpochRef.current,
+    }
+    const ready = await loadPetRelationship(requestContext.petType)
+    if (ready && isMainPanelAccountRequestCurrent(requestContext)) {
+      void loadPetDailySummary(requestContext.petType)
+    }
+  }
+
   if (!initialized) {
     return (
       <div className="window-shell" style={{ display: 'grid', placeItems: 'center' }}>
@@ -2457,9 +2842,8 @@ function MainPanelApp() {
         apiBaseUrl={apiBaseUrl}
         onApiBaseUrlChange={setApiBaseUrlState}
         onSaveApiBaseUrl={handleSaveApiBaseUrl}
-        onLoggedIn={async () => {
-          await loadDashboard()
-          setInitialized(true)
+        onLoggedIn={async (receipt) => {
+          if (await loadDashboard(receipt)) setInitialized(true)
         }}
         statusText={statusText}
         language={language}
@@ -2469,25 +2853,37 @@ function MainPanelApp() {
   }
 
   return (
-    <div className="window-shell" data-e2e="main-dashboard">
-      <div className="window-card window-card-main" style={{ gap: 18 }}>
-        <div className="panel" style={{ padding: 18 }}>
-          <div className="toolbar" style={{ alignItems: 'flex-start' }}>
-            <div>
-              <div style={{ fontSize: 12, letterSpacing: '0.22em', textTransform: 'uppercase', color: '#64748b' }}>
-                {t(language, 'desktopMainPanel')}
-              </div>
-              <div style={{ fontSize: 28, fontWeight: 700 }}>{t(language, 'welcomeUser', { username: user?.username ?? '' })}</div>
-              <div style={{ marginTop: 8, fontSize: 13, color: '#64748b' }}>
-                {t(language, 'serverLabel', { server: apiBaseUrl })}
+    <div className="window-shell main-panel-shell" data-e2e="main-dashboard">
+      <div className="window-card window-card-main">
+        <header className="main-product-header">
+          <div className="main-header-top">
+            <div className="main-brand">
+              <img src={getPetVisual(currentPetType, 'happy').image} alt="" />
+              <div>
+                <div className="main-brand-label">Detachym · {currentPetLabel}</div>
+                <h1>{language === 'zh-CN' ? '今天，也一起慢慢来' : 'A little company for your day'}</h1>
               </div>
             </div>
-            <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-              <LanguageSelector language={language} onChange={updateLanguage} />
+            <div className="main-header-utilities">
+              <LanguageSelector language={language} onChange={updateLanguage} compact />
+              <button type="button" className="main-header-icon" title={t(language, 'minimizeWindow')} aria-label={t(language, 'minimizeWindow')} onClick={handleMinimizeWindow}>
+                <Minus size={17} aria-hidden="true" />
+              </button>
+              <button type="button" className="main-header-icon" title={t(language, 'hideWindow')} aria-label={t(language, 'hideWindow')} onClick={handleHideWindow}>
+                <X size={17} aria-hidden="true" />
+              </button>
+              <button type="button" className="main-header-action" data-e2e="logout" onClick={handleLogout}>
+                {t(language, 'signOut')}
+              </button>
+            </div>
+          </div>
+          <div className="main-header-bottom">
+            <nav className="main-navigation" aria-label={language === 'zh-CN' ? '主面板导航' : 'Main panel navigation'}>
               <button
                 type="button"
-                className="button-secondary"
-                style={{ background: effectiveTab === 'chat' ? '#cbd5e1' : '#e2e8f0' }}
+                className="main-nav-button"
+                data-e2e="main-tab-chat"
+                aria-pressed={effectiveTab === 'chat'}
                 onClick={() => {
                   intentConsumerRef.current.cancel()
                   setTab('chat')
@@ -2497,8 +2893,8 @@ function MainPanelApp() {
               </button>
               <button
                 type="button"
-                className="button-secondary"
-                style={{ background: effectiveTab === 'knowledge' ? '#cbd5e1' : '#e2e8f0' }}
+                className="main-nav-button"
+                aria-pressed={effectiveTab === 'knowledge'}
                 data-e2e="main-tab-knowledge"
                 onClick={() => {
                   intentConsumerRef.current.cancel()
@@ -2507,35 +2903,46 @@ function MainPanelApp() {
               >
                 {t(language, 'knowledgeBase')}
               </button>
-              <button type="button" className="button-secondary" onClick={handleShowPet}>
+            </nav>
+            <div className="main-header-shortcuts">
+              {currentPetType === 'pig' && (
+                <button type="button" className="main-header-action main-focus-shortcut" data-e2e="open-focus" aria-controls="companion-focus" onClick={handleOpenFocus}>
+                  <Sprout size={14} aria-hidden="true" />
+                  {language === 'zh-CN' ? '陪我专注' : 'Focus together'}
+                </button>
+              )}
+              <button type="button" className="main-header-action" onClick={handleShowPet}>
                 {t(language, 'showPet')}
               </button>
-              <button type="button" className="button-secondary" onClick={handleResetPetPosition}>
-                {t(language, 'resetPetPosition')}
+              <button type="button" className="main-header-action" onClick={handleOpenQuickChat}>
+                <MessageCircle size={14} aria-hidden="true" />
+                {t(language, 'quickChat')}
               </button>
-              <button type="button" className="button-secondary" onClick={handleOpenQuickChat}>
-                {language === 'zh-CN' ? '打开快捷聊天' : 'Open Quick Chat'}
-              </button>
-              <button type="button" className="button-secondary" onClick={handleServerSetup}>
-                {t(language, 'changeServer')}
-              </button>
-              <button type="button" className="button-secondary" onClick={handleMinimizeWindow}>
-                {t(language, 'minimizeWindow')}
-              </button>
-              <button type="button" className="button-secondary" onClick={handleHideWindow}>
-                {t(language, 'hideWindow')}
-              </button>
-              <button type="button" className="button-primary" data-e2e="logout" onClick={handleLogout}>
-                {t(language, 'signOut')}
-              </button>
+              <details className="main-more-settings" onKeyDown={(event) => {
+                if (event.key === 'Escape') {
+                  event.currentTarget.open = false
+                  event.currentTarget.querySelector('summary')?.focus()
+                }
+              }}>
+                <summary><Settings2 size={14} aria-hidden="true" />{language === 'zh-CN' ? '更多设置' : 'More settings'}</summary>
+                <div className="main-settings-popover">
+                  <div className="main-settings-account">{t(language, 'welcomeUser', { username: user?.username ?? '' })}</div>
+                  <p className="main-settings-server">{t(language, 'serverLabel', { server: apiBaseUrl })}</p>
+                  <button type="button" className="main-header-action" onClick={(event) => {
+                    event.currentTarget.closest('details').open = false
+                    void handleResetPetPosition()
+                  }}>{t(language, 'resetPetPosition')}</button>
+                  <button type="button" className="main-header-action" onClick={handleServerSetup}>{t(language, 'changeServer')}</button>
+                </div>
+              </details>
             </div>
           </div>
-          {statusText && <div style={{ marginTop: 12, fontSize: 13, color: '#475569' }}>{statusText}</div>}
-        </div>
+          {statusText && <div role="status" className="main-header-status">{statusText}</div>}
+        </header>
 
         {effectiveTab === 'chat' ? (
-          <div style={{ display: 'grid', gridTemplateColumns: '280px 1fr', gap: 18, flex: 1, minHeight: 0 }}>
-            <aside className="panel" style={{ padding: 18, overflow: 'auto' }}>
+          <div className="main-chat-layout">
+            <aside className="panel main-companion-sidebar">
               <PetPreferencePicker
                 language={language}
                 activePetType={currentPetType}
@@ -2544,6 +2951,19 @@ function MainPanelApp() {
                 }}
                 saving={savingPet}
               />
+              {(!petDataReady || petRelationshipError) && (
+                <section className="main-companion-sync" aria-busy={petRelationshipLoading} aria-label={language === 'zh-CN' ? '桌宠同步' : 'Companion sync'}>
+                  <p role="status">{petRelationshipError
+                    ? (language === 'zh-CN' ? '暂时没能同步桌宠记录。你可以继续聊天，稍后再试。' : 'Your companion’s records could not sync. You can keep chatting and try again.')
+                    : (language === 'zh-CN' ? '正在找回我们的相处记录…' : 'Finding our shared moments…')}</p>
+                  {petRelationshipError && (
+                    <button type="button" data-e2e="companion-sync-retry" onClick={() => { void handleRetryCompanionSync() }} disabled={petRelationshipLoading}>
+                      {language === 'zh-CN' ? '重新同步' : 'Retry sync'}
+                    </button>
+                  )}
+                </section>
+              )}
+              {petDataReady && <>
               <PetRelationshipSummary
                 language={language}
                 petType={currentPetType}
@@ -2575,6 +2995,24 @@ function MainPanelApp() {
                 petType={currentPetType}
                 summary={petDailySummary}
                 loading={petDailySummaryLoading}
+              />
+              <FocusSessionPanel
+                key={`focus-${user?.id || 'anonymous'}:${currentPetType}:${activeSessionSnapshotRef.current?.generation ?? 'none'}:${accountRequestEpochRef.current}`}
+                language={language}
+                accountContext={{
+                  ...getCurrentMainPanelAccountContext(),
+                  server: apiBaseUrl,
+                  epoch: accountRequestEpochRef.current,
+                }}
+              />
+              <PetWeeklySummaryPanel
+                key={`weekly-${user?.id || 'anonymous'}:${currentPetType}:${activeSessionSnapshotRef.current?.generation ?? 'none'}:${accountRequestEpochRef.current}`}
+                language={language}
+                petType={currentPetType}
+                accountContext={{
+                  ...getCurrentMainPanelAccountContext(),
+                  epoch: accountRequestEpochRef.current,
+                }}
               />
               <PetOutfitPanel
                 language={language}
@@ -2619,6 +3057,7 @@ function MainPanelApp() {
                   epoch: accountRequestEpochRef.current,
                 }}
               />
+              </>}
               <VoiceSettingsPanel
                 language={language}
                 voiceSettings={voiceSettings}
@@ -2638,6 +3077,8 @@ function MainPanelApp() {
                     <button
                       key={session.id}
                       type="button"
+                      data-e2e-session-id={session.id}
+                      aria-pressed={session.id === activeSessionId}
                       className="button-secondary"
                       style={{
                         textAlign: 'left',
@@ -2654,33 +3095,39 @@ function MainPanelApp() {
               </div>
             </aside>
 
-            <section className="panel" style={{ padding: 18, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-              <div className="toolbar" style={{ marginBottom: 12 }}>
+            <section className="panel main-conversation-panel">
+              <div className="toolbar main-conversation-heading">
                 <div>
                   <div style={{ fontSize: 12, color: '#64748b', letterSpacing: '0.18em', textTransform: 'uppercase' }}>
                     {t(language, 'currentSession')}
                   </div>
-                  <div style={{ fontSize: 20, fontWeight: 700 }}>{activeSession?.title || t(language, 'newSession')}</div>
+                  <div className="main-conversation-title">{activeSession?.title || (language === 'zh-CN' ? '聊点新的' : 'A fresh conversation')}</div>
                   <div style={{ marginTop: 8, fontSize: 13, color: '#64748b' }}>
                     {t(language, 'enterToSendHint')}
                   </div>
                 </div>
-                <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <input type="checkbox" checked={useRag} onChange={(event) => setUseRag(event.target.checked)} />
-                  {t(language, 'enableKnowledgeBase')}
-                </label>
+                <button type="button" className="main-new-chat" data-e2e="new-chat" onClick={handleNewChat}>
+                  <Plus size={15} aria-hidden="true" />{language === 'zh-CN' ? '新对话' : 'New chat'}
+                </button>
               </div>
+              <label className="main-knowledge-toggle">
+                <input type="checkbox" checked={useRag} onChange={(event) => setUseRag(event.target.checked)} />
+                {t(language, 'enableKnowledgeBase')}
+              </label>
 
-              <div className="chat-stream" style={{ flex: 1, minHeight: 0 }}>
-                {messages.length === 0 && (
-                  <div className="message assistant">{t(language, 'desktopPanelIntro', { pet: currentPetLabel })}</div>
-                )}
-                {messages.map((item, index) => (
-                  <div key={`${item.role}-${index}`} className={`message ${item.role}`}>
-                    {item.content}
-                  </div>
-                ))}
-              </div>
+              <ChatMessageStream
+                messages={messages}
+                conversation={`${user?.id}:${activeSessionId || 'new'}:${newChatVersion}`}
+                emptyMessage={t(language, 'desktopPanelIntro', { pet: currentPetLabel })}
+                language={language}
+                busy={loading || selectingSession}
+                showStarters={!activeSessionId && !prompt.trim() && !loading && !selectingSession}
+                onChooseStarter={(message) => {
+                  if (loading || selectingSession || activeSessionId || prompt.trim()) return
+                  setPrompt(message)
+                  promptInputRef.current?.focus()
+                }}
+              />
 
               {(knowledgeStatusText || knowledgeSources.length > 0) && (
                 <div className="knowledge-feedback">
@@ -2702,14 +3149,20 @@ function MainPanelApp() {
               <div style={{ display: 'grid', gap: 12, marginTop: 14 }}>
                 <textarea
                   className="textarea"
+                  data-e2e="main-chat-input"
+                  ref={promptInputRef}
                   rows={5}
                   value={prompt}
+                  aria-label={t(language, 'typeMessagePlaceholder', { pet: currentPetLabel })}
+                  aria-invalid={Boolean(reminderDraftFeedback)}
+                  aria-describedby={reminderDraftFeedback ? 'main-reminder-draft-feedback' : undefined}
                   onChange={(event) => setPrompt(event.target.value)}
                   onKeyDown={handlePromptKeyDown}
                   placeholder={t(language, 'typeMessagePlaceholder', { pet: currentPetLabel })}
                 />
+                {reminderDraftFeedback && <div id="main-reminder-draft-feedback" className="reminder-draft-feedback" role="alert" data-e2e="main-reminder-draft-error">{reminderDraftFeedback}</div>}
                 <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-                  <button type="button" className="button-primary" onClick={handleSend} disabled={loading}>
+                  <button type="button" className="button-primary" data-e2e="main-chat-send" onClick={handleSend} disabled={loading || selectingSession || !prompt.trim()}>
                     {loading ? t(language, 'sending') : t(language, 'sendMessage')}
                   </button>
                 </div>
@@ -2717,7 +3170,7 @@ function MainPanelApp() {
             </section>
           </div>
         ) : (
-          <div className="panel" style={{ padding: 18, display: 'grid', gap: 18 }}>
+          <div className="panel main-knowledge-panel" aria-busy={knowledgeBusy}>
             <div className="toolbar">
               <div>
                 <div style={{ fontSize: 12, color: '#64748b', letterSpacing: '0.18em', textTransform: 'uppercase' }}>
@@ -2725,10 +3178,15 @@ function MainPanelApp() {
                 </div>
                 <div style={{ fontSize: 24, fontWeight: 700 }}>{t(language, 'manageDocuments')}</div>
               </div>
-              <label className="button-secondary" style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
-                {t(language, 'uploadDocument')}
-                <input type="file" accept=".txt,.md,.pdf" style={{ display: 'none' }} onChange={handleUpload} />
-              </label>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <button type="button" className="button-secondary" data-e2e="knowledge-refresh" disabled={knowledgeBusy} onClick={handleRefreshDocuments}>
+                  {language === 'zh-CN' ? '刷新列表' : 'Refresh list'}
+                </button>
+                <button type="button" className="button-secondary" disabled={knowledgeBusy} onClick={() => knowledgeFileRef.current?.click()}>
+                  {t(language, 'uploadDocument')}
+                </button>
+                <input ref={knowledgeFileRef} type="file" data-e2e="knowledge-upload" accept=".txt,.md,.pdf" style={{ display: 'none' }} onChange={handleUpload} disabled={knowledgeBusy} />
+              </div>
             </div>
 
             <div style={{ display: 'grid', gap: 12 }}>
@@ -2738,9 +3196,10 @@ function MainPanelApp() {
                 documents.map((document) => (
                   <div
                     key={document.id}
+                    data-e2e-document-id={document.id}
                     style={{
                       display: 'grid',
-                      gridTemplateColumns: '1fr auto',
+                      gridTemplateColumns: 'minmax(0, 1fr) auto',
                       gap: 12,
                       alignItems: 'center',
                       border: '1px solid #cbd5e1',
@@ -2748,17 +3207,21 @@ function MainPanelApp() {
                       padding: 14,
                     }}
                   >
-                    <div>
+                    <div style={{ overflowWrap: 'anywhere' }}>
                       <div style={{ fontWeight: 700 }}>{document.filename}</div>
+                      {document.status === 'failed' && <div role="status" style={{ marginTop: 6, color: '#be123c', fontSize: 13 }}>
+                        {language === 'zh-CN' ? '索引失败，可删除后检查文件并重新上传。' : 'Indexing failed. Delete this file, check its contents, then upload again.'}
+                      </div>}
                       <div style={{ marginTop: 6, fontSize: 13, color: '#64748b' }}>
-                        {t(language, 'documentMeta', {
-                          status: document.status,
-                          count: document.chunk_count,
-                          size: Math.round((document.file_size || 0) / 1024),
-                        })}
+                        {document.status === 'indexed'
+                          ? (language === 'zh-CN' ? '已可用于问答' : 'Ready for questions')
+                          : document.status === 'failed'
+                            ? (language === 'zh-CN' ? '整理失败' : 'Indexing failed')
+                            : (language === 'zh-CN' ? '正在整理' : 'Indexing')}
+                        {' · '}{Math.max(1, Math.round((document.file_size || 0) / 1024))} KB
                       </div>
                     </div>
-                    <button type="button" className="button-secondary" onClick={() => handleDeleteDocument(document.id)}>
+                    <button type="button" className="button-secondary" data-e2e-delete-document={document.id} aria-label={`${t(language, 'delete')} ${document.filename}`} disabled={knowledgeBusy} onClick={() => handleDeleteDocument(document.id)}>
                       {t(language, 'delete')}
                     </button>
                   </div>

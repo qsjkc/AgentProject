@@ -97,6 +97,7 @@ export class StubServer {
     this.apiBaseUrl = null
     this.requests = []
     this.controls = new Map()
+    this.responseOverrides = new Map()
   }
 
   async start() {
@@ -130,7 +131,7 @@ export class StubServer {
     })
   }
 
-  holdNext(method, pathname) {
+  holdNext(method, pathname, response = null) {
     const arrived = createDeferred()
     const released = createDeferred()
     const control = {
@@ -139,9 +140,16 @@ export class StubServer {
       release: () => released.resolve(),
       _arrive: arrived.resolve,
       _released: released.promise,
+      response,
     }
     this.#enqueueControl(method, pathname, control)
     return control
+  }
+
+  overrideResponse(method, pathname, statusCode, payload) {
+    const key = routeKey(method, pathname)
+    this.responseOverrides.set(key, { statusCode, payload })
+    return () => this.responseOverrides.delete(key)
   }
 
   delayNext(method, pathname, delayMs) {
@@ -175,6 +183,7 @@ export class StubServer {
     } else if (control.type === 'delay') {
       await new Promise((resolve) => setTimeout(resolve, control.delayMs))
     }
+    return control.response
   }
 
   #accountForRequest(request) {
@@ -202,10 +211,19 @@ export class StubServer {
       body: sanitizeBody(body),
     }
     this.requests.push(record)
-    await this.#applyControl(method, requestUrl.pathname, record)
+    const controlledResponse = await this.#applyControl(method, requestUrl.pathname, record)
 
     if (method === 'OPTIONS') {
       noContent(response)
+      return
+    }
+    if (controlledResponse) {
+      json(response, controlledResponse.statusCode, controlledResponse.payload)
+      return
+    }
+    const override = this.responseOverrides.get(routeKey(method, requestUrl.pathname))
+    if (override) {
+      json(response, override.statusCode, override.payload)
       return
     }
     if (!requestUrl.pathname.startsWith('/api/v1')) {
@@ -265,7 +283,10 @@ export class StubServer {
     }
 
     if (method === 'GET' && path === '/chat/sessions') {
-      json(response, 200, account.sessions)
+      const sessions = requestUrl.searchParams.get('include_messages') === 'false'
+        ? account.sessions.map((session) => ({ ...session, messages: [] }))
+        : account.sessions
+      json(response, 200, sessions)
       return
     }
     const sessionMatch = path.match(/^\/chat\/sessions\/(\d+)$/)
@@ -317,7 +338,31 @@ export class StubServer {
     }
 
     if (method === 'GET' && path === '/rag/documents') {
-      json(response, 200, [])
+      json(response, 200, account.documents)
+      return
+    }
+    if (method === 'POST' && path === '/rag/upload') {
+      const failed = account.failNextUpload === true
+      account.failNextUpload = false
+      const document = {
+        id: this.fixture.nextDocumentId++, user_id: account.user.id,
+        filename: String(body).match(/filename="([^"]+)"/)?.[1] || 'document.txt',
+        file_type: '.txt', file_size: 128, chunk_count: failed ? 0 : 1,
+        status: failed ? 'failed' : 'indexed', created_at: new Date().toISOString(),
+      }
+      account.documents.unshift(document)
+      json(response, failed ? 400 : 200, failed ? { detail: 'Failed to index document: test failure' } : document)
+      return
+    }
+    const documentMatch = path.match(/^\/rag\/documents\/(\d+)$/)
+    if (method === 'DELETE' && documentMatch) {
+      const id = Number(documentMatch[1])
+      if (!account.documents.some((document) => document.id === id)) {
+        json(response, 404, { detail: 'Document not found' })
+      } else {
+        account.documents = account.documents.filter((document) => document.id !== id)
+        json(response, 200, { message: 'Document deleted' })
+      }
       return
     }
 
@@ -424,6 +469,11 @@ export class StubServer {
         return
       }
       const now = new Date().toISOString()
+      if (reminderActionMatch[2] === 'trigger'
+        && (reminder.status !== 'pending' || Date.parse(reminder.remind_at) > Date.parse(now))) {
+        json(response, 409, { detail: 'Only due pending reminders can be triggered' })
+        return
+      }
       reminder.triggered_at ||= now
       if (reminderActionMatch[2] === 'complete') {
         reminder.status = 'completed'
@@ -440,7 +490,14 @@ export class StubServer {
         json(response, 404, { detail: 'Reminder not found' })
         return
       }
-      Object.assign(reminder, parseJson(body), { updated_at: new Date().toISOString() })
+      const patch = parseJson(body)
+      const rescheduled = patch.remind_at && Date.parse(patch.remind_at) !== Date.parse(reminder.remind_at)
+      Object.assign(reminder, patch, { updated_at: new Date().toISOString() })
+      if (rescheduled && reminder.status === 'pending') reminder.triggered_at = null
+      if (reminder.status === 'canceled') {
+        reminder.cancellation_source = 'user'
+        reminder.completed_at = reminder.updated_at
+      }
       json(response, 200, reminder)
       return
     }

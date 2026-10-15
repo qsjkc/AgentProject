@@ -1,7 +1,7 @@
 // Smoke the packaged executable with disposable local accounts and userData.
 // This is not an NSIS installation or live-service acceptance test.
 import { spawn, execFile } from 'node:child_process'
-import { mkdtemp, mkdir, writeFile, copyFile, rm } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, writeFile, copyFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve, basename } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -14,6 +14,7 @@ import { USERS } from './e2e/fixtures.mjs'
 import { REQUIRED_SELECTORS as SELECTORS } from './e2e/p1k-scenarios.mjs'
 
 const desktopRoot = resolve(fileURLToPath(import.meta.url), '../..')
+const expectedVersion = JSON.parse(await readFile(join(desktopRoot, 'package.json'), 'utf8')).version
 const executable = join(desktopRoot, 'dist/releases/win-unpacked/Detachym.exe')
 const artifacts = join(desktopRoot, 'artifacts/e2e', `packaged-${Date.now()}`)
 const userData = await mkdtemp(join(tmpdir(), 'detachym-e2e-packaged-'))
@@ -71,7 +72,7 @@ async function launch() {
   await pet.evaluate('window.desktopBridge.openMainPanel()')
   ownedLogPath = (await pet.evaluate('window.desktopBridge.getLogPaths()')).logPath
   const version = await pet.evaluate('window.desktopBridge.getAppVersion()')
-  assert(version === '1.1.0-rc.1', 'Unexpected packaged version', version)
+  assert(version === expectedVersion, 'Unexpected packaged version', { version, expectedVersion })
   report.launches.push({ version, targets: targets.size, e2eBridgeAbsent: true })
   return pages
 }

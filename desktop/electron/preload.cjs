@@ -22,6 +22,7 @@ let e2eRelationshipCapabilityAdopted = false
 const e2eRelationshipRefreshListeners = new Set()
 const e2eReminderPollListeners = new Set()
 const e2eSnapshotReaders = new Set()
+let reminderWakeupSequence = 0
 
 const invokeE2eControl = (method, ...args) => (
   e2eEnabled ? ipcRenderer.invoke('desktop:e2e-control', method, ...args) : null
@@ -84,6 +85,13 @@ async function notifyPetReminderEventWithRenewedContext(payload, expectedContext
   return ipcRenderer.invoke('desktop:notify-pet-reminder-event', payload, renewedContext)
 }
 
+async function scheduleReminderWakeup(at, expectedContext) {
+  const sequence = ++reminderWakeupSequence
+  const renewedContext = await renewExpectedContext(expectedContext, 'pet')
+  if (!renewedContext?.authoritative?.id) return false
+  return invokeForRendererInstance('desktop:schedule-reminder-wakeup', at, renewedContext, sequence)
+}
+
 const mainPanelIntentListeners = createMainPanelIntentListenerRegistry({
   onReady: () => void ipcRenderer.invoke('desktop:main-panel-intent-ready'),
   onNotReady: () => void ipcRenderer.invoke('desktop:main-panel-intent-not-ready'),
@@ -112,6 +120,21 @@ ipcRenderer.on('desktop:e2e-reset-local', () => {
 })
 
 const desktopBridge = {
+  getFocusSession: async (expectedContext) => {
+    const renewed = await renewExpectedContext(expectedContext, 'pet')
+    if (!renewed) return { ok: false, reason: 'context-expired' }
+    return ipcRenderer.invoke('desktop:get-focus-session', renewed)
+  },
+  updateFocusSession: async (command, payload, expectedContext) => {
+    const renewed = await renewExpectedContext(expectedContext, 'pet')
+    if (!renewed) return { ok: false, reason: 'context-expired' }
+    return ipcRenderer.invoke('desktop:update-focus-session', command, payload, renewed)
+  },
+  onFocusSessionChanged: (callback) => {
+    const listener = (_event, payload) => callback(payload)
+    ipcRenderer.on('desktop:focus-session-changed', listener)
+    return () => ipcRenderer.removeListener('desktop:focus-session-changed', listener)
+  },
   openMainPanel: (options) => ipcRenderer.invoke('desktop:open-main-panel', options),
   ackMainPanelIntent: (id) => ipcRenderer.invoke('desktop:main-panel-intent-ack', id),
   minimizeMainPanel: () => ipcRenderer.invoke('desktop:minimize-main-panel'),
@@ -250,6 +273,12 @@ const desktopBridge = {
     ipcRenderer.on('desktop:pet-reminder-event', listener)
     return () => ipcRenderer.removeListener('desktop:pet-reminder-event', listener)
   },
+  scheduleReminderWakeup,
+  onReminderWakeup: (callback) => {
+    const listener = () => callback()
+    ipcRenderer.on('desktop:reminder-wakeup', listener)
+    return () => ipcRenderer.removeListener('desktop:reminder-wakeup', listener)
+  },
   onPetRelationshipChanged: (callback) => {
     const listener = (_event, payload) => {
       if (e2eEnabled) {
@@ -268,7 +297,9 @@ const desktopBridge = {
     ipcRenderer.invoke('desktop:show-notification', payload, expectedContext)
   ),
   getApiBaseUrl: () => ipcRenderer.invoke('desktop:get-api-base-url'),
-  setApiBaseUrl: (value) => ipcRenderer.invoke('desktop:set-api-base-url', value),
+  beginLoginAttempt: (server) => invokeForRendererInstance('desktop:begin-login-attempt', server),
+  cancelLoginAttempt: (attempt) => invokeForRendererInstance('desktop:cancel-login-attempt', attempt),
+  setApiBaseUrl: (value, attempt) => invokeForRendererInstance('desktop:set-api-base-url', value, attempt),
   getLanguage: () => ipcRenderer.invoke('desktop:get-language'),
   setLanguage: (value) => ipcRenderer.invoke('desktop:set-language', value),
   getVoiceSettings: () => ipcRenderer.invoke('desktop:get-voice-settings'),
@@ -321,7 +352,7 @@ const desktopBridge = {
   setPetPosition: (position) => ipcRenderer.invoke('desktop:set-pet-position', position),
   getSessionToken: () => ipcRenderer.invoke('desktop:get-session-token'),
   getSessionSnapshot: () => ipcRenderer.invoke('desktop:get-session-snapshot'),
-  setSessionToken: (token) => ipcRenderer.invoke('desktop:set-session-token', token),
+  setSessionToken: (token, attempt) => invokeForRendererInstance('desktop:set-session-token', token, attempt),
   clearSessionToken: (expectedToken) => ipcRenderer.invoke('desktop:clear-session-token', expectedToken),
   logDebug: (payload) => ipcRenderer.invoke('desktop:log-debug', payload),
   sendRendererHeartbeat: (payload) => ipcRenderer.invoke('desktop:renderer-heartbeat', payload),
@@ -352,6 +383,7 @@ if (e2eEnabled) {
       return () => e2eSnapshotReaders.delete(read)
     },
     showWindow: (role) => invokeE2eControl('showWindow', role),
+    hideWindow: (role) => invokeE2eControl('hideWindow', role),
     prepareOnboarding: (options) => invokeE2eControl('prepareOnboarding', options),
     expireOperationCapabilities: () => invokeE2eControl('expireOperationCapabilities'),
     switchAccount: async (fixture) => {

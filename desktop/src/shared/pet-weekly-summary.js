@@ -108,6 +108,23 @@ export function getPetWeeklySummaryHighlights(language, summary) {
   ].filter(Boolean)
 }
 
+export function getPetWeeklySummaryPeriod(language, summary) {
+  const dates = [summary?.week_start, summary?.week_end].map((value) => {
+    if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return null
+    const date = new Date(`${value}T00:00:00Z`)
+    return Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === value
+      ? date
+      : null
+  })
+  if (dates.some((date) => !date) || dates[0] > dates[1]) return ''
+  // These are calendar dates in the server's reward timezone, not instants to
+  // shift into the computer's timezone.
+  const formatter = new Intl.DateTimeFormat(language === 'zh-CN' ? 'zh-CN' : 'en', {
+    year: 'numeric', month: 'short', day: 'numeric', timeZone: 'UTC',
+  })
+  return `${formatter.format(dates[0])} – ${formatter.format(dates[1])}`
+}
+
 export function getPetWeeklyCompanionCopy(language, summary) {
   if (!summary?.eligible || !summary.is_new || !summary.review_key) {
     return null

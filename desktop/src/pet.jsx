@@ -8,6 +8,7 @@ import { PetOutfitRenderer } from './components/PetOutfitRenderer'
 import {
   captureApiOperationContext,
   assertApiOperationContextCurrent,
+  getApiBaseUrl,
   getLanguage,
   getSessionSnapshot,
   getVoiceSettings,
@@ -33,6 +34,7 @@ import {
   petAnimationReducer,
 } from './shared/pet-animation-state'
 import { getPetCareActions, getPetCareToolbarLabel } from './shared/pet-care-actions'
+import { captureFocusSnapshot, getFocusSnapshotRemainingMs, isFocusSnapshotCurrent } from './shared/focus-session'
 import {
   DEFAULT_COMPANION_SETTINGS,
   DEFAULT_COMPANION_STATE,
@@ -110,6 +112,7 @@ import {
 import { PET_ONBOARDING_MAIN_PANEL_INTENT } from './shared/pet-onboarding-main'
 import { getPetVisual } from './shared/pets'
 import { getPendingReminders, markReminderTriggered } from './shared/reminders-api'
+import { createReminderPollController, getReminderPollPlan, REMINDER_BACKLOG_DELAY_MS, REMINDER_RECONCILE_MS } from './shared/reminder-poll'
 
 const DEFAULT_PREFERENCES = {
   quick_chat_enabled: true,
@@ -120,7 +123,6 @@ const DRAG_THRESHOLD = 8
 const REPLY_VISIBLE_MS = 8000
 const PROCESSING_TIMEOUT_MS = 18000
 const AUTH_EXPIRED_BUBBLE_MS = 4200
-const REMINDER_POLL_INTERVAL_MS = 30000
 const PET_IDLE_ANIMATION_INTERVAL_MS = 45000
 const PET_SLEEP_TIMEOUT_MS = 10 * 60 * 1000
 const COMPANION_POLL_INTERVAL_MS = 30000
@@ -210,6 +212,7 @@ function PetApp() {
   )
 
   const managerRef = useRef(null)
+  const voiceEntryRequestRef = useRef(0)
   const keyHeldRef = useRef(false)
   const transientBubbleTimerRef = useRef(null)
   const intimacyFeedbackTimerRef = useRef(null)
@@ -258,6 +261,8 @@ function PetApp() {
   const companionStateRef = useRef(DEFAULT_COMPANION_STATE)
   const companionStateReadyRef = useRef(false)
   const companionRequestInFlightRef = useRef(null)
+  const focusSnapshotRef = useRef(null)
+  const focusServerRef = useRef(null)
   const companionLoadGateRef = useRef(null)
   if (!companionLoadGateRef.current) companionLoadGateRef.current = createAccountOperationGate()
   const petAnimationStateRef = useRef(petAnimationState)
@@ -379,6 +384,17 @@ function PetApp() {
     relationshipId: relationshipRef.current?.id ?? null,
   }), [])
 
+  const captureVoiceUiOperation = useCallback(() => {
+    const request = voiceEntryRequestRef.current
+    const manager = managerRef.current
+    const account = getCurrentPetAccountContext()
+    return () => request === voiceEntryRequestRef.current
+      && manager !== null && managerRef.current === manager
+      && hasSessionRef.current
+      && isPetAccountOperationCurrent(account, getCurrentPetAccountContext())
+      && isSessionSnapshotCurrent(account.session, sessionSnapshotRef.current)
+  }, [getCurrentPetAccountContext])
+
   const capturePetApiOperation = useCallback(async (expectedContext = null, scope = 'pet') => {
     const initiatingContext = expectedContext || getCurrentPetAccountContext()
     const operationContext = await captureApiOperationContext(initiatingContext, scope)
@@ -395,6 +411,50 @@ function PetApp() {
     authoritativeContextRef.current = operationContext.authoritative
     return operationContext
   }, [getCurrentPetAccountContext])
+
+  const isFocusActive = useCallback(() => {
+    const snapshot = focusSnapshotRef.current
+    return isFocusSnapshotCurrent(snapshot, { ...getCurrentPetAccountContext(), server: focusServerRef.current })
+      && snapshot.state?.status === 'running'
+      && getFocusSnapshotRemainingMs(snapshot) > 0
+  }, [getCurrentPetAccountContext])
+
+  useEffect(() => {
+    focusSnapshotRef.current = null
+    focusServerRef.current = null
+    if (!hasSession || petType !== 'pig') return undefined
+    let mounted = true
+    let receivedUpdate = false
+    const receiveSnapshot = (snapshot) => {
+      if (!mounted) return
+      if (!snapshot || !snapshot.state) {
+        receivedUpdate = true
+        focusSnapshotRef.current = null
+      } else if (isFocusSnapshotCurrent(snapshot, { ...getCurrentPetAccountContext(), server: focusServerRef.current })) {
+        receivedUpdate = true
+        focusSnapshotRef.current = captureFocusSnapshot(snapshot, focusSnapshotRef.current)
+      }
+    }
+    const unsubscribe = window.desktopBridge?.onFocusSessionChanged?.(receiveSnapshot)
+    void (async () => {
+      try {
+        const server = await window.desktopBridge?.getApiBaseUrl?.()
+        if (!mounted) return
+        focusServerRef.current = server
+        const operationContext = await capturePetApiOperation()
+        const snapshot = await window.desktopBridge?.getFocusSession?.({ ...operationContext, server })
+        if (mounted && !receivedUpdate) receiveSnapshot(snapshot)
+      } catch (error) {
+        loggerRef.current.error('focus:state-load-failed', error)
+      }
+    })()
+    return () => {
+      mounted = false
+      focusSnapshotRef.current = null
+      focusServerRef.current = null
+      unsubscribe?.()
+    }
+  }, [capturePetApiOperation, getCurrentPetAccountContext, hasSession, petType, userId, sessionSnapshot?.generation])
 
   const isMilestoneContextCurrent = useCallback((epoch) => (
     isPetMilestonePlaybackContextCurrent({
@@ -1497,6 +1557,7 @@ function PetApp() {
   }, [])
 
   const transitionToIdle = useCallback(() => {
+    voiceEntryRequestRef.current += 1
     loggerRef.current.event('voice:exit', {
       from: phaseRef.current,
     })
@@ -2338,7 +2399,12 @@ function PetApp() {
       ) {
         return
       }
+      if (payload.type === 'updated') {
+        void reminderPollRef.current?.()
+        return
+      }
       if (payload.type === 'created') {
+        void reminderPollRef.current?.()
         void interruptOnboardingGuide('reminder-created')
         void interruptMilestonePlayback('reminder-created')
         setTransientBubbleForDuration(payload.message, 3200)
@@ -2414,6 +2480,7 @@ function PetApp() {
 
     managerRef.current = manager
     return () => {
+      voiceEntryRequestRef.current += 1
       managerRef.current = null
       clearTransientBubbleTimer()
       clearUiIdleTimer()
@@ -2561,6 +2628,7 @@ function PetApp() {
     const pollCompanion = async () => {
       if (
         !mounted ||
+        isFocusActive() ||
         companionRequestInFlightRef.current ||
         petTypeRef.current !== 'pig' ||
         !hasSessionRef.current ||
@@ -2593,6 +2661,7 @@ function PetApp() {
         const idleSeconds = await window.desktopBridge?.getSystemIdleSeconds?.()
         if (
           !mounted
+          || isFocusActive()
           || !isPetAccountOperationCurrent(requestContext, getCurrentPetAccountContext())
           || petTypeRef.current !== 'pig'
           || document.visibilityState !== 'visible'
@@ -2636,6 +2705,7 @@ function PetApp() {
           }
           if (
             !mounted
+            || isFocusActive()
             || !isPetAccountOperationCurrent(requestContext, getCurrentPetAccountContext())
             || petTypeRef.current !== 'pig'
             || !hasSessionRef.current
@@ -2740,72 +2810,91 @@ function PetApp() {
       window.clearTimeout(initialTimer)
       window.clearInterval(timer)
     }
-  }, [capturePetApiOperation, getCurrentPetAccountContext, hasSession, petType, setTransientBubbleForDuration, userId])
+  }, [capturePetApiOperation, getCurrentPetAccountContext, hasSession, isFocusActive, petType, setTransientBubbleForDuration, userId])
 
   useEffect(() => {
     let mounted = true
-    let inFlight = false
+    let fallbackTimer = null
+    let latestOperation = null
 
     const poll = async () => {
-      if (!hasSessionRef.current || inFlight) {
-        return
-      }
-      inFlight = true
+      if (!hasSessionRef.current || !mounted) return
       const requestContext = getCurrentPetAccountContext()
-      try {
-        const operationContext = await capturePetApiOperation(requestContext)
-        if (!mounted || !isPetAccountOperationCurrent(requestContext, getCurrentPetAccountContext())) {
-          return
-        }
-        const due = await getPendingReminders(
-          requestContext.petType,
-          new Date(),
-          false,
-          operationContext,
-        )
-        if (
-          !mounted
-          || !due.length
-          || !isPetAccountOperationCurrent(requestContext, getCurrentPetAccountContext())
-        ) {
-          return
-        }
-        const reminder = due[0]
-        const copy = getPetReminderCopy(requestContext.petType).reminderDue(reminder.title)
-        await interruptOnboardingGuide('reminder-due')
-        await interruptMilestonePlayback('reminder-due')
-        if (!isPetAccountOperationCurrent(requestContext, getCurrentPetAccountContext())) {
-          return
-        }
-        setTransientBubbleForDuration(copy, 8000)
-        dispatchPetAnimation({ type: 'REMINDER_DUE', message: copy })
-        const notificationShown = await window.desktopBridge?.showNotification?.({
-          title: 'Detachym',
-          body: copy,
-        }, operationContext.authoritative)
-        if (
-          notificationShown !== true
-          || !isPetAccountOperationCurrent(requestContext, getCurrentPetAccountContext())
-        ) {
-          return
-        }
-        await markReminderTriggered(reminder.id, operationContext)
-      } catch (error) {
-        loggerRef.current.error('reminder:poll-failed', error)
-      } finally {
-        inFlight = false
-      }
+      const server = await getApiBaseUrl()
+      const operationContext = { ...await capturePetApiOperation(requestContext), server }
+      const isCurrent = () => mounted && isPetAccountOperationCurrent(requestContext, getCurrentPetAccountContext())
+      if (!isCurrent()) return
+      latestOperation = operationContext
+      // Re-read at every deadline: a reminder may have been canceled or moved
+      // while its wakeup timer was waiting. Future rows only choose the deadline.
+      const reminders = await getPendingReminders(
+        requestContext.petType,
+        new Date(Date.now() + REMINDER_RECONCILE_MS),
+        false,
+        operationContext,
+      )
+      if (!isCurrent()) return
+      const plan = getReminderPollPlan(reminders, Date.now())
+      if (!plan.reminder) return { nextAt: plan.nextAt }
+      const reminder = plan.reminder
+      const copy = getPetReminderCopy(requestContext.petType).reminderDue(reminder.title)
+      await interruptOnboardingGuide('reminder-due')
+      await interruptMilestonePlayback('reminder-due')
+      if (!isCurrent() || server !== await getApiBaseUrl() || !isCurrent()) return
+      setTransientBubbleForDuration(copy, 8000)
+      dispatchPetAnimation({ type: 'REMINDER_DUE', message: copy })
+      const notificationShown = await window.desktopBridge?.showNotification?.({
+        title: 'Detachym',
+        body: copy,
+        reminderServer: server,
+      }, operationContext.authoritative)
+      if (!isCurrent()) return
+      if (notificationShown !== true) return { retry: true }
+      await markReminderTriggered(reminder.id, operationContext)
+      return { nextAt: Date.now() + REMINDER_BACKLOG_DELAY_MS }
     }
 
-    reminderPollRef.current = poll
-    void poll()
-    const timer = window.setInterval(poll, REMINDER_POLL_INTERVAL_MS)
+    const controller = createReminderPollController({
+      poll,
+      onError: (error) => loggerRef.current.error('reminder:poll-failed', error),
+      schedule: async (at) => {
+        if (!mounted || !hasSessionRef.current) return
+        if (fallbackTimer !== null) window.clearTimeout(fallbackTimer)
+        let scheduled = false
+        try {
+          if (latestOperation) {
+            scheduled = await window.desktopBridge?.scheduleReminderWakeup?.(at, latestOperation)
+          }
+        } catch (error) {
+          if (mounted) loggerRef.current.error('reminder:wakeup-failed', error)
+        }
+        if (!mounted || scheduled === true) return
+        // Initial authentication can still be settling. Keep a fallback until
+        // the first authorized main-process clock has been registered.
+        fallbackTimer = window.setTimeout(() => void controller.request(),
+          Math.max(1, Math.min(REMINDER_RECONCILE_MS, at - Date.now())))
+      }
+    })
+
+    reminderPollRef.current = controller.request
+    const unsubscribe = window.desktopBridge?.onReminderWakeup?.(() => void controller.request())
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') void controller.request()
+    }
+    const onOnline = () => void controller.request()
+    document.addEventListener('visibilitychange', onVisible)
+    window.addEventListener('online', onOnline)
+    if (hasSession) void controller.request()
     return () => {
       mounted = false
-      if (reminderPollRef.current === poll) {
+      controller.dispose()
+      unsubscribe?.()
+      document.removeEventListener('visibilitychange', onVisible)
+      window.removeEventListener('online', onOnline)
+      if (reminderPollRef.current === controller.request) {
         reminderPollRef.current = null
       }
-      window.clearInterval(timer)
+      if (fallbackTimer !== null) window.clearTimeout(fallbackTimer)
     }
   }, [
     getCurrentPetAccountContext,
@@ -2864,16 +2953,25 @@ function PetApp() {
     })
     scheduleProcessingTimeout()
 
+    const isCurrent = captureVoiceUiOperation()
     try {
-      await managerRef.current?.stopPressToTalk?.()
+      const result = await managerRef.current?.stopPressToTalk?.()
+      if (isCurrent() && result?.hadAudio === false) {
+        clearProcessingTimer()
+        dispatchVoice({ type: 'VOICE_READY', bubbleText: getVoiceCopy('ready'), errorMessage: '' })
+        resetUiIdleTimer()
+      }
     } catch (error) {
+      if (error?.code === 'VOICE_START_CANCELLED' || !isCurrent()) return
       handleFatalVoiceError(formatVoiceError(error, '结束语音输入失败。'))
     }
-  }, [clearReplyTimer, clearUiIdleTimer, getVoiceCopy, handleFatalVoiceError, scheduleProcessingTimeout])
+  }, [captureVoiceUiOperation, clearProcessingTimer, clearReplyTimer, clearUiIdleTimer, getVoiceCopy, handleFatalVoiceError, resetUiIdleTimer, scheduleProcessingTimeout])
 
   const handleInterrupt = useCallback(async () => {
+    const isCurrent = captureVoiceUiOperation()
     try {
       const result = await managerRef.current?.interruptVoiceReply?.()
+      if (!isCurrent()) return
       loggerRef.current.event('voice:interrupt-click', {
         accepted: result?.accepted ?? false,
       })
@@ -2886,9 +2984,10 @@ function PetApp() {
       })
       resetUiIdleTimer()
     } catch (error) {
+      if (error?.code === 'VOICE_START_CANCELLED' || !isCurrent()) return
       handleFatalVoiceError(formatVoiceError(error, '打断当前回复失败。'))
     }
-  }, [clearProcessingTimer, clearReplyTimer, handleFatalVoiceError, resetUiIdleTimer])
+  }, [captureVoiceUiOperation, clearProcessingTimer, clearReplyTimer, handleFatalVoiceError, resetUiIdleTimer])
 
   const handleEnterVoiceMode = useCallback(async () => {
     if (!hasSessionRef.current) {
@@ -2896,7 +2995,14 @@ function PetApp() {
       return
     }
 
+    const initiatingContext = getCurrentPetAccountContext()
+    const isSameAccount = () => (
+      hasSessionRef.current
+      && isPetAccountOperationCurrent(initiatingContext, getCurrentPetAccountContext())
+      && isSessionSnapshotCurrent(initiatingContext.session, sessionSnapshotRef.current)
+    )
     await interruptOnboardingGuide('voice-enter')
+    if (!isSameAccount()) return
 
     if (!voiceSettingsRef.current.desktop_voice_enabled) {
       setTransientBubbleForDuration(`${getVoiceCopy('voiceDisabled')} ${getQuickChatEntryHint(languageRef.current)}`, 3600)
@@ -2921,7 +3027,13 @@ function PetApp() {
       return
     }
 
+    const manager = managerRef.current
+    if (!manager) return
+    const request = ++voiceEntryRequestRef.current
+    const isEntryCurrent = () => request === voiceEntryRequestRef.current
+      && managerRef.current === manager && isSameAccount()
     await interruptMilestonePlayback('voice-enter')
+    if (!isEntryCurrent()) return
     clearTransientBubbleTimer()
     setTransientBubble('')
     clearReplyTimer()
@@ -2938,12 +3050,14 @@ function PetApp() {
 
     try {
       await window.desktopBridge?.focusPetWindow?.()
+      if (!isEntryCurrent()) return
       dispatchVoice({
         type: 'VOICE_CONNECTING',
         bubbleText: getVoiceCopy('connecting'),
         errorMessage: '',
       })
-      await managerRef.current?.enterVoiceMode?.()
+      await manager.enterVoiceMode()
+      if (!isEntryCurrent()) return
       dispatchVoice({
         type: 'VOICE_READY',
         bubbleText: getVoiceCopy('ready'),
@@ -2951,6 +3065,7 @@ function PetApp() {
       })
       resetUiIdleTimer()
     } catch (error) {
+      if (error?.code === 'VOICE_START_CANCELLED' || !isEntryCurrent()) return
       if (isVoiceAuthError(error)) {
         loggerRef.current.event('voice:auth-expired', {
           phase: phaseRef.current,
@@ -2970,6 +3085,7 @@ function PetApp() {
     clearProcessingTimer,
     clearReplyTimer,
     clearTransientBubbleTimer,
+    getCurrentPetAccountContext,
     getVoiceCopy,
     handleFatalVoiceError,
     handleInterrupt,
@@ -3021,7 +3137,9 @@ function PetApp() {
         bubbleText: getVoiceCopy('listening'),
         errorMessage: '',
       })
+      const isCurrent = captureVoiceUiOperation()
       void managerRef.current?.startPressToTalk?.().catch((error) => {
+        if (error?.code === 'VOICE_START_CANCELLED' || !isCurrent()) return
         handleFatalVoiceError(formatVoiceError(error, '开始语音输入失败。'))
       })
     }
@@ -3061,6 +3179,7 @@ function PetApp() {
       window.removeEventListener('blur', handleBlur)
     }
   }, [
+    captureVoiceUiOperation,
     clearProcessingTimer,
     clearReplyTimer,
     clearUiIdleTimer,

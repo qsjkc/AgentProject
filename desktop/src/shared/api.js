@@ -1,4 +1,6 @@
 import { normalizeApiBaseUrl } from './api-base-url'
+import { runWithRequestDeadline } from './request-deadline'
+import { formatApiErrorDetail } from './api-error'
 import {
   createAuthContextChangedError,
   createLocalOperationContext,
@@ -59,10 +61,23 @@ export async function getApiBaseUrl() {
   return cachedApiBaseUrl
 }
 
-export async function setApiBaseUrl(value) {
+export async function beginLoginAttempt(value) {
+  const server = normalizeApiBaseUrl(value)
+  if (!server) throw new Error(getUnconfiguredServerMessage())
+  const attempt = await getDesktopBridge()?.beginLoginAttempt?.(server)
+  if (!attempt) throw createAuthContextChangedError()
+  return attempt
+}
+
+export async function cancelLoginAttempt(attempt) {
+  return getDesktopBridge()?.cancelLoginAttempt?.(attempt)
+}
+
+export async function setApiBaseUrl(value, attempt) {
   const normalizedValue = normalizeApiBaseUrl(value)
   const bridge = getDesktopBridge()
-  await bridge?.setApiBaseUrl?.(normalizedValue)
+  const saved = await bridge?.setApiBaseUrl?.(normalizedValue, attempt)
+  if (saved !== normalizedValue) throw createAuthContextChangedError()
   cachedApiBaseUrl = normalizedValue
   return normalizedValue
 }
@@ -99,13 +114,15 @@ export async function hideQuickChat() {
   return getDesktopBridge()?.hideQuickChat?.()
 }
 
-export async function checkApiConnection(value) {
+export async function checkApiConnection(value, { signal } = {}) {
   const apiBaseUrl = normalizeApiBaseUrl(value)
   if (!apiBaseUrl) {
     throw new Error(getUnconfiguredServerMessage())
   }
 
-  const response = await fetch(`${apiBaseUrl}/public/version/win-x64`)
+  const response = await runWithRequestDeadline((requestSignal) => (
+    fetch(`${apiBaseUrl}/public/version/win-x64`, { signal: requestSignal })
+  ), { signal })
   if (!response.ok) {
     throw new Error('无法连接到 Detachym 服务。')
   }
@@ -158,35 +175,32 @@ export async function captureApiOperationContext(values = {}, scope = 'pet') {
 }
 
 export async function assertApiOperationContextCurrent(operationContext) {
-  const effectiveContext = withLocalOperationContext(operationContext)
+  let effectiveContext = withLocalOperationContext(operationContext)
   if (
     !effectiveContext?.session
     || !isSessionSnapshotCurrent(effectiveContext.session, await getSessionSnapshot())
   ) {
     throw createAuthContextChangedError()
   }
-  if (
-    effectiveContext.authoritative
-    && (
-      !await getDesktopBridge()?.renewOperationContext?.(
-        effectiveContext.authoritative,
-        effectiveContext.local.scope,
-        effectiveContext.local,
-      )
-      || !await getDesktopBridge()?.validateOperationContext?.(
-        effectiveContext.authoritative,
-        effectiveContext.local.scope,
-        effectiveContext.local,
-      )
+  if (effectiveContext.authoritative) {
+    const renewed = await getDesktopBridge()?.renewOperationContext?.(
+      effectiveContext.authoritative,
+      effectiveContext.local.scope,
+      effectiveContext.local,
     )
-  ) {
-    throw createAuthContextChangedError()
+    if (!renewed) throw createAuthContextChangedError()
+    effectiveContext = { ...effectiveContext, authoritative: renewed }
+    if (!await getDesktopBridge()?.validateOperationContext?.(
+      effectiveContext.authoritative,
+      effectiveContext.local.scope,
+      effectiveContext.local,
+    )) throw createAuthContextChangedError()
   }
   return true
 }
 
-export async function setSessionToken(token) {
-  const result = await getDesktopBridge()?.setSessionToken?.(token)
+export async function setSessionToken(token, attempt) {
+  const result = await getDesktopBridge()?.setSessionToken?.(token, attempt)
   if (result) {
     latestOperationCapability = null
     latestOperationSession = null
@@ -205,30 +219,42 @@ export async function clearSessionToken(expectedSession) {
 
 async function request(path, options = {}, operationContext = null) {
   const effectiveContext = withLocalOperationContext(operationContext)
+  const assertServer = (apiBaseUrl) => {
+    if (effectiveContext?.server === undefined) return
+    const expected = normalizeApiBaseUrl(effectiveContext.server)
+    if (!expected || expected !== apiBaseUrl) throw createAuthContextChangedError()
+  }
   const result = await executeSessionBoundRequest({
     path,
     options,
     operationContext: effectiveContext,
     getSessionSnapshot,
-    requireApiBaseUrl,
+    requireApiBaseUrl: async () => {
+      const apiBaseUrl = await requireApiBaseUrl()
+      assertServer(apiBaseUrl)
+      return apiBaseUrl
+    },
     fetchImpl: fetch,
+    timeoutMs: path === '/chat/message' || path === '/rag/upload' ? 120_000 : undefined,
     clearSessionSnapshot: clearSessionToken,
     renewOperationContext: async (context) => (
       !context?.authoritative
-      || Boolean(await getDesktopBridge()?.renewOperationContext?.(
+      || await getDesktopBridge()?.renewOperationContext?.(
+        context.authoritative,
+        context.local?.scope || 'pet',
+        context.local,
+      )
+    ),
+    validateOperationContext: async (context) => {
+      if (effectiveContext?.server !== undefined) assertServer(await getApiBaseUrl())
+      const authorized = !context?.authoritative || Boolean(await getDesktopBridge()?.validateOperationContext?.(
         context.authoritative,
         context.local?.scope || 'pet',
         context.local,
       ))
-    ),
-    validateOperationContext: async (context) => (
-      !context?.authoritative
-      || Boolean(await getDesktopBridge()?.validateOperationContext?.(
-        context.authoritative,
-        context.local?.scope || 'pet',
-        context.local,
-      ))
-    ),
+      if (effectiveContext?.server !== undefined) assertServer(await getApiBaseUrl())
+      return authorized
+    },
   })
   await getDesktopBridge()?.e2e?.recordRequestCompletion?.({
     path,
@@ -240,26 +266,41 @@ async function request(path, options = {}, operationContext = null) {
 
 export const desktopApiRequest = request
 
-export async function login(username, password) {
-  const apiBaseUrl = await requireApiBaseUrl()
+export async function login(username, password, { attempt, isCurrent = () => true, signal } = {}) {
+  const apiBaseUrl = normalizeApiBaseUrl(attempt?.server)
+  const expectedSession = normalizeSessionSnapshot(attempt?.session)
+  const assertCurrent = async () => {
+    if (!attempt?.id || !apiBaseUrl || !expectedSession || !isCurrent()) throw createAuthContextChangedError()
+    const [currentServer, currentSession] = await Promise.all([getApiBaseUrl(), getSessionSnapshot()])
+    if (!isCurrent() || currentServer !== apiBaseUrl || !isSessionSnapshotCurrent(expectedSession, currentSession)) {
+      throw createAuthContextChangedError()
+    }
+  }
+  await assertCurrent()
   const formData = new FormData()
   formData.append('username', username)
   formData.append('password', password)
 
-  const response = await fetch(`${apiBaseUrl}/auth/login`, {
-    method: 'POST',
-    body: formData,
-    cache: 'no-store',
-  })
+  const data = await runWithRequestDeadline(async (requestSignal) => {
+    if (!isCurrent()) throw createAuthContextChangedError()
+    const response = await fetch(`${apiBaseUrl}/auth/login`, {
+      method: 'POST',
+      body: formData,
+      cache: 'no-store',
+      signal: requestSignal,
+    })
 
-  if (!response.ok) {
-    const payload = await response.json().catch(() => ({ detail: '登录失败' }))
-    throw new Error(payload.detail || '登录失败')
-  }
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({ detail: '登录失败' }))
+      throw new Error(formatApiErrorDetail(payload.detail, '登录失败'))
+    }
 
-  const data = await response.json()
-  await setSessionToken(data.access_token)
-  return data
+    return response.json()
+  }, { signal })
+  await assertCurrent()
+  const committedSession = normalizeSessionSnapshot(await setSessionToken(data.access_token, attempt))
+  if (!committedSession || committedSession.token !== data.access_token || !isCurrent()) throw createAuthContextChangedError()
+  return { ...data, session: committedSession, server: apiBaseUrl }
 }
 
 export const desktopApi = {
@@ -270,7 +311,7 @@ export const desktopApi = {
       method: 'PUT',
       body: JSON.stringify(payload),
     }, operationContext),
-  getSessions: (operationContext) => request('/chat/sessions', {}, operationContext),
+  getSessions: (operationContext, includeMessages = false) => request(`/chat/sessions?include_messages=${includeMessages}`, {}, operationContext),
   getSession: (sessionId, operationContext) => request(`/chat/sessions/${sessionId}`, {}, operationContext),
   sendMessage: (payload, operationContext) =>
     request('/chat/message', {

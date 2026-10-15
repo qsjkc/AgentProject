@@ -105,6 +105,30 @@ function createMainPanelIntentCoordinator({
     hasPending() {
       return Boolean(pending)
     },
+    preparePendingContextRebind() {
+      if (
+        !pending?.context
+        || rendererReady
+        || pending.delivered
+        || typeof validateContext !== 'function'
+        || !isPendingContextCurrent()
+      ) return null
+      const expectedPending = pending
+      let used = false
+      return (context) => {
+        if (used) return false
+        used = true
+        if (
+          !context
+          || pending !== expectedPending
+          || rendererReady
+          || pending.delivered
+          || validateContext(context) !== true
+        ) return false
+        pending.context = context
+        return true
+      }
+    },
     rebindPendingContext(context) {
       if (!pending || !context) return false
       pending.context = context

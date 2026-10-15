@@ -19,8 +19,10 @@ import {
 } from '../shared/reminders-api'
 import { isPetOnboardingReminderMatch } from '../shared/pet-onboarding-main'
 import { captureApiOperationContext } from '../shared/api'
-import { commitAccountOperation, createAccountOperationGate } from '../shared/pet-account-context'
+import { commitAccountOperation } from '../shared/pet-account-context'
+import { createReminderPanelOperations } from '../shared/reminder-panel-operations'
 import { getReminderRecurrenceLabel } from '../shared/reminder-recurrence'
+import { UpcomingReminderPanel } from './UpcomingReminderPanel'
 
 const REFRESH_INTERVAL_MS = 30000
 
@@ -29,7 +31,7 @@ function getCopy(language) {
     return {
       title: '待处理提醒',
       hint: '小猪提醒过的事项，完成后再增加亲密度。',
-      empty: '现在没有待处理事项。',
+      empty: '现在没有待处理事项。想记一件小事，可以在聊天里说“十分钟后提醒我喝水”。',
       delivered: '已提醒',
       emailPending: '邮件待发送',
       emailSending: '邮件发送中',
@@ -39,6 +41,7 @@ function getCopy(language) {
       emailDisabled: '未开启邮件',
       emailCanceled: '邮件已取消',
       refresh: '刷新待处理提醒',
+      loading: '正在查看待处理提醒…',
       complete: (title) => `完成：${title}`,
       retryEmail: (title) => `重新发送邮件：${title}`,
       skipOccurrence: (title) => `跳过本次：${title}`,
@@ -46,14 +49,14 @@ function getCopy(language) {
       completeFailed: '提醒完成失败，请稍后重试。',
       retryFailed: '邮件重试启动失败，请稍后再试。',
       skipFailed: '本次提醒跳过失败，请稍后再试。',
-      onboardingHint: '喝完水点一下完成，我就知道这件事收尾了。',
+      onboardingHint: '事项完成后点一下完成，我就知道这件事收尾了。',
     }
   }
 
   return {
     title: 'Pending reminders',
     hint: 'Finish delivered reminders to earn intimacy.',
-    empty: 'Nothing is waiting for you.',
+    empty: 'Nothing is waiting for you. To add a reminder, try “十分钟后提醒我喝水” in chat.',
     delivered: 'Delivered',
     emailPending: 'Email pending',
     emailSending: 'Sending email',
@@ -63,6 +66,7 @@ function getCopy(language) {
     emailDisabled: 'Email disabled',
     emailCanceled: 'Email canceled',
     refresh: 'Refresh pending reminders',
+    loading: 'Checking pending reminders…',
     complete: (title) => `Complete: ${title}`,
     retryEmail: (title) => `Retry email: ${title}`,
     skipOccurrence: (title) => `Skip this occurrence: ${title}`,
@@ -70,7 +74,7 @@ function getCopy(language) {
     completeFailed: 'Failed to complete the reminder. Try again.',
     retryFailed: 'Failed to restart email delivery. Try again.',
     skipFailed: 'Failed to skip this occurrence. Try again.',
-    onboardingHint: 'When you finish your water, mark it complete so I know this is wrapped up.',
+    onboardingHint: 'When you finish the task, mark it complete so I know this is wrapped up.',
   }
 }
 
@@ -124,19 +128,15 @@ export function PendingReminderPanel({
   const [skippingId, setSkippingId] = useState(null)
   const [error, setError] = useState('')
   const currentContextRef = useRef(accountContext)
-  const loadGateRef = useRef(null)
-  const actionGateRef = useRef(null)
-  if (!loadGateRef.current) {
-    loadGateRef.current = createAccountOperationGate()
-  }
-  if (!actionGateRef.current) {
-    actionGateRef.current = createAccountOperationGate()
-  }
+  const operationsRef = useRef(null)
+  if (!operationsRef.current) operationsRef.current = createReminderPanelOperations()
+  const { loadGate, actionGate } = operationsRef.current
   currentContextRef.current = accountContext
   const copy = getCopy(language)
 
   const loadReminders = useCallback(async ({ silent = false } = {}) => {
-    const requestContext = loadGateRef.current.begin(currentContextRef.current)
+    const requestContext = operationsRef.current.beginLoad(currentContextRef.current)
+    if (!requestContext) return
     if (!silent) {
       setLoading(true)
     }
@@ -144,7 +144,7 @@ export function PendingReminderPanel({
       const operationContext = await captureApiOperationContext(requestContext, 'pet')
       const items = await getPendingReminders(petType, null, true, operationContext)
       commitAccountOperation(
-        loadGateRef.current,
+        loadGate,
         requestContext,
         currentContextRef.current,
         () => {
@@ -154,20 +154,19 @@ export function PendingReminderPanel({
       )
     } catch {
       commitAccountOperation(
-        loadGateRef.current,
+        loadGate,
         requestContext,
         currentContextRef.current,
         () => setError(copy.loadFailed),
       )
     } finally {
-      if (!silent) {
-        commitAccountOperation(
-          loadGateRef.current,
-          requestContext,
-          currentContextRef.current,
-          () => setLoading(false),
-        )
-      }
+      commitAccountOperation(
+        loadGate,
+        requestContext,
+        currentContextRef.current,
+        () => setLoading(false),
+      )
+      operationsRef.current.finishLoad(requestContext)
     }
   }, [
     accountContext?.session?.generation,
@@ -175,20 +174,25 @@ export function PendingReminderPanel({
     accountContext?.userId,
     accountContext?.epoch,
     copy.loadFailed,
+    loadGate,
     petType,
   ])
 
   useEffect(() => {
     void loadReminders()
+    const refresh = () => { void loadReminders({ silent: true }) }
+    window.addEventListener('detachym:reminders-changed', refresh)
     const timer = window.setInterval(() => {
       void loadReminders({ silent: true })
     }, REFRESH_INTERVAL_MS)
-    return () => window.clearInterval(timer)
+    return () => {
+      window.clearInterval(timer)
+      window.removeEventListener('detachym:reminders-changed', refresh)
+    }
   }, [loadReminders])
 
   useEffect(() => () => {
-    loadGateRef.current.invalidate()
-    actionGateRef.current.invalidate()
+    operationsRef.current.invalidate()
   }, [
     accountContext?.session?.generation,
     accountContext?.session?.token,
@@ -201,14 +205,16 @@ export function PendingReminderPanel({
     if (savingId !== null || retryingId !== null || skippingId !== null) {
       return
     }
+    const requestContext = operationsRef.current.beginAction(currentContextRef.current)
+    if (!requestContext) return
+    setLoading(false)
     setSavingId(reminder.id)
     setError('')
-    const requestContext = actionGateRef.current.begin(accountContext)
     try {
       const operationContext = await captureApiOperationContext(requestContext, 'pet')
       const completed = await completeReminder(reminder.id, operationContext)
       if (!commitAccountOperation(
-        actionGateRef.current,
+        actionGate,
         requestContext,
         currentContextRef.current,
         () => setReminders((current) => current.filter((item) => item.id !== reminder.id)),
@@ -218,18 +224,19 @@ export function PendingReminderPanel({
       await onCompleted?.(completed, requestContext)
     } catch {
       commitAccountOperation(
-        actionGateRef.current,
+        actionGate,
         requestContext,
         currentContextRef.current,
         () => setError(copy.completeFailed),
       )
     } finally {
       commitAccountOperation(
-        actionGateRef.current,
+        actionGate,
         requestContext,
         currentContextRef.current,
         () => setSavingId(null),
       )
+      operationsRef.current.finishAction(requestContext)
     }
   }
 
@@ -237,14 +244,16 @@ export function PendingReminderPanel({
     if (savingId !== null || retryingId !== null || skippingId !== null) {
       return
     }
+    const requestContext = operationsRef.current.beginAction(currentContextRef.current)
+    if (!requestContext) return
+    setLoading(false)
     setRetryingId(reminder.id)
     setError('')
-    const requestContext = actionGateRef.current.begin(accountContext)
     try {
       const operationContext = await captureApiOperationContext(requestContext, 'pet')
       const updated = await retryReminderEmail(reminder.id, operationContext)
       commitAccountOperation(
-        actionGateRef.current,
+        actionGate,
         requestContext,
         currentContextRef.current,
         () => setReminders((current) => current.map((item) => (
@@ -253,18 +262,19 @@ export function PendingReminderPanel({
       )
     } catch {
       commitAccountOperation(
-        actionGateRef.current,
+        actionGate,
         requestContext,
         currentContextRef.current,
         () => setError(copy.retryFailed),
       )
     } finally {
       commitAccountOperation(
-        actionGateRef.current,
+        actionGate,
         requestContext,
         currentContextRef.current,
         () => setRetryingId(null),
       )
+      operationsRef.current.finishAction(requestContext)
     }
   }
 
@@ -272,36 +282,41 @@ export function PendingReminderPanel({
     if (savingId !== null || retryingId !== null || skippingId !== null) {
       return
     }
+    const requestContext = operationsRef.current.beginAction(currentContextRef.current)
+    if (!requestContext) return
+    setLoading(false)
     setSkippingId(reminder.id)
     setError('')
-    const requestContext = actionGateRef.current.begin(accountContext)
     try {
       const operationContext = await captureApiOperationContext(requestContext, 'pet')
       await skipReminderOccurrence(reminder.id, operationContext)
       commitAccountOperation(
-        actionGateRef.current,
+        actionGate,
         requestContext,
         currentContextRef.current,
         () => setReminders((current) => current.filter((item) => item.id !== reminder.id)),
       )
     } catch {
       commitAccountOperation(
-        actionGateRef.current,
+        actionGate,
         requestContext,
         currentContextRef.current,
         () => setError(copy.skipFailed),
       )
     } finally {
       commitAccountOperation(
-        actionGateRef.current,
+        actionGate,
         requestContext,
         currentContextRef.current,
         () => setSkippingId(null),
       )
+      operationsRef.current.finishAction(requestContext)
     }
   }
 
   return (
+    <>
+    <UpcomingReminderPanel language={language} petType={petType} accountContext={accountContext} />
     <section className="pending-reminder-panel" aria-label={copy.title}>
       <div className="pending-reminder-header">
         <div className="sidebar-title">{copy.title}</div>
@@ -311,7 +326,7 @@ export function PendingReminderPanel({
           data-e2e="pending-reminder-refresh"
           title={copy.refresh}
           aria-label={copy.refresh}
-          disabled={loading}
+          disabled={loading || savingId !== null || retryingId !== null || skippingId !== null}
           onClick={() => {
             void loadReminders()
           }}
@@ -321,6 +336,7 @@ export function PendingReminderPanel({
       </div>
       <div className="sidebar-copy">{copy.hint}</div>
 
+      {loading && <div className="pending-reminder-empty" role="status">{copy.loading}</div>}
       {error && <div className="pending-reminder-error" role="status">{error}</div>}
       {!loading && reminders.length === 0 && !error && (
         <div className="pending-reminder-empty">{copy.empty}</div>
@@ -345,6 +361,7 @@ export function PendingReminderPanel({
                 data-e2e-reminder-id={String(reminder.id)}
                 key={reminder.id}
                 role="group"
+                aria-busy={savingId === reminder.id || retryingId === reminder.id || skippingId === reminder.id}
                 aria-describedby={isOnboardingHighlight ? `pending-reminder-onboarding-${reminder.id}` : undefined}
               >
                 <div className="pending-reminder-copy">
@@ -421,5 +438,6 @@ export function PendingReminderPanel({
         </div>
       )}
     </section>
+    </>
   )
 }

@@ -49,6 +49,15 @@ const {
   isExactSessionSnapshot,
 } = require('./account-boundary.cjs')
 const { createMainPanelIntentCoordinator } = require('./main-panel-intent.cjs')
+const { createFocusSessionController } = require('./focus-session.cjs')
+const { createReminderWakeupController } = require('./reminder-wakeup.cjs')
+const { createLoginAttemptController } = require('./login-attempt.cjs')
+const {
+  createBoundsPersistence,
+  fitWindowBounds,
+  recoverWindowBounds,
+  restoreWindowBounds,
+} = require('./window-bounds.cjs')
 
 const {
   app,
@@ -78,8 +87,17 @@ const operationCapabilities = createOperationCapabilityRegistry({
   authoritativeState: authoritativeOperationContext,
   createId: randomUUID,
 })
+const loginAttempts = createLoginAttemptController({
+  readContext: () => ({ server: getStore().get('apiBaseUrl'), session: getCurrentSessionSnapshot() }),
+  readRendererNonce: (sender) => operationCapabilities.getRendererInstanceNonce(sender),
+  createId: randomUUID,
+})
 let relationshipBroadcastOrchestrator = null
 let petOnboardingStateBroadcaster = null
+const boundsPersistence = new Set()
+let displayRecoveryTimer = null
+let focusSessionController = null
+let reminderWakeupController = null
 
 const rendererHeartbeatState = Object.create(null)
 const petOnboardingEngagementSamples = new Map()
@@ -315,6 +333,7 @@ async function createStore() {
       petOnboardingStates: {},
       petCompanionSettings: DEFAULT_COMPANION_SETTINGS,
       petCompanionState: {},
+      focusSessions: {},
       quickBounds: { width: QUICK_CHAT_WIDTH, height: QUICK_CHAT_HEIGHT },
       mainBounds: { width: MAIN_PANEL_WIDTH, height: MAIN_PANEL_HEIGHT },
       voiceSettings: DEFAULT_VOICE_SETTINGS,
@@ -386,6 +405,95 @@ function getCurrentStableAccountContext() {
       ? normalizeUserId(relationship.id)
       : null,
   }
+}
+
+function broadcastFocusSession(snapshot) {
+  for (const windowInstance of [petWindow, mainPanelWindow]) {
+    if (windowInstance && !windowInstance.isDestroyed() && !windowInstance.webContents.isLoading()) {
+      windowInstance.webContents.send('desktop:focus-session-changed', snapshot)
+    }
+  }
+}
+
+function getFocusSessionController() {
+  if (!focusSessionController) {
+    focusSessionController = createFocusSessionController({
+      read: (key) => (getStore().get('focusSessions') || {})[key],
+      write: (key, state) => getStore().set('focusSessions', {
+        ...(getStore().get('focusSessions') || {}), [key]: state,
+      }),
+      createId: randomUUID,
+      onChange: broadcastFocusSession,
+      onComplete: (snapshot) => {
+        if (isE2e || getStore().get('mute') || !Notification.isSupported()) return
+        try {
+          const zh = normalizeLanguage(getStore().get('language')) === 'zh-CN'
+          const notification = new Notification({
+            title: zh ? '这一小段，我们完成啦' : 'We finished this little stretch',
+            body: zh ? '小猪陪你一起歇一会儿。喝口水，伸个懒腰吧。' : 'Take a breath with your pig. Some water and a stretch?',
+          })
+          notification.once('click', () => {
+            const current = getFocusSessionController().current()
+            if (current.server === snapshot.server && current.userId === snapshot.userId && current.generation === snapshot.generation) openMainPanel()
+          })
+          notification.show()
+        } catch (error) {
+          logDesktop('focus-notification-failed', { message: error?.message || 'unknown' })
+        }
+      },
+    })
+  }
+  return focusSessionController
+}
+
+function syncFocusSessionContext() {
+  return getFocusSessionController().setContext({
+    ...getCurrentStableAccountContext(), server: getStore().get('apiBaseUrl'),
+  })
+}
+
+function getReminderWakeupController() {
+  if (!reminderWakeupController) {
+    reminderWakeupController = createReminderWakeupController({
+      getContextKey: () => {
+        const context = getCurrentStableAccountContext()
+        return context.hasSession ? JSON.stringify([
+          getStore().get('apiBaseUrl'), context.userId, context.petType, context.session.generation,
+        ]) : null
+      },
+      isOwnerCurrent: (sender) => Boolean(
+        petWindow && !petWindow.isDestroyed() && sender === petWindow.webContents && !sender.isDestroyed(),
+      ),
+      onWake: (sender) => sender.send('desktop:reminder-wakeup'),
+    })
+  }
+  return reminderWakeupController
+}
+
+function requestPetReminderRefresh() {
+  if (petWindow && !petWindow.isDestroyed() && !petWindow.webContents.isLoading()) {
+    petWindow.webContents.send('desktop:reminder-wakeup')
+  }
+}
+
+function getFocusSessionForRenderer(event, expectedContext) {
+  const authorization = authorizeRendererAccountMutation(event, expectedContext, ['main-panel', 'pet'], { requiredScope: 'pet' })
+  if (!authorization.ok) return { ok: false, reason: authorization.reason }
+  if (!isApiServerCurrent(expectedContext)) return { ok: false, reason: 'server-changed' }
+  return { ok: true, ...syncFocusSessionContext() }
+}
+
+function isApiServerCurrent(expectedContext) {
+  return typeof expectedContext?.server === 'string' && Boolean(expectedContext.server)
+    && expectedContext.server.replace(/\/+$/, '') === String(getStore().get('apiBaseUrl') || '').replace(/\/+$/, '')
+}
+
+function updateFocusSessionForRenderer(event, command, payload, expectedContext) {
+  const authorization = authorizeRendererAccountMutation(event, expectedContext, ['main-panel'], { requiredScope: 'pet' })
+  if (!authorization.ok) return { ok: false, reason: authorization.reason }
+  if (!isApiServerCurrent(expectedContext)) return { ok: false, reason: 'server-changed' }
+  syncFocusSessionContext()
+  return getFocusSessionController().update(command, payload)
 }
 
 function observeAuthoritativeOperationContext(options = {}) {
@@ -608,44 +716,50 @@ async function loadWindow(windowInstance, fileName) {
 }
 
 function persistBounds(key, windowInstance, options = { saveSize: true }) {
-  const save = () => {
-    if (!windowInstance || windowInstance.isDestroyed()) {
-      return
-    }
-
-    const bounds = windowInstance.getBounds()
-    const nextValue = options.saveSize
-      ? bounds
-      : { ...getStore().get(key), x: bounds.x, y: bounds.y }
-    getStore().set(key, nextValue)
-  }
-
-  windowInstance.on('move', save)
-  windowInstance.on('resize', save)
+  const persistence = createBoundsPersistence({
+    windowInstance,
+    read: () => getStore().get(key),
+    write: (bounds) => getStore().set(key, bounds),
+    saveSize: options.saveSize,
+  })
+  boundsPersistence.add(persistence)
+  windowInstance.once('closed', () => boundsPersistence.delete(persistence))
 }
 
 function clampWindowPosition(x, y, width, height, displayOverride = null) {
   const point = {
-    x: Math.round(Number(x) || 0),
-    y: Math.round(Number(y) || 0),
+    x: Number.isFinite(x) ? Math.round(x) : 0,
+    y: Number.isFinite(y) ? Math.round(y) : 0,
   }
   const display = displayOverride || screen.getDisplayNearestPoint(point)
-  const workArea = display.workArea
+  const fitted = fitWindowBounds({ ...point, width, height }, display.workArea, { resizeToFit: false })
+  return { x: fitted.x, y: fitted.y }
+}
 
-  return {
-    x: Math.min(Math.max(point.x, workArea.x), workArea.x + workArea.width - width),
-    y: Math.min(Math.max(point.y, workArea.y), workArea.y + workArea.height - height),
-  }
+function recoverDesktopWindowPositions() {
+  recoverWindowBounds(petWindow, screen, { resizeToFit: false })
+  recoverWindowBounds(quickChatWindow, screen, { resizeToFit: false })
+  recoverWindowBounds(mainPanelWindow, screen)
+  syncQuickChatPosition()
+}
+
+function scheduleDisplayRecovery() {
+  if (displayRecoveryTimer !== null) clearTimeout(displayRecoveryTimer)
+  displayRecoveryTimer = setTimeout(() => {
+    displayRecoveryTimer = null
+    if (!quitting) recoverDesktopWindowPositions()
+  }, 200)
 }
 
 function getPetBounds() {
   const petBounds = getStore().get('petBounds') || {}
-  return {
-    width: Math.max(PET_WINDOW_WIDTH, Number(petBounds.width) || 0),
-    height: Math.max(PET_WINDOW_HEIGHT, Number(petBounds.height) || 0),
+  const bounds = {
+    width: PET_WINDOW_WIDTH,
+    height: PET_WINDOW_HEIGHT,
     x: Number.isFinite(petBounds.x) ? petBounds.x : 90,
     y: Number.isFinite(petBounds.y) ? petBounds.y : 90,
   }
+  return restoreWindowBounds(screen, bounds, bounds, { resizeToFit: false })
 }
 
 function getPetState() {
@@ -786,6 +900,10 @@ function sendPetRelationshipToWindow(windowInstance, relationship) {
 }
 
 function cachePetRelationship(payload = {}) {
+  // A reload waits for this cache refresh before mounting its intent target.
+  // Preserve only an already-authorized, undelivered intent across this write.
+  const rebindPendingIntent = mainPanelIntentCoordinator?.preparePendingContextRebind()
+  const previousContext = rebindPendingIntent ? getCurrentStableAccountContext() : null
   const petType = normalizePetType(payload.pet_type || payload.petType)
   const cache = getStore().get('petRelationshipCache') || {}
   const previousRelationship = cache[petType] || null
@@ -799,6 +917,14 @@ function cachePetRelationship(payload = {}) {
     [petType]: nextRelationship,
   })
   observeAuthoritativeOperationContext({ forceRelationshipRevision: true })
+  if (rebindPendingIntent) {
+    const currentContext = getCurrentStableAccountContext()
+    const previousKey = createStableAccountContextKey(previousContext, { requireRelationship: true })
+    const currentKey = createStableAccountContextKey(currentContext, { requireRelationship: true })
+    if (previousKey && previousKey === currentKey && isExactSessionSnapshot(previousContext.session, currentContext.session)) {
+      rebindPendingIntent(issueTrustedOperationCapabilityForWindow(mainPanelWindow, 'relationship', currentContext))
+    }
+  }
   if (
     normalizeUserId(previousRelationship?.id) !== normalizeUserId(nextRelationship.id)
     || normalizeUserId(previousRelationship?.user_id ?? previousRelationship?.userId)
@@ -1043,13 +1169,21 @@ function attachRendererCapabilityLifecycle(windowInstance) {
   const sender = windowInstance?.webContents
   if (!sender) return
   sender.on('did-start-navigation', (_event, _url, _isInPlace, isMainFrame) => {
-    if (isMainFrame !== false) operationCapabilities.revokeSender(sender)
+    if (isMainFrame !== false) {
+      loginAttempts.cancelOwner(sender)
+      operationCapabilities.revokeSender(sender)
+      reminderWakeupController?.cancelOwner(sender)
+    }
   })
   sender.on('render-process-gone', () => {
+    loginAttempts.cancelOwner(sender)
     operationCapabilities.revokeSender(sender)
+    reminderWakeupController?.cancelOwner(sender)
   })
   sender.once('destroyed', () => {
+    loginAttempts.cancelOwner(sender)
     operationCapabilities.revokeSender(sender)
+    reminderWakeupController?.cancelOwner(sender)
   })
 }
 
@@ -1707,6 +1841,8 @@ function broadcastPetState(payload = {}) {
   sendPetStateToWindow(quickChatWindow, nextState)
   sendPetStateToWindow(mainPanelWindow, nextState)
   broadcastPetOnboardingState()
+  syncFocusSessionContext()
+  reminderWakeupController?.syncContext()
   return nextState
 }
 
@@ -1718,13 +1854,6 @@ function setPetPosition(x, y) {
   const currentBounds = petWindow.getBounds()
   const nextPosition = clampWindowPosition(x, y, currentBounds.width, currentBounds.height)
   petWindow.setPosition(nextPosition.x, nextPosition.y)
-  getStore().set('petBounds', {
-    ...getStore().get('petBounds'),
-    width: currentBounds.width,
-    height: currentBounds.height,
-    x: nextPosition.x,
-    y: nextPosition.y,
-  })
   syncQuickChatPosition()
   return nextPosition
 }
@@ -1766,7 +1895,6 @@ function syncQuickChatPosition() {
   const quickBounds = quickChatWindow.getBounds()
   const nextPosition = getQuickChatAnchorPosition(quickBounds.width, quickBounds.height)
   quickChatWindow.setPosition(nextPosition.x, nextPosition.y)
-  getStore().set('quickBounds', { ...getStore().get('quickBounds'), x: nextPosition.x, y: nextPosition.y })
   return nextPosition
 }
 
@@ -1778,7 +1906,7 @@ function showPetWindow({ focus = false } = {}) {
     return null
   }
 
-  const bounds = getPetBounds()
+  const bounds = petWindow.getBounds()
   const nextPosition = clampWindowPosition(bounds.x, bounds.y, bounds.width, bounds.height)
   petWindow.setBounds({ ...bounds, ...nextPosition })
   getStore().set('petBounds', { ...bounds, ...nextPosition })
@@ -1862,7 +1990,9 @@ function registerVoiceGlobalShortcut() {
 }
 
 function resetPetPosition() {
-  const nextPosition = { width: PET_WINDOW_WIDTH, height: PET_WINDOW_HEIGHT, x: 90, y: 90 }
+  const nextPosition = restoreWindowBounds(screen, {
+    width: PET_WINDOW_WIDTH, height: PET_WINDOW_HEIGHT, x: 90, y: 90,
+  }, {}, { resizeToFit: false })
   getStore().set('petBounds', nextPosition)
 
   if (!petWindow || petWindow.isDestroyed()) {
@@ -1917,6 +2047,7 @@ function createPetWindow() {
   petWindow.on('move', () => {
     syncQuickChatPosition()
   })
+  petWindow.on('show', requestPetReminderRefresh)
   petWindow.webContents.on('did-finish-load', () => {
     sendPetStateToWindow(petWindow, getPetState())
     sendVoiceSettingsToWindow(petWindow, getVoiceSettings())
@@ -1985,10 +2116,9 @@ function createMainPanelWindow() {
 
   const mainBounds = getStore().get('mainBounds') || {}
   mainPanelWindow = new BrowserWindow({
-    width: Math.max(MAIN_PANEL_WIDTH, Number(mainBounds.width) || MAIN_PANEL_WIDTH),
-    height: Math.max(MAIN_PANEL_HEIGHT, Number(mainBounds.height) || MAIN_PANEL_HEIGHT),
-    x: Number.isFinite(mainBounds.x) ? mainBounds.x : undefined,
-    y: Number.isFinite(mainBounds.y) ? mainBounds.y : undefined,
+    ...restoreWindowBounds(screen, mainBounds, {
+      width: MAIN_PANEL_WIDTH, height: MAIN_PANEL_HEIGHT,
+    }),
     title: 'Detachym 桌宠客户端',
     icon: getWindowIconPath(),
     show: false,
@@ -2094,6 +2224,8 @@ function openMainPanel(options = {}) {
     return false
   }
 
+  if (mainPanelWindow.isMinimized()) mainPanelWindow.restore()
+  recoverWindowBounds(mainPanelWindow, screen)
   mainPanelWindow.show()
   mainPanelWindow.focus()
   if (options?.intent === 'pet-onboarding-relationship') {
@@ -2332,7 +2464,7 @@ function syncPetStateForRenderer(event, payload = {}) {
   return syncPetState(payload)
 }
 
-function setSessionTokenForRenderer(event, token) {
+function setSessionTokenForRenderer(event, token, attempt, rendererInstanceNonce) {
   if (getIpcSenderRole(event) !== 'main-panel') {
     return false
   }
@@ -2340,16 +2472,19 @@ function setSessionTokenForRenderer(event, token) {
   if (sessionSubject === null) {
     return false
   }
-  if (token === getStore().get('sessionToken')) {
-    return true
-  }
-  operationCapabilities.resetCapabilities()
-  broadcastPetState({ hasSession: false, userId: null })
-  clearAccountScopedPetContext()
-  getStore().set('sessionToken', token)
-  sessionGeneration += 1
-  broadcastPetState({ hasSession: true, userId: sessionSubject })
-  return true
+  return loginAttempts.commitSession({
+    sender: event.sender, senderRole: getIpcSenderRole(event), rendererInstanceNonce, attempt,
+  }, () => {
+    if (token !== getStore().get('sessionToken')) {
+      operationCapabilities.resetCapabilities()
+      broadcastPetState({ hasSession: false, userId: null })
+      clearAccountScopedPetContext()
+      getStore().set('sessionToken', token)
+      sessionGeneration += 1
+      broadcastPetState({ hasSession: true, userId: sessionSubject })
+    }
+    return getCurrentSessionSnapshot()
+  })
 }
 
 function getCurrentSessionSnapshot() {
@@ -2367,6 +2502,7 @@ function clearSessionTokenForRenderer(event, expectedSession) {
     return false
   }
   const changed = Boolean(currentToken)
+  loginAttempts.invalidate()
   getStore().set('sessionToken', null)
   if (changed) {
     sessionGeneration += 1
@@ -2576,6 +2712,13 @@ function showE2eWindow(role) {
   return false
 }
 
+function hideE2eWindow(role) {
+  const windowInstance = getWindowForRole(role)
+  if (!windowInstance || windowInstance.isDestroyed()) return false
+  windowInstance.hide()
+  return true
+}
+
 function destroyE2eWindow(role) {
   const windowInstance = getWindowForRole(role)
   if (!windowInstance || windowInstance.isDestroyed()) return false
@@ -2619,6 +2762,7 @@ async function handleE2eControl(event, method, ...args) {
   }
   if (method === 'snapshot') return getE2eSnapshot()
   if (method === 'showWindow') return showE2eWindow(args[0])
+  if (method === 'hideWindow') return hideE2eWindow(args[0])
   if (method === 'prepareOnboarding') return prepareE2ePetOnboarding(args[0])
   if (method === 'expireOperationCapabilities') {
     return { expired: operationCapabilities.expireAll() }
@@ -2637,6 +2781,8 @@ async function handleE2eControl(event, method, ...args) {
 }
 
 function registerIpc() {
+  ipcMain.handle('desktop:get-focus-session', async (event, expectedContext) => getFocusSessionForRenderer(event, expectedContext))
+  ipcMain.handle('desktop:update-focus-session', async (event, command, payload, expectedContext) => updateFocusSessionForRenderer(event, command, payload, expectedContext))
   if (isE2e) {
     ipcMain.handle('desktop:e2e-control', handleE2eControl)
   }
@@ -2692,6 +2838,16 @@ function registerIpc() {
       sendReminderEventToPetForRenderer(event, payload, expectedContext)
     ),
   )
+  ipcMain.handle('desktop:schedule-reminder-wakeup', async (
+    event, at, expectedContext, sequence, rendererInstanceNonce,
+  ) => {
+    if (!operationCapabilities.isRendererInstanceCurrent({
+      sender: event.sender, senderRole: getIpcSenderRole(event), rendererInstanceNonce,
+    })) return false
+    const authorization = authorizeRendererAccountMutation(event, expectedContext, ['pet'], { requiredScope: 'pet' })
+    if (!authorization.ok || !isApiServerCurrent(expectedContext)) return false
+    return getReminderWakeupController().schedule(event.sender, at, sequence)
+  })
   ipcMain.handle('desktop:get-pet-state', async (event) => (
     getIpcSenderRole(event) ? getPetState() : null
   ))
@@ -2833,9 +2989,22 @@ function registerIpc() {
 
   ipcMain.handle('desktop:get-app-version', async () => app.getVersion())
   ipcMain.handle('desktop:get-api-base-url', async () => getStore().get('apiBaseUrl'))
-  ipcMain.handle('desktop:set-api-base-url', async (_event, value) => {
-    getStore().set('apiBaseUrl', value)
-    return value
+  ipcMain.handle('desktop:begin-login-attempt', (event, server, rendererInstanceNonce) => loginAttempts.begin({
+    sender: event.sender, senderRole: getIpcSenderRole(event), rendererInstanceNonce, server,
+  }))
+  ipcMain.handle('desktop:cancel-login-attempt', (event, attempt, rendererInstanceNonce) => loginAttempts.cancel({
+    sender: event.sender, senderRole: getIpcSenderRole(event), rendererInstanceNonce, attempt,
+  }))
+  ipcMain.handle('desktop:set-api-base-url', (event, value, attempt, rendererInstanceNonce) => {
+    if (typeof value !== 'string') throw new TypeError('The service address must be a string.')
+    return loginAttempts.saveServer({
+      sender: event.sender, senderRole: getIpcSenderRole(event), rendererInstanceNonce, attempt,
+    }, value, () => {
+      getStore().set('apiBaseUrl', value)
+      syncFocusSessionContext()
+      reminderWakeupController?.syncContext()
+      requestPetReminderRefresh()
+    })
   })
   ipcMain.handle('desktop:get-language', async () => normalizeLanguage(getStore().get('language')))
   ipcMain.handle('desktop:set-language', async (_event, value) => {
@@ -2882,6 +3051,8 @@ function registerIpc() {
   ipcMain.handle('desktop:show-notification', async (event, payload, expectedContext) => {
     const senderRole = getIpcSenderRole(event)
     const isLoginNotification = senderRole === 'main-panel' && !expectedContext
+      && isExactSessionSnapshot(payload?.loginSession, getCurrentSessionSnapshot())
+      && isApiServerCurrent({ server: payload?.loginServer })
     const notificationAuthorization = isLoginNotification
       ? { ok: true }
       : operationCapabilities.authorize({
@@ -2892,6 +3063,9 @@ function registerIpc() {
           currentContext: getCurrentStableAccountContext(),
         })
     if (!notificationAuthorization.ok || (!isLoginNotification && senderRole !== 'pet')) {
+      return false
+    }
+    if (payload?.reminderServer !== undefined && !isApiServerCurrent({ server: payload.reminderServer })) {
       return false
     }
     if (getStore().get('mute')) {
@@ -2912,8 +3086,8 @@ function registerIpc() {
   ipcMain.handle('desktop:get-session-snapshot', async (event) => (
     getIpcSenderRole(event) ? getCurrentSessionSnapshot() : null
   ))
-  ipcMain.handle('desktop:set-session-token', async (event, token) => (
-    setSessionTokenForRenderer(event, token)
+  ipcMain.handle('desktop:set-session-token', (event, token, attempt, rendererInstanceNonce) => (
+    setSessionTokenForRenderer(event, token, attempt, rendererInstanceNonce)
   ))
   ipcMain.handle('desktop:clear-session-token', async (event, expectedToken) => (
     clearSessionTokenForRenderer(event, expectedToken)
@@ -2969,6 +3143,15 @@ if (!app.requestSingleInstanceLock()) {
     migrateVoiceSettings()
     app.setLoginItemSettings({ openAtLogin: Boolean(getStore().get('autoLaunch')) })
     bootstrap()
+    syncFocusSessionContext()
+    screen.on('display-added', scheduleDisplayRecovery)
+    screen.on('display-removed', scheduleDisplayRecovery)
+    screen.on('display-metrics-changed', scheduleDisplayRecovery)
+    powerMonitor.on('resume', scheduleDisplayRecovery)
+    powerMonitor.on('resume', () => focusSessionController?.resume())
+    powerMonitor.on('resume', () => {
+      if (!reminderWakeupController?.wake()) requestPetReminderRefresh()
+    })
   })
 
   app.on('activate', () => {
@@ -2979,6 +3162,11 @@ if (!app.requestSingleInstanceLock()) {
 
   app.on('before-quit', () => {
     quitting = true
+    if (displayRecoveryTimer !== null) clearTimeout(displayRecoveryTimer)
+    displayRecoveryTimer = null
+    for (const persistence of boundsPersistence) persistence.flush()
+    focusSessionController?.dispose()
+    reminderWakeupController?.dispose()
   })
 
   app.on('will-quit', () => {

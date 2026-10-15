@@ -81,6 +81,12 @@ async function testStubEndpoints() {
     assertEqual(reminder.user_id, USERS.A.id)
     const pending = await fetch(`${stub.apiBaseUrl}/reminders?pet_type=pig&status=pending`, { headers }).then((response) => response.json())
     assertEqual(pending.length, 1)
+    const earlyTrigger = await fetch(`${stub.apiBaseUrl}/reminders/${reminder.id}/trigger`, { method: 'POST', headers })
+    assertEqual(earlyTrigger.status, 409, 'A future reminder must not be consumed by an early trigger')
+    await fetch(`${stub.apiBaseUrl}/reminders/${reminder.id}`, {
+      method: 'PATCH', headers,
+      body: JSON.stringify({ remind_at: new Date(Date.now() - 1000).toISOString() }),
+    })
     const triggered = await fetch(`${stub.apiBaseUrl}/reminders/${reminder.id}/trigger`, { method: 'POST', headers }).then((response) => response.json())
     assert(Boolean(triggered.triggered_at), 'Trigger endpoint did not set triggered_at')
     const completed = await fetch(`${stub.apiBaseUrl}/reminders/${reminder.id}/complete`, { method: 'POST', headers }).then((response) => response.json())
@@ -92,10 +98,25 @@ async function testStubEndpoints() {
       body: JSON.stringify({ message: 'hello', pet_type: 'pig' }),
     }).then((response) => response.json())
     assertEqual(message.role, 'assistant')
+    const legacySessions = await fetch(`${stub.apiBaseUrl}/chat/sessions`, { headers }).then((response) => response.json())
+    const summarySessions = await fetch(`${stub.apiBaseUrl}/chat/sessions?include_messages=false`, { headers }).then((response) => response.json())
+    assertEqual(legacySessions[0].messages.length, 2, 'Legacy session list lost its default messages')
+    assertEqual(summarySessions[0].messages.length, 0, 'Summary list still embeds every message')
+    assertEqual(summarySessions[0].id, legacySessions[0].id, 'Summary list changed session identity')
     const dailyStatus = await fetch(`${stub.apiBaseUrl}/pets/pig/daily-summary`, { headers })
     const weeklyStatus = await fetch(`${stub.apiBaseUrl}/pets/pig/weekly-summary`, { headers })
     assertEqual(dailyStatus.status, 200)
     assertEqual(weeklyStatus.status, 200)
+    const restore = stub.overrideResponse('GET', '/api/v1/pets/pig/relationship', 503, { detail: 'Temporary failure' })
+    assertEqual((await fetch(`${stub.apiBaseUrl}/pets/pig/relationship`, { headers })).status, 503)
+    restore()
+    assertEqual((await fetch(`${stub.apiBaseUrl}/pets/pig/relationship`, { headers })).status, 200)
+    const staleReply = stub.holdNext('GET', '/api/v1/chat/sessions', { statusCode: 200, payload: [] })
+    const staleRead = fetch(`${stub.apiBaseUrl}/chat/sessions`, { headers }).then((response) => response.json())
+    await staleReply.arrived
+    staleReply.release()
+    assertEqual((await staleRead).length, 0, 'Held response did not preserve its earlier snapshot')
+    assertEqual((await fetch(`${stub.apiBaseUrl}/chat/sessions`, { headers }).then((response) => response.json())).length, 1, 'Held snapshot affected later requests')
   } finally {
     await stub.close()
   }

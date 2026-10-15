@@ -1,0 +1,29 @@
+.pet-weekly-panel {
+  margin-top: 16px;
+  padding: 14px;
+  border: 1px solid #f2d8c4;
+  border-radius: 16px;
+  background: linear-gradient(145deg, #fffaf4, #fff3ee);
+  color: #6c493a;
+  overflow-wrap: anywhere;
+}
+
+.pet-weekly-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.pet-weekly-title { display: flex; align-items: center; gap: 7px; margin: 0; font-size: 13px; font-weight: 700; }
+.pet-weekly-title svg { flex-shrink: 0; }
+.pet-weekly-refresh { display: grid; place-items: center; flex-shrink: 0; width: 30px; height: 30px; border: 0; border-radius: 9px; background: #ffffffb3; color: #80513e; cursor: pointer; }
+.pet-weekly-refresh:hover:not(:disabled) { background: #fce4d5; }
+.pet-weekly-refresh:disabled { opacity: .5; cursor: wait; }
+.pet-weekly-period { margin: 5px 0 0; color: #856452; font-size: 10px; line-height: 1.6; }
+.pet-weekly-message, .pet-weekly-note { margin: 10px 0 0; font-size: 12px; line-height: 1.75; }
+.pet-weekly-note { color: #806252; }
+.pet-weekly-metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px; margin: 13px 0 0; }
+.pet-weekly-metrics > div { display: flex; flex-direction: column-reverse; justify-content: flex-end; gap: 4px; padding: 8px 4px; border-radius: 9px; background: #ffffffa6; text-align: center; }
+.pet-weekly-metrics dt { font-size: 10px; line-height: 1.45; color: #856452; }
+.pet-weekly-metrics dd { margin: 0; font-size: 20px; font-weight: 700; line-height: 1.2; font-variant-numeric: tabular-nums; }
+.pet-weekly-highlights { display: flex; flex-wrap: wrap; gap: 5px; margin: 10px 0 0; padding: 0; list-style: none; }
+.pet-weekly-highlights li { border-radius: 6px; background: #f8e5d8; padding: 3px 6px; font-size: 10px; line-height: 1.5; }
+.pet-weekly-error { font-size: 12px; line-height: 1.6; }
+.pet-weekly-error p { margin: 10px 0 6px; }
+.pet-weekly-error button { border: 1px solid #d9ad95; border-radius: 7px; background: white; color: #80513e; padding: 4px 10px; cursor: pointer; }
+.pet-weekly-panel button:focus-visible { outline: 2px solid #a45b37; outline-offset: 3px; }
