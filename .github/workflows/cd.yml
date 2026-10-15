@@ -8,13 +8,17 @@ on:
   workflow_dispatch:
     inputs:
       ref:
-        description: Git ref to deploy
+        description: Deployment branch (only main is accepted)
         required: false
         default: main
 
 concurrency:
-  group: cd-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: cd-main
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read
 
 jobs:
   preflight:
@@ -29,6 +33,10 @@ jobs:
       server_enabled: ${{ steps.vars.outputs.server_enabled }}
 
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
       - name: Resolve deployment variables
         id: vars
         shell: bash
@@ -36,6 +44,9 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           INPUT_REF: ${{ inputs.ref }}
           WORKFLOW_SHA: ${{ github.event.workflow_run.head_sha }}
+          WORKFLOW_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          WORKFLOW_EVENT: ${{ github.event.workflow_run.event }}
+          GH_TOKEN: ${{ github.token }}
           SERVER_APP_DIR_SECRET: ${{ secrets.SERVER_APP_DIR }}
           SERVER_PORT_SECRET: ${{ secrets.SERVER_PORT }}
           DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
@@ -47,11 +58,30 @@ jobs:
         run: |
           set -euo pipefail
 
-          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
-            DEPLOY_REF="${INPUT_REF:-main}"
-          else
-            DEPLOY_REF="$WORKFLOW_SHA"
+          MAIN_SHA="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')"
+          if [[ "$(git rev-parse HEAD)" != "$MAIN_SHA" ]]; then
+            echo 'main moved during preflight; rerun against its successful CI' >&2
+            exit 1
           fi
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            if [[ "${INPUT_REF:-main}" != "main" || "$GITHUB_REF" != "refs/heads/main" ]]; then
+              echo 'Manual deployment only accepts the main branch' >&2
+              exit 1
+            fi
+            SUCCESSFUL_CI="$(gh api --method GET "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs" \
+              -f head_sha="$MAIN_SHA" -f branch=main -f status=success -f per_page=100 \
+              --jq '[.workflow_runs[] | select(.head_sha == "'"$MAIN_SHA"'" and .head_branch == "main" and (.event == "push" or .event == "workflow_dispatch") and .conclusion == "success")] | length')"
+            if [[ "$SUCCESSFUL_CI" -eq 0 ]]; then
+              echo 'Current main has no successful CI; refusing deployment' >&2
+              exit 1
+            fi
+          elif [[ "$WORKFLOW_BRANCH" != "main" || "$WORKFLOW_SHA" != "$MAIN_SHA" \
+            || ( "$WORKFLOW_EVENT" != "push" && "$WORKFLOW_EVENT" != "workflow_dispatch" ) ]]; then
+            echo 'Automatic deployment requires successful CI for the current main SHA' >&2
+            exit 1
+          fi
+          DEPLOY_REF="$MAIN_SHA"
+          printf 'Deploying verified main commit %s\n' "$DEPLOY_REF"
 
           APP_DIR="${SERVER_APP_DIR_SECRET:-/root/PersonalSpace/AgentProject}"
           SERVER_PORT_RAW="${SERVER_PORT_SECRET:-22}"
@@ -70,8 +100,11 @@ jobs:
             DOCKER_ENABLED=false
           fi
 
-          if [[ -n "$SERVER_HOST" && -n "$SERVER_USERNAME" && ( -n "$SERVER_PASSWORD" || -n "$SERVER_SSH_KEY" ) ]]; then
+          if [[ -n "$SERVER_HOST" && -n "$SERVER_USERNAME" && -n "$SERVER_SSH_KEY" ]]; then
             SERVER_ENABLED=true
+          elif [[ -n "$SERVER_HOST" && -n "$SERVER_USERNAME" && -n "$SERVER_PASSWORD" ]]; then
+            echo 'Native SSH deployment requires SERVER_SSH_KEY; password-only login is unsupported' >&2
+            exit 1
           else
             SERVER_ENABLED=false
           fi
@@ -110,11 +143,27 @@ jobs:
       - name: Build Windows installer
         run: npm run build
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Bind installer to verified main commit
+        shell: bash
+        env:
+          EXPECTED_SOURCE_SHA: ${{ needs.preflight.outputs.deploy_ref }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE_SHA"
+          python ../deploy/verify_desktop_artifact.py --directory dist/releases --package package.json \
+            --source-commit "$EXPECTED_SOURCE_SHA" --manifest dist/releases/desktop-release.json
+
       - name: Upload desktop artifact
         uses: actions/upload-artifact@v4
         with:
           name: agentproject-desktop-win
-          path: desktop/dist/releases/Detachym-*-x64.exe
+          path: |
+            desktop/dist/releases/Detachym-*-x64.exe
+            desktop/dist/releases/desktop-release.json
           if-no-files-found: error
           retention-days: 7
 
@@ -183,7 +232,7 @@ jobs:
 
   deploy-server:
     name: Deploy Server
-    needs: preflight
+    needs: [preflight, desktop-installer]
     if: needs.preflight.outputs.server_enabled == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -192,12 +241,34 @@ jobs:
       SERVER_USERNAME_RAW: ${{ secrets.SERVER_USERNAME }}
       SERVER_APP_DIR_RAW: ${{ secrets.SERVER_APP_DIR }}
       SERVER_PORT_RAW: ${{ secrets.SERVER_PORT }}
-      APP_ENV_FILE_SECRET: ${{ secrets.APP_ENV_FILE }}
+      DEPLOY_SOURCE_SHA: ${{ needs.preflight.outputs.deploy_ref }}
+      GH_TOKEN: ${{ github.token }}
 
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ needs.preflight.outputs.deploy_ref }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: agentproject-desktop-win
+          path: desktop-release
+
+      - name: Verify downloaded installer and source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$DEPLOY_SOURCE_SHA"
+          python3 deploy/verify_desktop_artifact.py --directory desktop-release --package desktop/package.json \
+            --source-commit "$DEPLOY_SOURCE_SHA" --manifest desktop-release/desktop-release.json --verify
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          release = json.loads(Path('desktop-release/desktop-release.json').read_text())
+          with open(os.environ['GITHUB_ENV'], 'a') as env:
+              for key in ('version', 'filename', 'bytes', 'sha256', 'sourceCommit'):
+                  env.write(f"DESKTOP_ARTIFACT_{key.upper()}={release[key]}\n")
+          PY
 
       - name: Set up SSH
         shell: bash
@@ -279,6 +350,16 @@ jobs:
 
           printf 'Deploy target: %s@%s:%s%s\n' "$USERNAME" "$HOST" "$PORT" "$APP_DIR"
 
+      - name: Recheck main before remote changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          MAIN_SHA="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')"
+          if [[ "$MAIN_SHA" != "$DEPLOY_SOURCE_SHA" ]]; then
+            echo 'main changed while building; its new CI must finish before deployment' >&2
+            exit 1
+          fi
+
       - name: Prepare remote directories
         shell: bash
         run: |
@@ -292,15 +373,13 @@ jobs:
              && mkdir -p '$DEPLOY_APP_DIR/data/chroma' \
              && mkdir -p '$DEPLOY_APP_DIR/logs'"
 
-      - name: Upload runtime env file when provided
-        if: env.APP_ENV_FILE_SECRET != ''
+      - name: Refuse application or database downgrade
         shell: bash
         run: |
           set -euo pipefail
-          tmp_env="$(mktemp)"
-          printf '%s' "$APP_ENV_FILE_SECRET" > "$tmp_env"
-          scp "$tmp_env" "deploy-target:$DEPLOY_APP_DIR/.env"
-          rm -f "$tmp_env"
+          ssh deploy-target "cd '$DEPLOY_APP_DIR' && docker compose exec -T backend python - --inspect-running" \
+            < deploy/verify_release_transition.py > running-release.json
+          python3 deploy/verify_release_transition.py running-release.json
 
       - name: Upload application source
         shell: bash
@@ -327,11 +406,20 @@ jobs:
              && rm -f app-source.tgz"
           rm -f app-source.tgz
 
+      - name: Stage verified desktop download
+        shell: bash
+        run: |
+          set -euo pipefail
+          scp "desktop-release/$DESKTOP_ARTIFACT_FILENAME" \
+            "deploy-target:$DEPLOY_APP_DIR/data/downloads/.$DESKTOP_ARTIFACT_FILENAME.$DEPLOY_SOURCE_SHA.upload"
+          scp desktop-release/desktop-release.json \
+            "deploy-target:$DEPLOY_APP_DIR/.desktop-release-$DEPLOY_SOURCE_SHA.json"
+
       - name: Deploy on server
         shell: bash
         run: |
           set -euo pipefail
-          ssh deploy-target "cd '$DEPLOY_APP_DIR' && PUBLIC_DEPLOY_HOST='$DEPLOY_HOST' bash -s" <<'REMOTE_DEPLOY'
+          ssh deploy-target "cd '$DEPLOY_APP_DIR' && PUBLIC_DEPLOY_HOST='$DEPLOY_HOST' DEPLOY_SOURCE_SHA='$DEPLOY_SOURCE_SHA' DESKTOP_RELEASE_VERSION='$DESKTOP_ARTIFACT_VERSION' DESKTOP_RELEASE_FILE='$DESKTOP_ARTIFACT_FILENAME' DESKTOP_RELEASE_BYTES='$DESKTOP_ARTIFACT_BYTES' DESKTOP_RELEASE_SHA256='$DESKTOP_ARTIFACT_SHA256' bash -s" <<'REMOTE_DEPLOY'
           set -euo pipefail
 
           if [ ! -f .env ]; then
@@ -369,6 +457,23 @@ jobs:
             mv "$tmp_env" .env
           }
 
+          # Keep existing runtime secrets and business data. Only release keys change.
+          umask 077
+          if [ ! -f ".release-state-before-$DEPLOY_SOURCE_SHA.env" ]; then
+            printf 'DESKTOP_RELEASE_VERSION=%s\nDESKTOP_RELEASE_FILE=%s\n' \
+              "$(read_env DESKTOP_RELEASE_VERSION)" "$(read_env DESKTOP_RELEASE_FILE)" \
+              > ".release-state-before-$DEPLOY_SOURCE_SHA.env"
+          fi
+          STAGED_INSTALLER="data/downloads/.$DESKTOP_RELEASE_FILE.$DEPLOY_SOURCE_SHA.upload"
+          printf '%s  %s\n' "$DESKTOP_RELEASE_SHA256" "$STAGED_INSTALLER" | sha256sum --check --status
+          test "$(stat -c %s "$STAGED_INSTALLER")" = "$DESKTOP_RELEASE_BYTES"
+          if [ -e "data/downloads/$DESKTOP_RELEASE_FILE" ]; then
+            printf '%s  %s\n' "$DESKTOP_RELEASE_SHA256" "data/downloads/$DESKTOP_RELEASE_FILE" | sha256sum --check --status
+            rm -f -- "$STAGED_INSTALLER"
+          else
+            mv -- "$STAGED_INSTALLER" "data/downloads/$DESKTOP_RELEASE_FILE"
+          fi
+
           AGENT_API_KEY="$(read_env VOLC_AGENT_API_KEY)"
           BACKEND_INTERNAL_API_KEY="$(read_env BACKEND_INTERNAL_API_KEY)"
           if [ -z "$AGENT_API_KEY" ] || [ -z "$BACKEND_INTERNAL_API_KEY" ]; then
@@ -386,6 +491,7 @@ jobs:
             http://*) PUBLIC_ORIGIN="https://${PUBLIC_ORIGIN#http://}" ;;
           esac
           PUBLIC_ORIGIN="${PUBLIC_ORIGIN%/}"
+          printf '%s\n' "$PUBLIC_ORIGIN" > ".public-origin-$DEPLOY_SOURCE_SHA"
 
           AGENT_CHAT_URL="$(read_env VOLC_AGENT_CHAT_COMPLETIONS_URL)"
           case "$AGENT_CHAT_URL" in
@@ -404,6 +510,8 @@ jobs:
 
           printf 'AGENT_API_KEY=%s\nAGENT_LOG_LEVEL=info\nAGENT_FIRST_CHUNK_TIMEOUT_MS=8000\nAGENT_TOTAL_TIMEOUT_MS=45000\nAGENT_TOOL_TIMEOUT_MS=5000\nBACKEND_BASE_URL=http://agentproject-backend:5000\nBACKEND_INTERNAL_API_KEY=%s\n' "$AGENT_API_KEY" "$BACKEND_INTERNAL_API_KEY" > agent-server/.env
 
+          upsert_env DESKTOP_RELEASE_VERSION "$DESKTOP_RELEASE_VERSION"
+          upsert_env DESKTOP_RELEASE_FILE "$DESKTOP_RELEASE_FILE"
           command -v docker >/dev/null
           export DOCKER_BUILDKIT=1 COMPOSE_PROGRESS=plain
           docker compose up -d --build --remove-orphans
@@ -435,3 +543,34 @@ jobs:
 
           docker compose ps
           REMOTE_DEPLOY
+
+      - name: Verify public release and download
+        shell: bash
+        run: |
+          set -euo pipefail
+          PUBLIC_ORIGIN="$(ssh deploy-target "cd '$DEPLOY_APP_DIR' && cat '.public-origin-$DEPLOY_SOURCE_SHA'")"
+          for attempt in 1 2 3 4 5 6; do
+            if python3 deploy/verify_desktop_artifact.py --directory desktop-release --package desktop/package.json \
+              --source-commit "$DEPLOY_SOURCE_SHA" --manifest desktop-release/desktop-release.json --verify \
+              --public-base-url "$PUBLIC_ORIGIN" > public-release-verification.json; then
+              cat public-release-verification.json
+              break
+            fi
+            if [[ "$attempt" -eq 6 ]]; then
+              cat public-release-verification.json
+              exit 1
+            fi
+            sleep 5
+          done
+          ssh deploy-target "cd '$DEPLOY_APP_DIR' && mv '.desktop-release-$DEPLOY_SOURCE_SHA.json' .deployed-release.json"
+
+      - name: Upload release provenance and public verification
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: server-release-verification
+          path: |
+            desktop-release/desktop-release.json
+            public-release-verification.json
+            running-release.json
+          if-no-files-found: warn
