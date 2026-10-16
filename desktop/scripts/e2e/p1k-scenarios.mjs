@@ -111,7 +111,7 @@ export async function callE2e(client, method, ...args) {
   })()`)
 }
 
-async function expectSnapshot(client, predicate, description, timeoutMs = 10_000) {
+export async function expectSnapshot(client, predicate, description, timeoutMs = 10_000) {
   let lastSnapshot = null
   try {
     return await waitFor(async () => {
@@ -124,7 +124,7 @@ async function expectSnapshot(client, predicate, description, timeoutMs = 10_000
   }
 }
 
-async function ensureBaseBridge(context) {
+export async function ensureBaseBridge(context) {
   await Promise.all([
     requireE2eBridge(context.pages.pet, 'pet'),
     requireE2eBridge(context.pages.quick, 'quick-chat'),
@@ -132,7 +132,7 @@ async function ensureBaseBridge(context) {
   ])
 }
 
-async function resetToLoggedOut(context) {
+export async function resetToLoggedOut(context) {
   await callE2e(context.pages.main, 'reset', {
     protocolVersion: E2E_PROTOCOL_VERSION,
     account: null,
@@ -143,7 +143,7 @@ async function resetToLoggedOut(context) {
   await context.pages.main.reload()
 }
 
-async function loginAs(context, user) {
+export async function loginAs(context, user) {
   const main = context.pages.main
   await main.input(REQUIRED_SELECTORS.loginApiBaseUrl, context.stub.apiBaseUrl)
   await main.input(REQUIRED_SELECTORS.loginUsername, user.username)
@@ -177,7 +177,7 @@ async function switchAccountViaUi(context, user) {
   ), 'new account dashboard hydration')
 }
 
-async function hideMainPanel(context) {
+export async function hideMainPanel(context) {
   await context.pages.main.evaluate('window.desktopBridge?.hideMainPanel?.()')
 }
 

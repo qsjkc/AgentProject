@@ -19,15 +19,17 @@ function getEffectiveOutfits(petType, action, outfit, previewItemId) {
   const effectiveOutfit = applyPetOutfitPreview(outfit, petType, previewItemId)
   const unlocked = new Set(effectiveOutfit.unlocked_outfit_ids || [])
 
-  if (petType !== 'pig') {
+  if (!['pig', 'cat', 'dog'].includes(petType)) {
     return []
   }
 
   if (action === 'sleeping') {
-    return unlocked.has('pig_sleep_cap') ? ['pig_sleep_cap'] : []
+    const itemId = `${petType}_sleep_cap`
+    return unlocked.has(itemId) ? [itemId] : []
   }
   if (action === 'reminding') {
-    return unlocked.has('pig_bell') ? ['pig_bell'] : []
+    const itemId = `${petType}_bell`
+    return unlocked.has(itemId) ? [itemId] : []
   }
   if (!OUTFIT_COMPATIBLE_ACTIONS.has(action)) {
     return []

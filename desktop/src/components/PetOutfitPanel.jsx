@@ -6,13 +6,16 @@ import {
   getPetOutfitSlotLabel,
 } from '../shared/pet-outfits'
 import { OutfitSprite } from './PetOutfitRenderer'
+import { getPetVisual } from '../shared/pets'
+import { t } from '../shared/i18n'
 
 const SELECTABLE_SLOTS = ['neck', 'head', 'side']
 
-function getCopy(language) {
+function getCopy(language, petType) {
+  const petLabel = t(language, getPetVisual(petType).labelKey)
   if (language === 'zh-CN') {
     return {
-      title: '小猪装扮',
+      title: `${petLabel}装扮`,
       clear: '清空当前槽位',
       equipped: '已装备',
       available: '可使用',
@@ -21,7 +24,7 @@ function getCopy(language) {
   }
 
   return {
-    title: 'Pig outfits',
+    title: `${petLabel} outfits`,
     clear: 'Clear current slot',
     equipped: 'Equipped',
     available: 'Available',
@@ -37,7 +40,7 @@ export function PetOutfitPanel({
   onChange,
 }) {
   const [activeSlot, setActiveSlot] = useState('neck')
-  const copy = getCopy(language)
+  const copy = getCopy(language, petType)
   const catalog = useMemo(
     () => getPetOutfitCatalog(petType, language),
     [language, petType],
@@ -50,7 +53,7 @@ export function PetOutfitPanel({
     setActiveSlot('neck')
   }, [petType])
 
-  if (petType !== 'pig') {
+  if (!catalog.length) {
     return null
   }
 
@@ -58,7 +61,7 @@ export function PetOutfitPanel({
   const equippedItemId = equipped[activeSlot] || ''
 
   return (
-    <section className="outfit-panel" aria-label={copy.title}>
+    <section className="outfit-panel" data-pet-type={petType} aria-label={copy.title}>
       <div className="outfit-panel-header">
         <div className="sidebar-title">{copy.title}</div>
         <button

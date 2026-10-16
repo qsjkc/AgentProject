@@ -1,0 +1,2777 @@
+{
+  "schemaVersion": 1,
+  "petType": "dog",
+  "generator": "built-in image_gen",
+  "referenceImages": [
+    "../idle.png",
+    "../happy.png"
+  ],
+  "alphaVisibilityThreshold": 32,
+  "renderReferenceSize": 126,
+  "requiresSourceRects": true,
+  "notes": [
+    "PNG files are unchanged copies of built-in image generation output; no programmatic image editing.",
+    "The contact sheets contain 30 separate alpha>32 connected subjects each; the visual rows do not exactly match uniform cell boundaries. Render using safeSourceRect, never crop these images by the nominal grid alone.",
+    "All safe source rectangles were verified to contain no neighboring alpha>32 component. Background alpha 1-2 RGB noise is near invisible.",
+    "visibleBoundsInCell and boundsAt126px may extend beyond nominal cells; source rectangles retain complete subjects.",
+    "Preserve relative jumping height when normalizing action baselines."
+  ],
+  "sheets": {
+    "core": {
+      "file": "core-atlas.png",
+      "generatedSourceFile": "exec-abe70fb6-32a7-456d-9a16-1ab98a6e5b3a.png",
+      "width": 1374,
+      "height": 1145,
+      "columns": 6,
+      "rows": 5,
+      "cellWidth": 229,
+      "cellHeight": 229,
+      "mode": "RGBA",
+      "sha256": "e55a212ff409bd7763e3542e065c6ecad942069c07b300d302aa0c2926760df8",
+      "requiresSourceRects": true,
+      "alpha": {
+        "minimum": 0,
+        "maximum": 255,
+        "zeroPixelFraction": 0.001269,
+        "nearTransparentPixelFraction": 0.195256,
+        "connectedSubjectCount": 30,
+        "gridLines": [
+          {
+            "axis": "x",
+            "position": 229,
+            "maxAlpha": 5,
+            "visiblePixelCount": 0
+          },
+          {
+            "axis": "x",
+            "position": 458,
+            "maxAlpha": 6,
+            "visiblePixelCount": 0
+          },
+          {
+            "axis": "x",
+            "position": 687,
+            "maxAlpha": 6,
+            "visiblePixelCount": 0
+          },
+          {
+            "axis": "x",
+            "position": 916,
+            "maxAlpha": 6,
+            "visiblePixelCount": 0
+          },
+          {
+            "axis": "x",
+            "position": 1145,
+            "maxAlpha": 5,
+            "visiblePixelCount": 0
+          },
+          {
+            "axis": "y",
+            "position": 229,
+            "maxAlpha": 31,
+            "visiblePixelCount": 0
+          },
+          {
+            "axis": "y",
+            "position": 458,
+            "maxAlpha": 4,
+            "visiblePixelCount": 0
+          },
+          {
+            "axis": "y",
+            "position": 687,
+            "maxAlpha": 248,
+            "visiblePixelCount": 27
+          },
+          {
+            "axis": "y",
+            "position": 916,
+            "maxAlpha": 249,
+            "visiblePixelCount": 48
+          }
+        ]
+      },
+      "rowActions": [
+        "idle",
+        "walk",
+        "jump",
+        "happy",
+        "confused"
+      ],
+      "layout": "source-rects"
+    },
+    "care": {
+      "file": "care-atlas.png",
+      "generatedSourceFile": "exec-6b4ee955-3baf-410a-8ca4-9dc17601741b.png",
+      "width": 1374,
+      "height": 1145,
+      "columns": 6,
+      "rows": 5,
+      "cellWidth": 229,
+      "cellHeight": 229,
+      "mode": "RGBA",
+      "sha256": "19e284f0799b47739d428d2a2b5b0344c4e406035e00fe8539e9fb4c3e0bfa51",
+      "requiresSourceRects": true,
+      "alpha": {
+        "minimum": 0,
+        "maximum": 255,
+        "zeroPixelFraction": 0.20746,
+        "nearTransparentPixelFraction": 0.406637,
+        "connectedSubjectCount": 30,
+        "gridLines": [
+          {
+            "axis": "x",
+            "position": 229,
+            "maxAlpha": 3,
+            "visiblePixelCount": 0
+          },
+          {
+            "axis": "x",
+            "position": 458,
+            "maxAlpha": 7,
+            "visiblePixelCount": 0
+          },
+          {
+            "axis": "x",
+            "position": 687,
+            "maxAlpha": 2,
+            "visiblePixelCount": 0
+          },
+          {
+            "axis": "x",
+            "position": 916,
+            "maxAlpha": 111,
+            "visiblePixelCount": 25
+          },
+          {
+            "axis": "x",
+            "position": 1145,
+            "maxAlpha": 249,
+            "visiblePixelCount": 74
+          },
+          {
+            "axis": "y",
+            "position": 229,
+            "maxAlpha": 255,
+            "visiblePixelCount": 854
+          },
+          {
+            "axis": "y",
+            "position": 458,
+            "maxAlpha": 253,
+            "visiblePixelCount": 399
+          },
+          {
+            "axis": "y",
+            "position": 687,
+            "maxAlpha": 251,
+            "visiblePixelCount": 97
+          },
+          {
+            "axis": "y",
+            "position": 916,
+            "maxAlpha": 253,
+            "visiblePixelCount": 414
+          }
+        ]
+      },
+      "rowActions": [
+        "reminding",
+        "sleeping",
+        "pat",
+        "eat",
+        "clean"
+      ],
+      "layout": "source-rects"
+    }
+  },
+  "actions": {
+    "idle": {
+      "sheet": "core",
+      "row": 0,
+      "frameStart": 0,
+      "frameCount": 6,
+      "uniqueFrameCount": 6,
+      "groundBaselineAt126px": 126.0,
+      "frameRects": [
+        {
+          "x": 12,
+          "y": 10,
+          "width": 204,
+          "height": 222
+        },
+        {
+          "x": 243,
+          "y": 9,
+          "width": 209,
+          "height": 223
+        },
+        {
+          "x": 471,
+          "y": 10,
+          "width": 207,
+          "height": 222
+        },
+        {
+          "x": 700,
+          "y": 11,
+          "width": 206,
+          "height": 221
+        },
+        {
+          "x": 929,
+          "y": 9,
+          "width": 204,
+          "height": 223
+        },
+        {
+          "x": 1155,
+          "y": 11,
+          "width": 207,
+          "height": 221
+        }
+      ],
+      "frames": [
+        {
+          "frameIndex": 0,
+          "cellRect": {
+            "x": 0,
+            "y": 0,
+            "width": 229,
+            "height": 229
+          },
+          "visibleBoundsInCell": [
+            15,
+            13,
+            213,
+            229
+          ],
+          "visibleSourceRect": {
+            "x": 15,
+            "y": 13,
+            "width": 198,
+            "height": 216
+          },
+          "safeSourceRect": {
+            "x": 12,
+            "y": 10,
+            "width": 204,
+            "height": 222
+          },
+          "boundsAt126px": [
+            8.253,
+            7.153,
+            117.197,
+            126.0
+          ],
+          "sha256": "1e3795f019745db5f4a3dc630bc2559601a4d8b1f19ab5baf5bc9c4fca4f6154",
+          "visiblePixelCount": 32808
+        },
+        {
+          "frameIndex": 1,
+          "cellRect": {
+            "x": 229,
+            "y": 0,
+            "width": 229,
+            "height": 229
+          },
+          "visibleBoundsInCell": [
+            17,
+            12,
+            220,
+            229
+          ],
+          "visibleSourceRect": {
+            "x": 246,
+            "y": 12,
+            "width": 203,
+            "height": 217
+          },
+          "safeSourceRect": {
+            "x": 243,
+            "y": 9,
+            "width": 209,
+            "height": 223
+          },
+          "boundsAt126px": [
+            9.354,
+            6.603,
+            121.048,
+            126.0
+          ],
+          "sha256": "f3a8bd014523e68a830082f6aef3945a9f1c36e2d7296362360104e1664ab8ef",
+          "visiblePixelCount": 34256
+        },
+        {
+          "frameIndex": 2,
+          "cellRect": {
+            "x": 458,
+            "y": 0,
+            "width": 229,
+            "height": 229
+          },
+          "visibleBoundsInCell": [
+            16,
+            13,
+            217,
+            229
+          ],
+          "visibleSourceRect": {
+            "x": 474,
+            "y": 13,
+            "width": 201,
+            "height": 216
+          },
+          "safeSourceRect": {
+            "x": 471,
+            "y": 10,
+            "width": 207,
+            "height": 222
+          },
+          "boundsAt126px": [
+            8.803,
+            7.153,
+            119.397,
+            126.0
+          ],
+          "sha256": "d560509c615217f06551ca2bc5b6795ab94cafb9c15850cc339261721d880f90",
+          "visiblePixelCount": 32967
+        },
+        {
+          "frameIndex": 3,
+          "cellRect": {
+            "x": 687,
+            "y": 0,
+            "width": 229,
+            "height": 229
+          },
+          "visibleBoundsInCell": [
+            16,
+            14,
+            216,
+            229
+          ],
+          "visibleSourceRect": {
+            "x": 703,
+            "y": 14,
+            "width": 200,
+            "height": 215
+          },
+          "safeSourceRect": {
+            "x": 700,
+            "y": 11,
+            "width": 206,
+            "height": 221
+          },
+          "boundsAt126px": [
+            8.803,
+            7.703,
+            118.847,
+            126.0
+          ],
+          "sha256": "a5357284b0b50e6c33f9347948910c279b1d84e6d0e716a319625ddcd11e5486",
+          "visiblePixelCount": 33523
+        },
+        {
+          "frameIndex": 4,
+          "cellRect": {
+            "x": 916,
+            "y": 0,
+            "width": 229,
+            "height": 229
+          },
+          "visibleBoundsInCell": [
+            16,
+            12,
+            214,
+            229
+          ],
+          "visibleSourceRect": {
+            "x": 932,
+            "y": 12,
+            "width": 198,
+            "height": 217
+          },
+          "safeSourceRect": {
+            "x": 929,
+            "y": 9,
+            "width": 204,
+            "height": 223
+          },
+          "boundsAt126px": [
+            8.803,
+            6.603,
+            117.747,
+            126.0
+          ],
+          "sha256": "61edf4ce8d479f3a08b471a99a10249d14b37ec40e2b9dabd687f15f5b1d2328",
+          "visiblePixelCount": 32696
+        },
+        {
+          "frameIndex": 5,
+          "cellRect": {
+            "x": 1145,
+            "y": 0,
+            "width": 229,
+            "height": 229
+          },
+          "visibleBoundsInCell": [
+            13,
+            14,
+            214,
+            229
+          ],
+          "visibleSourceRect": {
+            "x": 1158,
+            "y": 14,
+            "width": 201,
+            "height": 215
+          },
+          "safeSourceRect": {
+            "x": 1155,
+            "y": 11,
+            "width": 207,
+            "height": 221
+          },
+          "boundsAt126px": [
+            7.153,
+            7.703,
+            117.747,
+            126.0
+          ],
+          "sha256": "d28351beb4a133cf66e7be00da1cf829d977ef865fa616dcb6c841aeca731497",
+          "visiblePixelCount": 32470
+        }
+      ]
+    },
+    "walk": {
+      "sheet": "core",
+      "row": 1,
+      "frameStart": 6,
+      "frameCount": 6,
+      "uniqueFrameCount": 6,
+      "groundBaselineAt126px": 119.672,
+      "frameRects": [
+        {
+          "x": 17,
+          "y": 247,
+          "width": 199,
+          "height": 203
+        },
+        {
+          "x": 241,
+          "y": 250,
+          "width": 214,
+          "height": 198
+        },
+        {
+          "x": 468,
+          "y": 255,
+          "width": 210,
+          "height": 195
+        },
+        {
+          "x": 695,
+          "y": 251,
+          "width": 215,
+          "height": 198
+        },
+        {
+          "x": 932,
+          "y": 247,
+          "width": 200,
+          "height": 204
+        },
+        {
+          "x": 1157,
+          "y": 250,
+          "width": 204,
+          "height": 199
+        }
+      ],
+      "frames": [
+        {
+          "frameIndex": 0,
+          "cellRect": {
+            "x": 0,
+            "y": 229,
+            "width": 229,
+            "height": 229
+          },
+          "visibleBoundsInCell": [
+            20,
+            21,
+            213,
+            218
+          ],
+          "visibleSourceRect": {
+            "x": 20,
+            "y": 250,
+            "width": 193,
+            "height": 197
+          },
+          "safeSourceRect": {
+            "x": 17,
+            "y": 247,
+            "width": 199,
+            "height": 203
+          },
+          "boundsAt126px": [
+            11.004,
+            11.555,
+            117.197,
+            119.948
+          ],
+          "sha256": "a39fc2a2d2d9ce26534bef6f27ecb4a300d24e95ad0bc97e216876676ddab372",
+          "visiblePixelCount": 29548
+        },
+        {
+          "frameIndex": 1,
+          "cellRect": {
+            "x": 229,
+            "y": 229,
+            "width": 229,
+            "height": 229
+          },
+          "visibleBoundsInCell": [
+            15,
+            24,
+            223,
+            216
+          ],
+          "visibleSourceRect": {
+            "x": 244,
+            "y": 253,
+            "width": 208,
+            "height": 192
+          },
+          "safeSourceRect": {
+            "x": 241,
+            "y": 250,
+            "width": 214,
+            "height": 198
+          },
+          "boundsAt126px": [
+            8.253,
+            13.205,
+            122.699,
+            118.847
+          ],
+          "sha256": "8253aff70a2afe0ed33b2e2b27d6d5c1fb9ad051e17a9cc50f56271ad148558a",
+          "visiblePixelCount": 28863
+        },
+        {
+          "frameIndex": 2,
+          "cellRect": {
+            "x": 458,
+            "y": 229,
+            "width": 229,
+            "height": 229
+          },
+          "visibleBoundsInCell": [
+            13,
+            29,
+            217,
+            218
+          ],
+          "visibleSourceRect": {
+            "x": 471,
+            "y": 258,
+            "width": 204,
+            "height": 189
+          },
+          "safeSourceRect": {
+            "x": 468,
+            "y": 255,
+            "width": 210,
+            "height": 195
+          },
+          "boundsAt126px": [
+            7.153,
+            15.956,
+            119.397,
+            119.948
+          ],
+          "sha256": "dfc630a713ba8b8a9a66afe00ba8e6753ea8bc9977d583843782c4fa16659e3d",
+          "visiblePixelCount": 28064
+        },
+        {
+          "frameIndex": 3,
+          "cellRect": {
+            "x": 687,
+            "y": 229,
+            "width": 229,
+            "height": 229
+          },
+          "visibleBoundsInCell": [
+            11,
+            25,
+            220,
+            217
+          ],
+          "visibleSourceRect": {
+            "x": 698,
+            "y": 254,
+            "width": 209,
+            "height": 192
+          },
+          "safeSourceRect": {
+            "x": 695,
+            "y": 251,
+            "width": 215,
+            "height": 198
+          },
+          "boundsAt126px": [
+            6.052,
+            13.755,
+            121.048,
+            119.397
+          ],
+          "sha256": "00f155218c78622503443e70915456b965e1de247d284292dc6b87ee309581ca",
+          "visiblePixelCount": 27959
+        },
+        {
+          "frameIndex": 4,
+          "cellRect": {
+            "x": 916,
+            "y": 229,
+            "width": 229,
+            "height": 229
+          },
+          "visibleBoundsInCell": [
+            19,
+            21,
+            213,
+            219
+          ],
+          "visibleSourceRect": {
+            "x": 935,
+            "y": 250,
+            "width": 194,
+            "height": 198
+          },
+          "safeSourceRect": {
+            "x": 932,
+            "y": 247,
+            "width": 200,
+            "height": 204
+          },
+          "boundsAt126px": [
+            10.454,
+            11.555,
+            117.197,
+            120.498
+          ],
+          "sha256": "bf82c99962b1ebcbb3d17fd18d5aedde133acb53718bcf09f09fab6e658f4153",
+          "visiblePixelCount": 28835
+        },
+        {
+          "frameIndex": 5,
+          "cellRect": {
+            "x": 1145,
+            "y": 229,
+            "width": 229,
+            "height": 229
+          },
+          "visibleBoundsInCell": [
+            15,
+            24,
+            213,
+            217
+          ],
+          "visibleSourceRect": {
+            "x": 1160,
+            "y": 253,
+            "width": 198,
+            "height": 193
+          },
+          "safeSourceRect": {
+            "x": 1157,
+            "y": 250,
+            "width": 204,
+            "height": 199
+          },
+          "boundsAt126px": [
+            8.253,
+            13.205,
+            117.197,
+            119.397
+          ],
+          "sha256": "8063135ccfae1012c4199e524473dc572c2d43539b66a69ea028bc32e7255fcd",
+          "visiblePixelCount": 28489
+        }
+      ]
+    },
+    "jump": {
+      "sheet": "core",
+      "row": 2,
+      "frameStart": 12,
+      "frameCount": 6,
+      "uniqueFrameCount": 6,
+      "groundBaselineAt126px": 118.572,
+      "frameRects": [
+        {
+          "x": 20,
+          "y": 495,
+          "width": 203,
+          "height": 184
+        },
+        {
+          "x": 247,
+          "y": 465,
+          "width": 210,
+          "height": 214
+        },
+        {
+          "x": 475,
+          "y": 467,
+          "width": 195,
+          "height": 202
+        },
+        {
+          "x": 702,
+          "y": 459,
+          "width": 198,
+          "height": 203
+        },
+        {
+          "x": 928,
+          "y": 475,
+          "width": 199,
+          "height": 199
+        },
+        {
+          "x": 1152,
+          "y": 507,
+          "width": 202,
+          "height": 173
+        }
+      ],
+      "frames": [
+        {
+          "frameIndex": 0,
+          "cellRect": {
+            "x": 0,
+            "y": 458,
+            "width": 229,
+            "height": 229
+          },
+          "visibleBoundsInCell": [
+            23,
+            40,
+            220,
+            218
+          ],
+          "visibleSourceRect": {
+            "x": 23,
+            "y": 498,
+            "width": 197,
+            "height": 178
+          },
+          "safeSourceRect": {
+            "x": 20,
+            "y": 495,
+            "width": 203,
+            "height": 184
+          },
+          "boundsAt126px": [
+            12.655,
+            22.009,
+            121.048,
+            119.948
+          ],
+          "sha256": "744c905a41136036c65ef4e3c0c27504b582c16ce5dd0cbf3b6829ca429776b9",
+          "visiblePixelCount": 26334
+        },
+        {
+          "frameIndex": 1,
+          "cellRect": {
+            "x": 229,
+            "y": 458,
+            "width": 229,
+            "height": 229
+          },
+          "visibleBoundsInCell": [
+            21,
+            10,
+            225,
+            218
+          ],
+          "visibleSourceRect": {
+            "x": 250,
+            "y": 468,
+            "width": 204,
+            "height": 208
+          },
+          "safeSourceRect": {
+            "x": 247,
+            "y": 465,
+            "width": 210,
+            "height": 214
+          },
+          "boundsAt126px": [
+            11.555,
+            5.502,
+            123.799,
+            119.948
+          ],
+          "sha256": "746c918b5db4c9576cc492ef81b201d0bec7c8561eb3bcc801865f63d566f59a",
+          "visiblePixelCount": 28831
+        },
+        {
+          "frameIndex": 2,
+          "cellRect": {
+            "x": 458,
+            "y": 458,
+            "width": 229,
+            "height": 229
+          },
+          "visibleBoundsInCell": [
+            20,
+            12,
+            209,
+            208
+          ],
+          "visibleSourceRect": {
+            "x": 478,
+            "y": 470,
+            "width": 189,
+            "height": 196
+          },
+          "safeSourceRect": {
+            "x": 475,
+            "y": 467,
+            "width": 195,
+            "height": 202
+          },
+          "boundsAt126px": [
+            11.004,
+            6.603,
+            114.996,
+            114.445
+          ],
+          "sha256": "73b98553ad885086d4b6ae1b0d7fb59e9f9c748a4919dc4fd354af2c1391083b",
+          "visiblePixelCount": 27147
+        },
+        {
+          "frameIndex": 3,
+          "cellRect": {
+            "x": 687,
+            "y": 458,
+            "width": 229,
+            "height": 229
+          },
+          "visibleBoundsInCell": [
+            18,
+            4,
+            210,
+            201
+          ],
+          "visibleSourceRect": {
+            "x": 705,
+            "y": 462,
+            "width": 192,
+            "height": 197
+          },
+          "safeSourceRect": {
+            "x": 702,
+            "y": 459,
+            "width": 198,
+            "height": 203
+          },
+          "boundsAt126px": [
+            9.904,
+            2.201,
+            115.546,
+            110.594
+          ],
+          "sha256": "6db8d0598afeff62ebe53a51afb7bcb631505dd001eeee44d6c786db34f2689f",
+          "visiblePixelCount": 26996
+        },
+        {
+          "frameIndex": 4,
+          "cellRect": {
+            "x": 916,
+            "y": 458,
+            "width": 229,
+            "height": 229
+          },
+          "visibleBoundsInCell": [
+            15,
+            20,
+            208,
+            213
+          ],
+          "visibleSourceRect": {
+            "x": 931,
+            "y": 478,
+            "width": 193,
+            "height": 193
+          },
+          "safeSourceRect": {
+            "x": 928,
+            "y": 475,
+            "width": 199,
+            "height": 199
+          },
+          "boundsAt126px": [
+            8.253,
+            11.004,
+            114.445,
+            117.197
+          ],
+          "sha256": "ae6448391fca45d3ac33677c5d4d99e4e79a752dbcb642b11cd1b88cbda4076b",
+          "visiblePixelCount": 28124
+        },
+        {
+          "frameIndex": 5,
+          "cellRect": {
+            "x": 1145,
+            "y": 458,
+            "width": 229,
+            "height": 229
+          },
+          "visibleBoundsInCell": [
+            10,
+            52,
+            206,
+            219
+          ],
+          "visibleSourceRect": {
+            "x": 1155,
+            "y": 510,
+            "width": 196,
+            "height": 167
+          },
+          "safeSourceRect": {
+            "x": 1152,
+            "y": 507,
+            "width": 202,
+            "height": 173
+          },
+          "boundsAt126px": [
+            5.502,
+            28.611,
+            113.345,
+            120.498
+          ],
+          "sha256": "b763d8053c1c3e5d568aaa278b06c18b90eb18b2cb1df1bcc84c0abe2927f87e",
+          "visiblePixelCount": 25764
+        }
+      ]
+    },
+    "happy": {
+      "sheet": "core",
+      "row": 3,
+      "frameStart": 18,
+      "frameCount": 6,
+      "uniqueFrameCount": 6,
+      "groundBaselineAt126px": 119.948,
+      "frameRects": [
+        {
+          "x": 17,
+          "y": 689,
+          "width": 196,
+          "height": 219
+        },
+        {
+          "x": 245,
+          "y": 691,
+          "width": 193,
+          "height": 217
+        },
+        {
+          "x": 475,
+          "y": 691,
+          "width": 190,
+          "height": 217
+        },
+        {
+          "x": 706,
+          "y": 680,
+          "width": 197,
+          "height": 228
+        },
+        {
+          "x": 937,
+          "y": 691,
+          "width": 184,
+          "height": 217
+        },
+        {
+          "x": 1162,
+          "y": 687,
+          "width": 188,
+          "height": 221
+        }
+      ],
+      "frames": [
+        {
+          "frameIndex": 0,
+          "cellRect": {
+            "x": 0,
+            "y": 687,
+            "width": 229,
+            "height": 229
+          },
+          "visibleBoundsInCell": [
+            20,
+            5,
+            210,
+            218
+          ],
+          "visibleSourceRect": {
+            "x": 20,
+            "y": 692,
+            "width": 190,
+            "height": 213
+          },
+          "safeSourceRect": {
+            "x": 17,
+            "y": 689,
+            "width": 196,
+            "height": 219
+          },
+          "boundsAt126px": [
+            11.004,
+            2.751,
+            115.546,
+            119.948
+          ],
+          "sha256": "6563aa8b1b7a1d3925cdd97626550ac2eefd36566ba5284f68c9b1931954a21c",
+          "visiblePixelCount": 30665
+        },
+        {
+          "frameIndex": 1,
+          "cellRect": {
+            "x": 229,
+            "y": 687,
+            "width": 229,
+            "height": 229
+          },
+          "visibleBoundsInCell": [
+            19,
+            7,
+            206,
+            218
+          ],
+          "visibleSourceRect": {
+            "x": 248,
+            "y": 694,
+            "width": 187,
+            "height": 211
+          },
+          "safeSourceRect": {
+            "x": 245,
+            "y": 691,
+            "width": 193,
+            "height": 217
+          },
+          "boundsAt126px": [
+            10.454,
+            3.852,
+            113.345,
+            119.948
+          ],
+          "sha256": "1ac4002563736e83c235d73d1cd9055e63e198df271af2198a1a075d769c0f50",
+          "visiblePixelCount": 30822
+        },
+        {
+          "frameIndex": 2,
+          "cellRect": {
+            "x": 458,
+            "y": 687,
+            "width": 229,
+            "height": 229
+          },
+          "visibleBoundsInCell": [
+            20,
+            7,
+            204,
+            218
+          ],
+          "visibleSourceRect": {
+            "x": 478,
+            "y": 694,
+            "width": 184,
+            "height": 211
+          },
+          "safeSourceRect": {
+            "x": 475,
+            "y": 691,
+            "width": 190,
+            "height": 217
+          },
+          "boundsAt126px": [
+            11.004,
+            3.852,
+            112.245,
+            119.948
+          ],
+          "sha256": "62ae1e0d6cac36b999448edb9049beb77573dcdbf8c0cec5e9d4c26e72dd697e",
+          "visiblePixelCount": 30446
+        },
+        {
+          "frameIndex": 3,
+          "cellRect": {
+            "x": 687,
+            "y": 687,
+            "width": 229,
+            "height": 229
+          },
+          "visibleBoundsInCell": [
+            22,
+            -4,
+            213,
+            218
+          ],
+          "visibleSourceRect": {
+            "x": 709,
+            "y": 683,
+            "width": 191,
+            "height": 222
+          },
+          "safeSourceRect": {
+            "x": 706,
+            "y": 680,
+            "width": 197,
+            "height": 228
+          },
+          "boundsAt126px": [
+            12.105,
+            -2.201,
+            117.197,
+            119.948
+          ],
+          "sha256": "c42214c9a0a60207ef865e57c0c592cb6d0ed7b4bccf76f61d84ab45e733511a",
+          "visiblePixelCount": 32488
+        },
+        {
+          "frameIndex": 4,
+          "cellRect": {
+            "x": 916,
+            "y": 687,
+            "width": 229,
+            "height": 229
+          },
+          "visibleBoundsInCell": [
+            24,
+            7,
+            202,
+            218
+          ],
+          "visibleSourceRect": {
+            "x": 940,
+            "y": 694,
+            "width": 178,
+            "height": 211
+          },
+          "safeSourceRect": {
+            "x": 937,
+            "y": 691,
+            "width": 184,
+            "height": 217
+          },
+          "boundsAt126px": [
+            13.205,
+            3.852,
+            111.144,
+            119.948
+          ],
+          "sha256": "d77b45c54127284a91822af1d8459f396687ba38565f503944ec8367f4711f3c",
+          "visiblePixelCount": 29795
+        },
+        {
+          "frameIndex": 5,
+          "cellRect": {
+            "x": 1145,
+            "y": 687,
+            "width": 229,
+            "height": 229
+          },
+          "visibleBoundsInCell": [
+            20,
+            3,
+            202,
+            218
+          ],
+          "visibleSourceRect": {
+            "x": 1165,
+            "y": 690,
+            "width": 182,
+            "height": 215
+          },
+          "safeSourceRect": {
+            "x": 1162,
+            "y": 687,
+            "width": 188,
+            "height": 221
+          },
+          "boundsAt126px": [
+            11.004,
+            1.651,
+            111.144,
+            119.948
+          ],
+          "sha256": "c773d6646612f3981abe5df22268214ea28f006b23ea5060587759f35944ab3f",
+          "visiblePixelCount": 30242
+        }
+      ]
+    },
+    "confused": {
+      "sheet": "core",
+      "row": 4,
+      "frameStart": 24,
+      "frameCount": 6,
+      "uniqueFrameCount": 6,
+      "groundBaselineAt126px": 119.948,
+      "frameRects": [
+        {
+          "x": 21,
+          "y": 913,
+          "width": 189,
+          "height": 224
+        },
+        {
+          "x": 253,
+          "y": 909,
+          "width": 186,
+          "height": 228
+        },
+        {
+          "x": 475,
+          "y": 924,
+          "width": 184,
+          "height": 213
+        },
+        {
+          "x": 708,
+          "y": 920,
+          "width": 183,
+          "height": 217
+        },
+        {
+          "x": 937,
+          "y": 914,
+          "width": 188,
+          "height": 223
+        },
+        {
+          "x": 1168,
+          "y": 913,
+          "width": 184,
+          "height": 224
+        }
+      ],
+      "frames": [
+        {
+          "frameIndex": 0,
+          "cellRect": {
+            "x": 0,
+            "y": 916,
+            "width": 229,
+            "height": 229
+          },
+          "visibleBoundsInCell": [
+            24,
+            0,
+            207,
+            218
+          ],
+          "visibleSourceRect": {
+            "x": 24,
+            "y": 916,
+            "width": 183,
+            "height": 218
+          },
+          "safeSourceRect": {
+            "x": 21,
+            "y": 913,
+            "width": 189,
+            "height": 224
+          },
+          "boundsAt126px": [
+            13.205,
+            0.0,
+            113.895,
+            119.948
+          ],
+          "sha256": "dc33ab3ce2d8f0bb06051e5edb3ab2b88ab564f9bcb532ed0b000925ba0d42b3",
+          "visiblePixelCount": 30780
+        },
+        {
+          "frameIndex": 1,
+          "cellRect": {
+            "x": 229,
+            "y": 916,
+            "width": 229,
+            "height": 229
+          },
+          "visibleBoundsInCell": [
+            27,
+            -4,
+            207,
+            218
+          ],
+          "visibleSourceRect": {
+            "x": 256,
+            "y": 912,
+            "width": 180,
+            "height": 222
+          },
+          "safeSourceRect": {
+            "x": 253,
+            "y": 909,
+            "width": 186,
+            "height": 228
+          },
+          "boundsAt126px": [
+            14.856,
+            -2.201,
+            113.895,
+            119.948
+          ],
+          "sha256": "987751de2e20c99a4980789ccdd197ef820c187002767c603acec22582a7f458",
+          "visiblePixelCount": 29985
+        },
+        {
+          "frameIndex": 2,
+          "cellRect": {
+            "x": 458,
+            "y": 916,
+            "width": 229,
+            "height": 229
+          },
+          "visibleBoundsInCell": [
+            20,
+            11,
+            198,
+            218
+          ],
+          "visibleSourceRect": {
+            "x": 478,
+            "y": 927,
+            "width": 178,
+            "height": 207
+          },
+          "safeSourceRect": {
+            "x": 475,
+            "y": 924,
+            "width": 184,
+            "height": 213
+          },
+          "boundsAt126px": [
+            11.004,
+            6.052,
+            108.943,
+            119.948
+          ],
+          "sha256": "61fac0382353b1cc1f582a62a34a65fd7b5e0011186bd43da25fa211adab1a5d",
+          "visiblePixelCount": 28746
+        },
+        {
+          "frameIndex": 3,
+          "cellRect": {
+            "x": 687,
+            "y": 916,
+            "width": 229,
+            "height": 229
+          },
+          "visibleBoundsInCell": [
+            24,
+            7,
+            201,
+            218
+          ],
+          "visibleSourceRect": {
+            "x": 711,
+            "y": 923,
+            "width": 177,
+            "height": 211
+          },
+          "safeSourceRect": {
+            "x": 708,
+            "y": 920,
+            "width": 183,
+            "height": 217
+          },
+          "boundsAt126px": [
+            13.205,
+            3.852,
+            110.594,
+            119.948
+          ],
+          "sha256": "8efdd1680e436b8c5244daa21d900550c7c8507794b19fab08e71c711707389f",
+          "visiblePixelCount": 29890
+        },
+        {
+          "frameIndex": 4,
+          "cellRect": {
+            "x": 916,
+            "y": 916,
+            "width": 229,
+            "height": 229
+          },
+          "visibleBoundsInCell": [
+            24,
+            1,
+            206,
+            218
+          ],
+          "visibleSourceRect": {
+            "x": 940,
+            "y": 917,
+            "width": 182,
+            "height": 217
+          },
+          "safeSourceRect": {
+            "x": 937,
+            "y": 914,
+            "width": 188,
+            "height": 223
+          },
+          "boundsAt126px": [
+            13.205,
+            0.55,
+            113.345,
+            119.948
+          ],
+          "sha256": "84839cde922cf24690871868d29b3ccab92e4264673b4464f27344d0559e6d12",
+          "visiblePixelCount": 28944
+        },
+        {
+          "frameIndex": 5,
+          "cellRect": {
+            "x": 1145,
+            "y": 916,
+            "width": 229,
+            "height": 229
+          },
+          "visibleBoundsInCell": [
+            26,
+            0,
+            204,
+            218
+          ],
+          "visibleSourceRect": {
+            "x": 1171,
+            "y": 916,
+            "width": 178,
+            "height": 218
+          },
+          "safeSourceRect": {
+            "x": 1168,
+            "y": 913,
+            "width": 184,
+            "height": 224
+          },
+          "boundsAt126px": [
+            14.306,
+            0.0,
+            112.245,
+            119.948
+          ],
+          "sha256": "0bf4e92ededeb48e6a32f64cd7ac1292e7141c0805679397fcf28f634c44231a",
+          "visiblePixelCount": 30458
+        }
+      ]
+    },
+    "reminding": {
+      "sheet": "care",
+      "row": 0,
+      "frameStart": 0,
+      "frameCount": 6,
+      "uniqueFrameCount": 6,
+      "groundBaselineAt126px": 133.153,
+      "frameRects": [
+        {
+          "x": 10,
+          "y": 4,
+          "width": 208,
+          "height": 239
+        },
+        {
+          "x": 248,
+          "y": 4,
+          "width": 208,
+          "height": 239
+        },
+        {
+          "x": 467,
+          "y": 4,
+          "width": 208,
+          "height": 239
+        },
+        {
+          "x": 692,
+          "y": 5,
+          "width": 216,
+          "height": 238
+        },
+        {
+          "x": 929,
+          "y": 4,
+          "width": 215,
+          "height": 239
+        },
+        {
+          "x": 1164,
+          "y": 4,
+          "width": 203,
+          "height": 239
+        }
+      ],
+      "frames": [
+        {
+          "frameIndex": 0,
+          "cellRect": {
+            "x": 0,
+            "y": 0,
+            "width": 229,
+            "height": 229
+          },
+          "visibleBoundsInCell": [
+            11,
+            5,
+            217,
+            242
+          ],
+          "visibleSourceRect": {
+            "x": 11,
+            "y": 5,
+            "width": 206,
+            "height": 237
+          },
+          "safeSourceRect": {
+            "x": 10,
+            "y": 4,
+            "width": 208,
+            "height": 239
+          },
+          "boundsAt126px": [
+            6.052,
+            2.751,
+            119.397,
+            133.153
+          ],
+          "sha256": "bac139bba02640fa3f4bdab6b75ea0aacffb2c660a166258a077954196febb6c",
+          "visiblePixelCount": 33637
+        },
+        {
+          "frameIndex": 1,
+          "cellRect": {
+            "x": 229,
+            "y": 0,
+            "width": 229,
+            "height": 229
+          },
+          "visibleBoundsInCell": [
+            20,
+            5,
+            226,
+            242
+          ],
+          "visibleSourceRect": {
+            "x": 249,
+            "y": 5,
+            "width": 206,
+            "height": 237
+          },
+          "safeSourceRect": {
+            "x": 248,
+            "y": 4,
+            "width": 208,
+            "height": 239
+          },
+          "boundsAt126px": [
+            11.004,
+            2.751,
+            124.349,
+            133.153
+          ],
+          "sha256": "010b0ec4ef618b8754f2b565f83c8a7ae03d4000e1169580ce2da3025c34c23c",
+          "visiblePixelCount": 32946
+        },
+        {
+          "frameIndex": 2,
+          "cellRect": {
+            "x": 458,
+            "y": 0,
+            "width": 229,
+            "height": 229
+          },
+          "visibleBoundsInCell": [
+            10,
+            5,
+            216,
+            242
+          ],
+          "visibleSourceRect": {
+            "x": 468,
+            "y": 5,
+            "width": 206,
+            "height": 237
+          },
+          "safeSourceRect": {
+            "x": 467,
+            "y": 4,
+            "width": 208,
+            "height": 239
+          },
+          "boundsAt126px": [
+            5.502,
+            2.751,
+            118.847,
+            133.153
+          ],
+          "sha256": "1038ac9f651060eb01984bfb955dddd69ec6a1af8e86724b2e1003ec40a3c8f7",
+          "visiblePixelCount": 33312
+        },
+        {
+          "frameIndex": 3,
+          "cellRect": {
+            "x": 687,
+            "y": 0,
+            "width": 229,
+            "height": 229
+          },
+          "visibleBoundsInCell": [
+            6,
+            6,
+            220,
+            242
+          ],
+          "visibleSourceRect": {
+            "x": 693,
+            "y": 6,
+            "width": 214,
+            "height": 236
+          },
+          "safeSourceRect": {
+            "x": 692,
+            "y": 5,
+            "width": 216,
+            "height": 238
+          },
+          "boundsAt126px": [
+            3.301,
+            3.301,
+            121.048,
+            133.153
+          ],
+          "sha256": "e2e03badf547abb00e3b9ae09e8b203bad7768e887bbac51c3b8edf1dc66cec7",
+          "visiblePixelCount": 33399
+        },
+        {
+          "frameIndex": 4,
+          "cellRect": {
+            "x": 916,
+            "y": 0,
+            "width": 229,
+            "height": 229
+          },
+          "visibleBoundsInCell": [
+            14,
+            5,
+            227,
+            242
+          ],
+          "visibleSourceRect": {
+            "x": 930,
+            "y": 5,
+            "width": 213,
+            "height": 237
+          },
+          "safeSourceRect": {
+            "x": 929,
+            "y": 4,
+            "width": 215,
+            "height": 239
+          },
+          "boundsAt126px": [
+            7.703,
+            2.751,
+            124.9,
+            133.153
+          ],
+          "sha256": "1d4bdc8d692466bf8de0105d101a682146ea9fc8bce02014ae660e17483284ee",
+          "visiblePixelCount": 33314
+        },
+        {
+          "frameIndex": 5,
+          "cellRect": {
+            "x": 1145,
+            "y": 0,
+            "width": 229,
+            "height": 229
+          },
+          "visibleBoundsInCell": [
+            20,
+            5,
+            221,
+            242
+          ],
+          "visibleSourceRect": {
+            "x": 1165,
+            "y": 5,
+            "width": 201,
+            "height": 237
+          },
+          "safeSourceRect": {
+            "x": 1164,
+            "y": 4,
+            "width": 203,
+            "height": 239
+          },
+          "boundsAt126px": [
+            11.004,
+            2.751,
+            121.598,
+            133.153
+          ],
+          "sha256": "0a50137255356021807b7c67d6a4d3cc3e42be2e3c6db7b6233b24eb5a1d2324",
+          "visiblePixelCount": 32526
+        }
+      ]
+    },
+    "sleeping": {
+      "sheet": "care",
+      "row": 1,
+      "frameStart": 6,
+      "frameCount": 6,
+      "uniqueFrameCount": 6,
+      "groundBaselineAt126px": 104.541,
+      "frameRects": [
+        {
+          "x": 3,
+          "y": 284,
+          "width": 225,
+          "height": 135
+        },
+        {
+          "x": 232,
+          "y": 283,
+          "width": 225,
+          "height": 137
+        },
+        {
+          "x": 459,
+          "y": 288,
+          "width": 226,
+          "height": 131
+        },
+        {
+          "x": 691,
+          "y": 281,
+          "width": 227,
+          "height": 139
+        },
+        {
+          "x": 922,
+          "y": 285,
+          "width": 224,
+          "height": 135
+        },
+        {
+          "x": 1150,
+          "y": 286,
+          "width": 224,
+          "height": 134
+        }
+      ],
+      "frames": [
+        {
+          "frameIndex": 0,
+          "cellRect": {
+            "x": 0,
+            "y": 229,
+            "width": 229,
+            "height": 229
+          },
+          "visibleBoundsInCell": [
+            4,
+            56,
+            227,
+            189
+          ],
+          "visibleSourceRect": {
+            "x": 4,
+            "y": 285,
+            "width": 223,
+            "height": 133
+          },
+          "safeSourceRect": {
+            "x": 3,
+            "y": 284,
+            "width": 225,
+            "height": 135
+          },
+          "boundsAt126px": [
+            2.201,
+            30.812,
+            124.9,
+            103.991
+          ],
+          "sha256": "34f837905587ac2bba81a022f1974d14c597ae4482e22280d3be099c42dd8a4a",
+          "visiblePixelCount": 21348
+        },
+        {
+          "frameIndex": 1,
+          "cellRect": {
+            "x": 229,
+            "y": 229,
+            "width": 229,
+            "height": 229
+          },
+          "visibleBoundsInCell": [
+            4,
+            55,
+            227,
+            190
+          ],
+          "visibleSourceRect": {
+            "x": 233,
+            "y": 284,
+            "width": 223,
+            "height": 135
+          },
+          "safeSourceRect": {
+            "x": 232,
+            "y": 283,
+            "width": 225,
+            "height": 137
+          },
+          "boundsAt126px": [
+            2.201,
+            30.262,
+            124.9,
+            104.541
+          ],
+          "sha256": "46bb2e49e82ad95d0dec9b824b2327489adea2baa9a931d74f188e61bbd82795",
+          "visiblePixelCount": 21093
+        },
+        {
+          "frameIndex": 2,
+          "cellRect": {
+            "x": 458,
+            "y": 229,
+            "width": 229,
+            "height": 229
+          },
+          "visibleBoundsInCell": [
+            2,
+            60,
+            226,
+            189
+          ],
+          "visibleSourceRect": {
+            "x": 460,
+            "y": 289,
+            "width": 224,
+            "height": 129
+          },
+          "safeSourceRect": {
+            "x": 459,
+            "y": 288,
+            "width": 226,
+            "height": 131
+          },
+          "boundsAt126px": [
+            1.1,
+            33.013,
+            124.349,
+            103.991
+          ],
+          "sha256": "e090ea0b021b6ef9524d8c71eb5aded6ec3370126a01e0d4a939b5fe03e387cb",
+          "visiblePixelCount": 21368
+        },
+        {
+          "frameIndex": 3,
+          "cellRect": {
+            "x": 687,
+            "y": 229,
+            "width": 229,
+            "height": 229
+          },
+          "visibleBoundsInCell": [
+            5,
+            53,
+            230,
+            190
+          ],
+          "visibleSourceRect": {
+            "x": 692,
+            "y": 282,
+            "width": 225,
+            "height": 137
+          },
+          "safeSourceRect": {
+            "x": 691,
+            "y": 281,
+            "width": 227,
+            "height": 139
+          },
+          "boundsAt126px": [
+            2.751,
+            29.162,
+            126.55,
+            104.541
+          ],
+          "sha256": "544b547c181d492cc4afe146728f9c611b74d5ba21fd7e8f2ac416f24d638783",
+          "visiblePixelCount": 21068
+        },
+        {
+          "frameIndex": 4,
+          "cellRect": {
+            "x": 916,
+            "y": 229,
+            "width": 229,
+            "height": 229
+          },
+          "visibleBoundsInCell": [
+            7,
+            57,
+            229,
+            190
+          ],
+          "visibleSourceRect": {
+            "x": 923,
+            "y": 286,
+            "width": 222,
+            "height": 133
+          },
+          "safeSourceRect": {
+            "x": 922,
+            "y": 285,
+            "width": 224,
+            "height": 135
+          },
+          "boundsAt126px": [
+            3.852,
+            31.362,
+            126.0,
+            104.541
+          ],
+          "sha256": "402fc6335bc6163998d0a105aa47e4a74f3370308360c56ec9067d7a5ee0334a",
+          "visiblePixelCount": 20606
+        },
+        {
+          "frameIndex": 5,
+          "cellRect": {
+            "x": 1145,
+            "y": 229,
+            "width": 229,
+            "height": 229
+          },
+          "visibleBoundsInCell": [
+            6,
+            58,
+            228,
+            190
+          ],
+          "visibleSourceRect": {
+            "x": 1151,
+            "y": 287,
+            "width": 222,
+            "height": 132
+          },
+          "safeSourceRect": {
+            "x": 1150,
+            "y": 286,
+            "width": 224,
+            "height": 134
+          },
+          "boundsAt126px": [
+            3.301,
+            31.913,
+            125.45,
+            104.541
+          ],
+          "sha256": "51fbca4d1fe2845fba6ca33d7691f4d279045ef00f9d30cccb52cf612c074428",
+          "visiblePixelCount": 20740
+        }
+      ]
+    },
+    "pat": {
+      "sheet": "care",
+      "row": 2,
+      "frameStart": 12,
+      "frameCount": 6,
+      "uniqueFrameCount": 6,
+      "groundBaselineAt126px": 114.996,
+      "frameRects": [
+        {
+          "x": 10,
+          "y": 429,
+          "width": 207,
+          "height": 240
+        },
+        {
+          "x": 252,
+          "y": 431,
+          "width": 203,
+          "height": 237
+        },
+        {
+          "x": 474,
+          "y": 431,
+          "width": 203,
+          "height": 237
+        },
+        {
+          "x": 696,
+          "y": 436,
+          "width": 213,
+          "height": 232
+        },
+        {
+          "x": 938,
+          "y": 444,
+          "width": 208,
+          "height": 224
+        },
+        {
+          "x": 1166,
+          "y": 431,
+          "width": 196,
+          "height": 237
+        }
+      ],
+      "frames": [
+        {
+          "frameIndex": 0,
+          "cellRect": {
+            "x": 0,
+            "y": 458,
+            "width": 229,
+            "height": 229
+          },
+          "visibleBoundsInCell": [
+            11,
+            -28,
+            216,
+            210
+          ],
+          "visibleSourceRect": {
+            "x": 11,
+            "y": 430,
+            "width": 205,
+            "height": 238
+          },
+          "safeSourceRect": {
+            "x": 10,
+            "y": 429,
+            "width": 207,
+            "height": 240
+          },
+          "boundsAt126px": [
+            6.052,
+            -15.406,
+            118.847,
+            115.546
+          ],
+          "sha256": "f66a4e5020eba7eeb7f9a35e14e24e7f4922b3506089d0317fb925495291cf24",
+          "visiblePixelCount": 33481
+        },
+        {
+          "frameIndex": 1,
+          "cellRect": {
+            "x": 229,
+            "y": 458,
+            "width": 229,
+            "height": 229
+          },
+          "visibleBoundsInCell": [
+            24,
+            -26,
+            225,
+            209
+          ],
+          "visibleSourceRect": {
+            "x": 253,
+            "y": 432,
+            "width": 201,
+            "height": 235
+          },
+          "safeSourceRect": {
+            "x": 252,
+            "y": 431,
+            "width": 203,
+            "height": 237
+          },
+          "boundsAt126px": [
+            13.205,
+            -14.306,
+            123.799,
+            114.996
+          ],
+          "sha256": "ff515e5e5b924342f360bf782070fb4cc7816d41b6efaba274352518bda5fa49",
+          "visiblePixelCount": 33618
+        },
+        {
+          "frameIndex": 2,
+          "cellRect": {
+            "x": 458,
+            "y": 458,
+            "width": 229,
+            "height": 229
+          },
+          "visibleBoundsInCell": [
+            17,
+            -26,
+            218,
+            209
+          ],
+          "visibleSourceRect": {
+            "x": 475,
+            "y": 432,
+            "width": 201,
+            "height": 235
+          },
+          "safeSourceRect": {
+            "x": 474,
+            "y": 431,
+            "width": 203,
+            "height": 237
+          },
+          "boundsAt126px": [
+            9.354,
+            -14.306,
+            119.948,
+            114.996
+          ],
+          "sha256": "9a3a33cde496690e251a6fece4a8e08fa3df7cd80d37e9bd4b10ecf17901c44d",
+          "visiblePixelCount": 33103
+        },
+        {
+          "frameIndex": 3,
+          "cellRect": {
+            "x": 687,
+            "y": 458,
+            "width": 229,
+            "height": 229
+          },
+          "visibleBoundsInCell": [
+            10,
+            -21,
+            221,
+            209
+          ],
+          "visibleSourceRect": {
+            "x": 697,
+            "y": 437,
+            "width": 211,
+            "height": 230
+          },
+          "safeSourceRect": {
+            "x": 696,
+            "y": 436,
+            "width": 213,
+            "height": 232
+          },
+          "boundsAt126px": [
+            5.502,
+            -11.555,
+            121.598,
+            114.996
+          ],
+          "sha256": "62f934ca37af12d81ffa8b46bc653b6b0c71805b57b8b07e0cfe59c452f8e142",
+          "visiblePixelCount": 30791
+        },
+        {
+          "frameIndex": 4,
+          "cellRect": {
+            "x": 916,
+            "y": 458,
+            "width": 229,
+            "height": 229
+          },
+          "visibleBoundsInCell": [
+            23,
+            -13,
+            229,
+            209
+          ],
+          "visibleSourceRect": {
+            "x": 939,
+            "y": 445,
+            "width": 206,
+            "height": 222
+          },
+          "safeSourceRect": {
+            "x": 938,
+            "y": 444,
+            "width": 208,
+            "height": 224
+          },
+          "boundsAt126px": [
+            12.655,
+            -7.153,
+            126.0,
+            114.996
+          ],
+          "sha256": "eea01c03b3d02b865e3c7f797c6a190347962ba1920b9aefdf0098834d43f60b",
+          "visiblePixelCount": 31521
+        },
+        {
+          "frameIndex": 5,
+          "cellRect": {
+            "x": 1145,
+            "y": 458,
+            "width": 229,
+            "height": 229
+          },
+          "visibleBoundsInCell": [
+            22,
+            -26,
+            216,
+            209
+          ],
+          "visibleSourceRect": {
+            "x": 1167,
+            "y": 432,
+            "width": 194,
+            "height": 235
+          },
+          "safeSourceRect": {
+            "x": 1166,
+            "y": 431,
+            "width": 196,
+            "height": 237
+          },
+          "boundsAt126px": [
+            12.105,
+            -14.306,
+            118.847,
+            114.996
+          ],
+          "sha256": "7658236dd71b30d6442e17b71ebae5a29f0ae8604574ce32620490f04d73fb2e",
+          "visiblePixelCount": 32459
+        }
+      ]
+    },
+    "eat": {
+      "sheet": "care",
+      "row": 3,
+      "frameStart": 18,
+      "frameCount": 6,
+      "uniqueFrameCount": 6,
+      "groundBaselineAt126px": 109.218,
+      "frameRects": [
+        {
+          "x": 24,
+          "y": 681,
+          "width": 200,
+          "height": 205
+        },
+        {
+          "x": 244,
+          "y": 706,
+          "width": 209,
+          "height": 181
+        },
+        {
+          "x": 476,
+          "y": 727,
+          "width": 203,
+          "height": 160
+        },
+        {
+          "x": 701,
+          "y": 725,
+          "width": 218,
+          "height": 162
+        },
+        {
+          "x": 958,
+          "y": 682,
+          "width": 199,
+          "height": 204
+        },
+        {
+          "x": 1186,
+          "y": 679,
+          "width": 173,
+          "height": 207
+        }
+      ],
+      "frames": [
+        {
+          "frameIndex": 0,
+          "cellRect": {
+            "x": 0,
+            "y": 687,
+            "width": 229,
+            "height": 229
+          },
+          "visibleBoundsInCell": [
+            25,
+            -5,
+            223,
+            198
+          ],
+          "visibleSourceRect": {
+            "x": 25,
+            "y": 682,
+            "width": 198,
+            "height": 203
+          },
+          "safeSourceRect": {
+            "x": 24,
+            "y": 681,
+            "width": 200,
+            "height": 205
+          },
+          "boundsAt126px": [
+            13.755,
+            -2.751,
+            122.699,
+            108.943
+          ],
+          "sha256": "a2345a7404cd31b29d80bc33105d691ce844d24ffc43ad6099775e5c01102c93",
+          "visiblePixelCount": 28474
+        },
+        {
+          "frameIndex": 1,
+          "cellRect": {
+            "x": 229,
+            "y": 687,
+            "width": 229,
+            "height": 229
+          },
+          "visibleBoundsInCell": [
+            16,
+            20,
+            223,
+            199
+          ],
+          "visibleSourceRect": {
+            "x": 245,
+            "y": 707,
+            "width": 207,
+            "height": 179
+          },
+          "safeSourceRect": {
+            "x": 244,
+            "y": 706,
+            "width": 209,
+            "height": 181
+          },
+          "boundsAt126px": [
+            8.803,
+            11.004,
+            122.699,
+            109.493
+          ],
+          "sha256": "a9203a8c4a0f2cb76726e2861a0671b0adb6ae895927f0e8e9291095ef3b0615",
+          "visiblePixelCount": 26748
+        },
+        {
+          "frameIndex": 2,
+          "cellRect": {
+            "x": 458,
+            "y": 687,
+            "width": 229,
+            "height": 229
+          },
+          "visibleBoundsInCell": [
+            19,
+            41,
+            220,
+            199
+          ],
+          "visibleSourceRect": {
+            "x": 477,
+            "y": 728,
+            "width": 201,
+            "height": 158
+          },
+          "safeSourceRect": {
+            "x": 476,
+            "y": 727,
+            "width": 203,
+            "height": 160
+          },
+          "boundsAt126px": [
+            10.454,
+            22.559,
+            121.048,
+            109.493
+          ],
+          "sha256": "15e769f9e13bb51407dee17a7de1a2bdd46b338d21bf7f0821819b75e253f6dc",
+          "visiblePixelCount": 24745
+        },
+        {
+          "frameIndex": 3,
+          "cellRect": {
+            "x": 687,
+            "y": 687,
+            "width": 229,
+            "height": 229
+          },
+          "visibleBoundsInCell": [
+            15,
+            39,
+            231,
+            199
+          ],
+          "visibleSourceRect": {
+            "x": 702,
+            "y": 726,
+            "width": 216,
+            "height": 160
+          },
+          "safeSourceRect": {
+            "x": 701,
+            "y": 725,
+            "width": 218,
+            "height": 162
+          },
+          "boundsAt126px": [
+            8.253,
+            21.459,
+            127.1,
+            109.493
+          ],
+          "sha256": "a50e8bade0bb6e3d98b84aec2c7787c4227d9f3f0ff061fc22f3aee9b5b8c7bf",
+          "visiblePixelCount": 25762
+        },
+        {
+          "frameIndex": 4,
+          "cellRect": {
+            "x": 916,
+            "y": 687,
+            "width": 229,
+            "height": 229
+          },
+          "visibleBoundsInCell": [
+            43,
+            -4,
+            240,
+            198
+          ],
+          "visibleSourceRect": {
+            "x": 959,
+            "y": 683,
+            "width": 197,
+            "height": 202
+          },
+          "safeSourceRect": {
+            "x": 958,
+            "y": 682,
+            "width": 199,
+            "height": 204
+          },
+          "boundsAt126px": [
+            23.659,
+            -2.201,
+            132.052,
+            108.943
+          ],
+          "sha256": "3f292226ed777720d4ee9a9886cf86150d18629cccca5eafca177f06e8245993",
+          "visiblePixelCount": 29321
+        },
+        {
+          "frameIndex": 5,
+          "cellRect": {
+            "x": 1145,
+            "y": 687,
+            "width": 229,
+            "height": 229
+          },
+          "visibleBoundsInCell": [
+            42,
+            -7,
+            213,
+            198
+          ],
+          "visibleSourceRect": {
+            "x": 1187,
+            "y": 680,
+            "width": 171,
+            "height": 205
+          },
+          "safeSourceRect": {
+            "x": 1186,
+            "y": 679,
+            "width": 173,
+            "height": 207
+          },
+          "boundsAt126px": [
+            23.109,
+            -3.852,
+            117.197,
+            108.943
+          ],
+          "sha256": "515c3a910a46224adba4b52f82bec2557450c77094aa561a7406b4b9cc8f054c",
+          "visiblePixelCount": 27395
+        }
+      ]
+    },
+    "clean": {
+      "sheet": "care",
+      "row": 4,
+      "frameStart": 24,
+      "frameCount": 6,
+      "uniqueFrameCount": 6,
+      "groundBaselineAt126px": 116.096,
+      "frameRects": [
+        {
+          "x": 16,
+          "y": 887,
+          "width": 198,
+          "height": 241
+        },
+        {
+          "x": 244,
+          "y": 893,
+          "width": 212,
+          "height": 235
+        },
+        {
+          "x": 477,
+          "y": 893,
+          "width": 204,
+          "height": 235
+        },
+        {
+          "x": 712,
+          "y": 891,
+          "width": 202,
+          "height": 237
+        },
+        {
+          "x": 934,
+          "y": 893,
+          "width": 215,
+          "height": 235
+        },
+        {
+          "x": 1168,
+          "y": 887,
+          "width": 201,
+          "height": 241
+        }
+      ],
+      "frames": [
+        {
+          "frameIndex": 0,
+          "cellRect": {
+            "x": 0,
+            "y": 916,
+            "width": 229,
+            "height": 229
+          },
+          "visibleBoundsInCell": [
+            17,
+            -28,
+            213,
+            211
+          ],
+          "visibleSourceRect": {
+            "x": 17,
+            "y": 888,
+            "width": 196,
+            "height": 239
+          },
+          "safeSourceRect": {
+            "x": 16,
+            "y": 887,
+            "width": 198,
+            "height": 241
+          },
+          "boundsAt126px": [
+            9.354,
+            -15.406,
+            117.197,
+            116.096
+          ],
+          "sha256": "08127a9f2ae32d5151990855ea590c1d16bb71e53ed51661c819ffa86a088d6c",
+          "visiblePixelCount": 33914
+        },
+        {
+          "frameIndex": 1,
+          "cellRect": {
+            "x": 229,
+            "y": 916,
+            "width": 229,
+            "height": 229
+          },
+          "visibleBoundsInCell": [
+            16,
+            -22,
+            226,
+            211
+          ],
+          "visibleSourceRect": {
+            "x": 245,
+            "y": 894,
+            "width": 210,
+            "height": 233
+          },
+          "safeSourceRect": {
+            "x": 244,
+            "y": 893,
+            "width": 212,
+            "height": 235
+          },
+          "boundsAt126px": [
+            8.803,
+            -12.105,
+            124.349,
+            116.096
+          ],
+          "sha256": "9fe538d46ffb033b02c60cddf5e931fcd9cac0aed3b06e59bcd006bd9ba37bdc",
+          "visiblePixelCount": 32328
+        },
+        {
+          "frameIndex": 2,
+          "cellRect": {
+            "x": 458,
+            "y": 916,
+            "width": 229,
+            "height": 229
+          },
+          "visibleBoundsInCell": [
+            20,
+            -22,
+            222,
+            211
+          ],
+          "visibleSourceRect": {
+            "x": 478,
+            "y": 894,
+            "width": 202,
+            "height": 233
+          },
+          "safeSourceRect": {
+            "x": 477,
+            "y": 893,
+            "width": 204,
+            "height": 235
+          },
+          "boundsAt126px": [
+            11.004,
+            -12.105,
+            122.148,
+            116.096
+          ],
+          "sha256": "9909acc439d717bfb135604a2e96888f6f524782bda65b3828cbeb344a26cf1e",
+          "visiblePixelCount": 33266
+        },
+        {
+          "frameIndex": 3,
+          "cellRect": {
+            "x": 687,
+            "y": 916,
+            "width": 229,
+            "height": 229
+          },
+          "visibleBoundsInCell": [
+            26,
+            -24,
+            226,
+            211
+          ],
+          "visibleSourceRect": {
+            "x": 713,
+            "y": 892,
+            "width": 200,
+            "height": 235
+          },
+          "safeSourceRect": {
+            "x": 712,
+            "y": 891,
+            "width": 202,
+            "height": 237
+          },
+          "boundsAt126px": [
+            14.306,
+            -13.205,
+            124.349,
+            116.096
+          ],
+          "sha256": "b40986ed8d7b625589d7063ce827871784024bca81044fd6105f962d0f318902",
+          "visiblePixelCount": 32809
+        },
+        {
+          "frameIndex": 4,
+          "cellRect": {
+            "x": 916,
+            "y": 916,
+            "width": 229,
+            "height": 229
+          },
+          "visibleBoundsInCell": [
+            19,
+            -22,
+            232,
+            211
+          ],
+          "visibleSourceRect": {
+            "x": 935,
+            "y": 894,
+            "width": 213,
+            "height": 233
+          },
+          "safeSourceRect": {
+            "x": 934,
+            "y": 893,
+            "width": 215,
+            "height": 235
+          },
+          "boundsAt126px": [
+            10.454,
+            -12.105,
+            127.651,
+            116.096
+          ],
+          "sha256": "29ff82d24b8505270cc41da1a71f532f515c91418e391c34e40b522f9c62dcf4",
+          "visiblePixelCount": 32653
+        },
+        {
+          "frameIndex": 5,
+          "cellRect": {
+            "x": 1145,
+            "y": 916,
+            "width": 229,
+            "height": 229
+          },
+          "visibleBoundsInCell": [
+            24,
+            -28,
+            223,
+            211
+          ],
+          "visibleSourceRect": {
+            "x": 1169,
+            "y": 888,
+            "width": 199,
+            "height": 239
+          },
+          "safeSourceRect": {
+            "x": 1168,
+            "y": 887,
+            "width": 201,
+            "height": 241
+          },
+          "boundsAt126px": [
+            13.205,
+            -15.406,
+            122.699,
+            116.096
+          ],
+          "sha256": "cbee1f0cecd891203a09755edaaa108c5a1372f22eba40edd39779b2cb5b739e",
+          "visiblePixelCount": 33718
+        }
+      ]
+    }
+  },
+  "prompts": {
+    "core": "Use case: stylized-concept. Asset type: production 2D animation sprite atlas for a desktop companion.\nCreate ONE genuinely transparent PNG sprite sheet, exactly 6 equal columns by 5 equal rows, thirty isolated full-body drawings total, row-major order. Canvas preferred 1536 by 1280 (aspect 6:5), each cell exactly 256 by 256; if another size is necessary retain EXACT 6-column 5-row equal-cell grid.\nReferences: Image 1 (dog idle) and Image 2 (dog happy) define the SAME golden cream fluffy 3D toy puppy character identity. Preserve its large warm brown glossy eyes, round dark brown nose, cream golden fur, rounded triangular ears, short paws and tail, soft high-quality 3D plush render. Reference images are identity/style guidance; do NOT copy their poses into every frame. Remove all grass, scenery and background.\nAll thirty cells are distinct genuinely drawn sequential animation poses of this same puppy. Fixed front-three-quarter camera, consistent head/body dimensions and rendering scale, centered horizontal pivot. Keep an invisible common ground baseline at 86% of each cell's height; standing puppy including ears approximately 72% of cell height. Every cell has at least 10% transparent padding, all fur/ears/paws/tail completely inside its own cell. No ground shadows extending into adjacent cells. Do not draw grid lines, labels, numbers or text.\nEXACT ROWS TOP TO BOTTOM:\nRow 1 IDLE: seated relaxed puppy; 6 sequential phases of gentle breathing, ears twitching and blinking: open eyes neutral, chest inhale, eyes half close, closed blink, eyes reopen, soft exhale. Same scale/position; subtle but visible pose changes.\nRow 2 WALK: in-place gentle walking cycle facing slightly right; six successive alternating paw positions, front/back paws lifting and planting, tail gently swings. Entire body in each cell, no translation across cells, no motion trail.\nRow 3 JUMP: six phases of one playful jump: crouch anticipation, extend pushing off ground, rising with paws folded, apex with ears slightly lifted, descending paws reaching, soft landing crouch. Preserve available upper padding.\nRow 4 HAPPY: six continuous happy greeting phases: neutral smile, smile broadens with tongue showing, right paw begins lifting, paw waves outward, paw waves inward, paw lowers and smiling settles. Puppy looks affectionately at viewer.\nRow 5 CONFUSED: six continuous questioning phases: neutral seated, slight head tilt left, deeper tilt and one ear lowered, return through center, slight tilt right, return neutral. No symbols or question marks.\nCRITICAL: exactly five horizontal action rows, exactly six aligned frame columns, 30 puppies total, ONE puppy per cell, full-body consistent character, genuine transparent alpha background (not a checkerboard illustration), no props, no hats/scarves/clothes, no text, no outlines/borders, no contact sheet decoration. Real sequential drawings, not copies, not a collage of unrelated poses.",
+    "care": "Use case: stylized-concept. Asset type: production animation sprite atlas for a desktop pet.\nGenerate ONE transparent RGBA PNG sprite sheet exactly SIX equal columns and FIVE equal rows (30 full-body puppy frames), ideally 1536 x1280. No borders, no captions, no background, no ground plane, no contact shadows, no grass, no colored speckle around fur. Every cell's backdrop must have true alpha 0.\nReference images: the existing dog idle and happy are identity references for the same adorable golden cream fluffy 3D toy puppy: round warm brown glossy eyes, tiny dark brown nose, rounded ears, chubby short paws, soft cream-gold fur and fluffy tail. Keep exactly this character's appearance, materials, lighting, proportions, same frontal slight 3/4 camera. No accessories/clothes. All 30 poses are authentic sequential drawings of the puppy, not duplicates.\nRigid atlas layout: exactly 6 evenly spaced columns, 5 evenly spaced rows. One puppy per cell. Each cell has a fully invisible ground baseline at 86% of its height, shared horizontal center at 50%, consistent character scale, ordinary sitting height ~70% cell height. At least 12% TRANSPARENT padding on all sides. Ears, tail and props stay entirely within each own cell. No neighboring cell overlaps.\nRows top to bottom, and six frames left to right:\nROW 1 REMINDING: sitting upright attentively, six-phase gentle paw beckon: neutral, paw starts rising, paw up, small outward beckon, return inward, paw down. Alert affectionate eyes. No bell or written symbol.\nROW 2 SLEEPING: puppy lies curled with closed eyes, six sequential gentle sleeping-breath phases, chest subtly rises then falls, one ear twitches, tail relaxes. Head stays down, fully asleep, no sleep letters or symbols, fixed low silhouette and baseline.\nROW 3 PAT: sitting puppy enjoys an invisible head pat, six phases: head neutral, chin slightly lifts, eyes soften closed, head leans left into affection, head leans right, returns contented to center. No human hand, no other character.\nROW 4 EAT: puppy eats from ONE small simple light blue food bowl placed consistently in front of it within each cell. Six continuous phases: head upright looking at bowl, head lowers, muzzle reaches food, munch head dips a little, head lifts licking lips, swallow with contented smile. Same blue bowl in all six cells, no extra objects.\nROW 5 CLEAN: puppy washes itself naturally. Six phases: sitting neutral, raises right front paw toward mouth, licks paw, paw reaches cheek, rubs cheek/ear, lowers paw with clean happy face. No brush, bath, bubbles or human hands; only the one puppy.\nTechnical invariants: EXACT 30 separate frames in 6x5 uniform grid; same character, same size and camera; real visible articulation between neighboring frames; one body and correct number of limbs per frame; every cell fully contained with transparent gutters. Genuinely transparent alpha, no checkerboard texture, no white rectangle, no ground shadow, no text/numbers/labels/watermarks."
+  },
+  "layout": "source-rects",
+  "auditMethod": "Connected-component labeling of alpha > 32: exactly 30 complete subjects per sheet, expanded source rectangles contain no foreign visible component. Each frame sha256 hashes raw RGBA bytes of its safeSourceRect."
+}

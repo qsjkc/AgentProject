@@ -1,7 +1,7 @@
 // Real Electron UI -> real FastAPI -> disposable SQLite. No production writes.
 import { spawn, execFile } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
-import { mkdir, mkdtemp, readFile, writeFile, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, writeFile, rm, access, readdir } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -14,6 +14,7 @@ import { REQUIRED_SELECTORS as S } from './e2e/p1k-scenarios.mjs'
 const root = fileURLToPath(new URL('../..', import.meta.url))
 const desktop = join(root, 'desktop')
 const packaged = process.argv.includes('--packaged')
+const registrationOnly = process.argv.includes('--registration-only')
 const timeZoneOverride = process.argv.find((value) => value.startsWith('--timezone='))?.slice('--timezone='.length)
 if (timeZoneOverride) new Intl.DateTimeFormat('en', { timeZone: timeZoneOverride })
 const expectedVersion = JSON.parse(await readFile(join(desktop, 'package.json'), 'utf8')).version
@@ -23,13 +24,19 @@ const artifacts = join(desktop, 'artifacts/e2e', `real-backend-${Date.now()}`)
 const password = `Acceptance-${randomBytes(12).toString('hex')}`
 const secret = randomBytes(32).toString('hex')
 const execAsync = promisify(execFile)
-const report = { status: 'running', backend: 'real-local-fastapi-sqlite', packaged, checks: [], artifacts }
+const report = { status: 'running', backend: 'real-local-fastapi-sqlite', packaged, registrationOnly, checks: [], artifacts }
+report.evidenceScope = { registration: 'real Web UI and FastAPI, no seeded accounts', email: 'local SMTP STARTTLS/AUTH capture; not external inbox delivery', growth: 'real earned XP and outfits; long-term level thresholds covered separately by backend tests' }
+const identities = {}
 let backend
 let electron
+let browser
+let registrationPage
+let expiringMessage
 let backendPort
 let pages = {}
 let backendLogs = ''
 let electronLogs = ''
+const apiOrigins = new Set()
 const processEnv = { ...process.env }
 delete processEnv.ELECTRON_RUN_AS_NODE
 delete processEnv.ELECTRON_RENDERER_URL
@@ -53,8 +60,9 @@ async function startBackend() {
   ], {
     cwd: runtime,
     env: { ...processEnv, PYTHONPATH: join(root, 'backend'), PYTHONUNBUFFERED: '1',
-      DETACHYM_ACCEPTANCE_RUNTIME: runtime, DETACHYM_ACCEPTANCE_PASSWORD: password,
-      DETACHYM_ACCEPTANCE_SECRET: secret, DETACHYM_ACCEPTANCE_PORT: String(backendPort || 0) },
+      DETACHYM_ACCEPTANCE_RUNTIME: runtime,
+      DETACHYM_ACCEPTANCE_SECRET: secret, DETACHYM_ACCEPTANCE_PORT: String(backendPort || 0),
+      DETACHYM_ACCEPTANCE_FRONTEND_DIST: join(root, 'frontend/dist'), PYTHONDONTWRITEBYTECODE: '1' },
   })
   let stdout = ''
   backend.stdout.on('data', (chunk) => { stdout += chunk; backendLogs += chunk })
@@ -70,10 +78,110 @@ async function startBackend() {
 }
 
 const baseUrl = () => `http://127.0.0.1:${backendPort}/api/v1`
+async function inspectDatabase() {
+  const { stdout } = await execAsync(join(root, 'backend/venv/Scripts/python.exe'), [
+    join(root, 'backend/scripts/desktop_acceptance_backend.py'), '--inspect',
+  ], { windowsHide: true, env: { ...processEnv, DETACHYM_ACCEPTANCE_RUNTIME: runtime, PYTHONDONTWRITEBYTECODE: '1' } })
+  return JSON.parse(stdout)
+}
+async function receivedCode(email, subject = '注册验证码') {
+  return waitFor(async () => {
+    const messages = JSON.parse(await readFile(join(runtime, 'smtp-messages.json'), 'utf8'))
+    const message = messages.findLast((item) => item.recipients.includes(email) && item.subject.includes(subject))
+    if (!message) return null
+    const code = message.html.match(/>(\d{6})</)?.[1]
+    assert(code && message.tls && message.authenticated, 'Verification mail did not traverse authenticated SMTP with STARTTLS')
+    return { ...message, code }
+  }, { description: `local SMTP receipt for ${email}` })
+}
+async function launchRegistrationBrowser() {
+  const browserData = join(runtime, 'web-user-data')
+  await mkdir(browserData, { recursive: true })
+  let edgePath
+  for (const candidate of ['C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe', 'C:/Program Files/Microsoft/Edge/Application/msedge.exe']) {
+    try { await access(candidate); edgePath = candidate; break } catch {}
+  }
+  assert(edgePath, 'Microsoft Edge is required for actual Web registration UI acceptance')
+  browser = launchProcess(edgePath, [
+    '--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check',
+    '--disable-background-networking', '--remote-debugging-port=0', '--remote-debugging-address=127.0.0.1',
+    '--remote-allow-origins=*', '--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1',
+    `--user-data-dir=${browserData}`, `http://127.0.0.1:${backendPort}/register`,
+  ], { cwd: runtime, env: processEnv })
+  const { port } = await waitForDevToolsActivePort(browserData)
+  const target = await waitFor(async () => (await fetchPageTargets(port)).find((item) => item.url.includes('/register')),
+    { description: 'real registration page in isolated browser' })
+  registrationPage = await CdpClient.connect(target.webSocketDebuggerUrl)
+  await registrationPage.enable()
+  await registrationPage.send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 960, deviceScaleFactor: 1, mobile: false })
+  await registrationPage.waitForReady()
+  await registrationPage.waitForSelector('input[autocomplete="username"]', { timeoutMs: 30_000 })
+}
+async function stopRegistrationBrowser() {
+  try { await registrationPage?.send('Browser.close', {}, { timeoutMs: 2000 }) } catch {}
+  registrationPage?.close()
+  await stopProcess(browser)
+  // Edge can hand off to a detached browser process. Match only this run's
+  // exact isolated profile argument; never terminate the user's normal Edge.
+  const script = [
+    "$profilePath = [Environment]::GetEnvironmentVariable('DETACHYM_ACCEPTANCE_EDGE_PROFILE', 'Process')",
+    "$targets = Get-CimInstance Win32_Process -Filter \"Name='msedge.exe'\" | Where-Object { $_.CommandLine -and $_.CommandLine.Contains('--user-data-dir=' + $profilePath) }",
+    "$targets | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }",
+  ].join('; ')
+  await execAsync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script], {
+    windowsHide: true, env: { ...processEnv, DETACHYM_ACCEPTANCE_EDGE_PROFILE: join(runtime, 'web-user-data') },
+  })
+}
+async function fillRegistration(suffix, code = '') {
+  await registrationPage.input('input[autocomplete="username"]', `accept-${suffix}`)
+  await registrationPage.input('input[autocomplete="email"]', `accept-${suffix}@example.com`)
+  await registrationPage.input('input[autocomplete="new-password"]', password)
+  if (code) await registrationPage.input('input[autocomplete="one-time-code"]', code)
+}
+async function navigateRegistration() {
+  let loaded = false
+  const unsubscribe = registrationPage.on('Page.loadEventFired', () => { loaded = true })
+  try {
+    await registrationPage.send('Page.navigate', { url: `http://127.0.0.1:${backendPort}/register` })
+    await waitFor(() => loaded, { description: 'new registration document load' })
+    await registrationPage.waitForSelector('input[autocomplete="username"]')
+  } finally { unsubscribe() }
+}
+async function registerViaWeb(suffix) {
+  await registrationPage.evaluate('localStorage.clear()')
+  await navigateRegistration()
+  await fillRegistration(suffix)
+  await registrationPage.click('form button[type="button"]')
+  const message = await receivedCode(`accept-${suffix}@example.com`)
+  const invalidCode = message.code === '000000' ? '999999' : '000000'
+  await registrationPage.input('input[autocomplete="one-time-code"]', invalidCode)
+  await registrationPage.click('form button[type="submit"]')
+  await registrationPage.waitForSelector('[role="alert"]')
+  assert(await registrationPage.evaluate(`document.querySelector('[role="alert"]')?.textContent.includes('验证码')`), 'Wrong code did not produce verification feedback')
+  assert(!(await inspectDatabase()).users.some((user) => user.email === `accept-${suffix}@example.com`), 'Wrong code created an account')
+  await registrationPage.input('input[autocomplete="one-time-code"]', message.code)
+  await registrationPage.click('form button[type="submit"]')
+  await waitFor(() => registrationPage.evaluate('location.pathname === "/account" && !!localStorage.getItem("token")'),
+    { description: 'successful real registration and automatic Web login' })
+  const token = await registrationPage.evaluate('localStorage.getItem("token")')
+  const me = await api('/auth/me', token)
+  assert(me.preferences.pet_type === 'pig', 'Registered account did not default to pig')
+  identities[suffix] = me.id
+  const duplicate = await fetch(`${baseUrl()}/auth/register`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username: `accept-${suffix}-replay`, email: me.email, password, verification_code: message.code }),
+  })
+  assert(duplicate.status === 400, 'Registration code replay created another account')
+  const audit = await inspectDatabase()
+  assert(audit.codes.some((item) => item.email === me.email && item.purpose === 'register' && item.consumed_at), 'Successful registration did not consume its code')
+  await registrationPage.screenshot(join(artifacts, `registered-${suffix}.png`))
+  return { userId: me.id, wrongCodeRejected: true, registrationCodeConsumed: true, replayRejected: true,
+    automaticWebLogin: true, smtpTls: message.tls, smtpAuthenticated: message.authenticated }
+}
 async function api(path, token, options = {}) {
   const response = await fetch(`${baseUrl()}${path}`, {
     ...options, headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...options.headers },
-    signal: AbortSignal.timeout(5000),
+    signal: AbortSignal.timeout(20_000),
   })
   assert(response.ok, `Real API ${path}: HTTP ${response.status}`)
   return response.json()
@@ -114,9 +222,34 @@ async function launchDesktop() {
   assert(version === expectedVersion, 'Actual executable version must match the checkout', { version, expectedVersion })
 }
 async function stopDesktop() {
-  for (const client of Object.values(pages)) client.close()
+  for (const client of Object.values(pages)) {
+    collectApiOrigins(client)
+    client.close()
+  }
   pages = {}
   await stopProcess(electron)
+}
+function collectApiOrigins(client) {
+  for (const entry of client?.diagnostics.network || []) {
+    const value = entry.request?.url
+    if (!value?.startsWith('http')) continue
+    const url = new URL(value)
+    if (url.pathname.startsWith('/api/v1/')) apiOrigins.add(url.origin)
+  }
+}
+function safeDiagnostics(client) {
+  return { ...client.diagnostics, network: client.diagnostics.network.map((entry) => ({
+    at: entry.at, method: entry.method, url: entry.request?.url || entry.response?.url,
+    status: entry.response?.status, errorText: entry.errorText,
+  })) }
+}
+function collectCareRewardRequests() {
+  return Object.values(pages).flatMap((client) => client.diagnostics.network.flatMap((entry) => {
+    if (!entry.request?.url?.endsWith('/relationship/rewards')) return []
+    let payload
+    try { payload = JSON.parse(entry.request.postData || '{}') } catch { return [] }
+    return payload.action ? [{ at: entry.at, url: entry.request.url, action: payload.action }] : []
+  }))
 }
 async function login(suffix) {
   const main = pages['main-panel.html']
@@ -128,33 +261,145 @@ async function login(suffix) {
 }
 async function record(name, run) {
   console.log(`[real-backend] ${name} started`)
-  const result = await run()
-  report.checks.push({ name, status: 'passed', ...result })
-  console.log(`[real-backend] ${name} passed`)
+  try {
+    const result = await run()
+    report.checks.push({ name, status: 'passed', ...result })
+    console.log(`[real-backend] ${name} passed`)
+  } catch (error) {
+    report.checks.push({ name, status: 'failed', error: serializeError(error) })
+    throw error
+  }
+}
+
+async function selectActualPet(petType) {
+  await pages['pet.html'].evaluate('window.desktopBridge.openMainPanel()')
+  await pages['main-panel.html'].click(`[data-e2e="pet-option-${petType}"]`)
+  await waitFor(() => pages['pet.html'].evaluate(`window.desktopBridge.getPetState().then(s => s.petType === ${JSON.stringify(petType)} && s.userId === ${identities.a})`),
+    { description: `${petType} desktop state` })
+  await pages['main-panel.html'].waitForSelector(`[data-e2e="pet-relationship-summary"].relationship-summary-${petType}`)
+}
+
+async function assertOnboardingCompleted(petType) {
+  return waitFor(async () => {
+    const config = JSON.parse(await readFile(join(userData, 'config.json'), 'utf8'))
+    const state = Object.values(config.petOnboardingStates || {}).find((item) => (
+      item.user_id === identities.a && item.pet_type === petType && item.status === 'finished' && item.finish_reason === 'completed'
+    ))
+    return state ? { petType, relationshipId: state.relationship_id, finishReason: state.finish_reason } : null
+  }, { description: `${petType} persisted onboarding completion` })
+}
+
+async function readOnboardingFacts() {
+  const config = JSON.parse(await readFile(join(userData, 'config.json'), 'utf8'))
+  return Object.values(config.petOnboardingStates || {}).map((state) => ({
+    user_id: state.user_id, pet_type: state.pet_type, relationship_id: state.relationship_id,
+    status: state.status, finish_reason: state.finish_reason,
+    observed_capability_ids: state.observed_capability_ids,
+  }))
+}
+
+async function patReadyPet(petType, token) {
+  await pages['main-panel.html'].evaluate('window.desktopBridge.hideMainPanel()')
+  await pages['pet.html'].bringToFront()
+  await waitFor(async () => (await readOnboardingFacts()).some((state) => (
+    state.user_id === identities.a && state.pet_type === petType && state.status === 'active'
+  )), { description: `${petType} initial onboarding state created` })
+  await waitFor(() => pages['pet.html'].evaluate(`(() => {
+    const button = document.querySelector(${JSON.stringify(S.petCarePat)});
+    return Boolean(button && !button.disabled);
+  })()`), { description: `${petType} pat toolbar enabled after entry animation` })
+  const before = await api(`/pets/${petType}/daily-summary`, token)
+  await pages['pet.html'].click(S.petCarePat)
+  await waitFor(async () => (await api(`/pets/${petType}/daily-summary`, token)).care_count > before.care_count,
+    { description: `${petType} actual pat reward persisted` })
+  await waitFor(async () => (await readOnboardingFacts()).some((state) => (
+    state.user_id === identities.a && state.pet_type === petType
+    && state.observed_capability_ids?.includes('pet_interaction')
+  )), { description: `${petType} actual pat onboarding observation persisted` })
+}
+
+async function waitForNaturalReminder(petType, reminderId, token) {
+  await pages['main-panel.html'].evaluate('window.desktopBridge.hideMainPanel()')
+  const result = await waitFor(async () => {
+    const state = await pages['pet.html'].evaluate('window.desktopBridge.getPetState()')
+    if (state.petType !== petType || state.userId !== identities.a) {
+      return { interruptedContext: { petType: state.petType, userId: state.userId } }
+    }
+    return (await api(`/reminders?pet_type=${petType}`, token))
+      .find((row) => row.id === reminderId && row.triggered_at)
+  }, { description: `${petType} natural reminder delivery`, timeoutMs: 100_000, intervalMs: 1000 })
+  assert(!result.interruptedContext, 'Desktop account or pet changed unexpectedly while waiting for its reminder', {
+    expected: { petType, userId: identities.a }, actual: result.interruptedContext,
+  })
+  await pages['pet.html'].evaluate('window.desktopBridge.openMainPanel()')
+  return result
+}
+
+async function collectContextEvents() {
+  const directory = join(runtime, 'AppData/Detachym/logs')
+  const events = []
+  for (const file of await readdir(directory).catch(() => [])) {
+    if (!file.startsWith('desktop-main-') || !file.endsWith('.log')) continue
+    for (const line of (await readFile(join(directory, file), 'utf8')).split('\n').filter(Boolean)) {
+      let record
+      try { record = JSON.parse(line) } catch { continue }
+      const event = record.payload?.event || record.event
+      if (!/switch-pet|main-panel-switch|voice-global-shortcut-triggered/.test(event || '')) continue
+      const payload = record.payload || record
+      // Keep only context metadata, never session capabilities or credentials.
+      events.push({ at: record.ts, event, role: record.role, petType: payload.petType,
+        fromPetType: payload.fromPetType, toPetType: payload.toPetType,
+        targetPetType: payload.targetPetType, phase: payload.phase })
+    }
+  }
+  return events
 }
 
 try {
   await mkdir(artifacts, { recursive: true })
   await mkdir(join(runtime, 'AppData'), { recursive: true })
+  await access(join(root, 'frontend/dist/index.html'))
   await startBackend()
+  await record('empty isolated database and real SMTP code issuance', async () => {
+    assert((await inspectDatabase()).users.length === 0, 'Acceptance must begin without seeded users')
+    await api('/auth/send-verification-code', null, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: 'accept-expired@example.com' }),
+    })
+    expiringMessage = await receivedCode('accept-expired@example.com')
+    return { accountsSeeded: false, smtpStartTls: true, smtpAuthenticated: true, expiryClock: 'natural five-minute server TTL' }
+  })
+  await launchRegistrationBrowser()
+  await record('Web registration A with received code, wrong-code rejection and auto-login', () => registerViaWeb('a'))
+  await record('Web registration B independently with received code', () => registerViaWeb('b'))
+  await record('real password-reset verification code cannot be reused', async () => {
+    await api('/auth/forgot-password', null, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: 'accept-a@example.com' }) })
+    const message = await receivedCode('accept-a@example.com', '重置密码验证码')
+    const payload = { email: 'accept-a@example.com', verification_code: message.code, new_password: password }
+    await api('/auth/reset-password', null, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
+    const replay = await fetch(`${baseUrl()}/auth/reset-password`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
+    assert(replay.status === 400 && (await replay.json()).detail === 'Invalid verification code', 'Consumed reset code was reusable')
+    return { smtpCodeConsumedOnce: true, replayStatus: replay.status }
+  })
+  if (!registrationOnly) {
   await launchDesktop()
   let tokenA
   let reminder
   await record('login, default pig and real relationship', async () => {
     await login('a')
-    await waitFor(() => pages['pet.html'].evaluate('window.desktopBridge.getPetState().then(s=>s.petType === "pig" && s.userId === 101)'),
+    await waitFor(() => pages['pet.html'].evaluate(`window.desktopBridge.getPetState().then(s=>s.petType === "pig" && s.userId === ${identities.a})`),
       { description: 'pig account state' })
     tokenA = await tokenFor('a')
     const preferences = await api('/users/me/preferences', tokenA)
     assert(preferences.pet_type === 'pig', 'New account preferences must default to pig')
     const relationship = await api('/pets/pig/relationship', tokenA)
-    assert(relationship.user_id === 101 && relationship.pet_type === 'pig', 'Wrong relationship owner')
+    assert(relationship.user_id === identities.a && relationship.pet_type === 'pig', 'Wrong relationship owner')
     await pages['main-panel.html'].waitForSelector(S.relationshipSummary)
     return { relationshipId: relationship.id }
   })
   await record('care interaction and one-minute reminder creation', async () => {
-    await pages['pet.html'].bringToFront()
-    await pages['pet.html'].click(S.petCarePat)
+    await patReadyPet('pig', tokenA)
     await pages['pet.html'].evaluate('window.desktopBridge.openMainPanel()')
     await pages['main-panel.html'].click(S.onboardingReminderCreate)
     reminder = await waitFor(async () => (await api('/reminders?pet_type=pig', tokenA))[0],
@@ -165,10 +410,7 @@ try {
   })
   await record('natural reminder delivery and explicit completion', async () => {
     // No clock changes, DB edits, forced polls, or E2E controls.
-    reminder = await waitFor(async () => {
-      const rows = await api('/reminders?pet_type=pig', tokenA)
-      return rows.find((row) => row.id === reminder.id && row.triggered_at)
-    }, { description: 'natural reminder delivery', timeoutMs: 100_000, intervalMs: 1000 })
+    reminder = await waitForNaturalReminder('pig', reminder.id, tokenA)
     assert(reminder.status === 'pending', 'Delivery must not auto-complete')
     const deliveryLagMs = Date.parse(reminder.triggered_at) - Date.parse(reminder.remind_at)
     assert(deliveryLagMs >= 0 && deliveryLagMs <= 5000, `Known reminder deadline exceeded five seconds: ${deliveryLagMs} ms`)
@@ -179,11 +421,73 @@ try {
     await pages['main-panel.html'].screenshot(join(artifacts, 'completed-reminder.png'))
     return { triggeredAt: completed.triggered_at, completedAt: completed.completed_at, deliveryLagMs }
   })
+  await record('pig unlocked outfit and persisted onboarding', async () => {
+    const completion = await assertOnboardingCompleted('pig')
+    await pages['main-panel.html'].click('[data-item-id="pig_basic_scarf"]')
+    await waitFor(async () => (await api('/pets/pig/relationship', tokenA)).outfit.equipped_outfits.neck === 'pig_basic_scarf', { description: 'pig outfit persisted' })
+    return completion
+  })
+  const petEvidence = {}
+  for (const petType of ['cat', 'dog']) {
+    await record(`${petType}: real care, independent XP, outfit and natural onboarding reminder`, async () => {
+      const otherPets = ['pig', 'cat', 'dog'].filter((item) => item !== petType)
+      const beforeOthers = Object.fromEntries(await Promise.all(otherPets.map(async (item) => [item, await api(`/pets/${item}/relationship`, tokenA)])))
+      await selectActualPet(petType)
+      const main = pages['main-panel.html']
+      for (const section of ['pet-daily-summary', 'pet-weekly-summary', 'focus-panel']) {
+        await main.waitForSelector(`[data-e2e="${section}"][data-pet-type="${petType}"]`)
+      }
+      await patReadyPet(petType, tokenA)
+      await pages['pet.html'].evaluate('window.desktopBridge.openMainPanel()')
+      await main.click(S.onboardingReminderCreate)
+      const sample = await waitFor(async () => (await api(`/reminders?pet_type=${petType}`, tokenA))[0],
+        { description: `${petType} real onboarding reminder` })
+      assert(sample.pet_type === petType && sample.user_id === identities.a, 'Sample reminder crossed account/pet ownership')
+      assert(Math.abs(Date.parse(sample.remind_at) - Date.now() - 60_000) < 15_000, 'Sample reminder was not scheduled one minute ahead')
+      await main.click(`[data-item-id="${petType}_basic_scarf"]`)
+      await waitFor(async () => (await api(`/pets/${petType}/relationship`, tokenA)).outfit.equipped_outfits.neck === `${petType}_basic_scarf`,
+        { description: `${petType} own outfit persisted` })
+      await main.click('[data-e2e="focus-start"]')
+      await main.waitForSelector('[data-e2e="focus-panel"][data-focus-status="running"]')
+      await main.click('[data-e2e="focus-end"]')
+      await main.waitForSelector('[data-e2e="focus-panel"][data-focus-status="idle"]')
+      const delivered = await waitForNaturalReminder(petType, sample.id, tokenA)
+      const lag = Date.parse(delivered.triggered_at) - Date.parse(delivered.remind_at)
+      assert(lag >= 0 && lag <= 5000 && delivered.status === 'pending', 'Natural delivery failed its deadline or auto-completed')
+      await main.click(S.pendingReminderRefresh)
+      await main.click(S.pendingReminderComplete.replace('{id}', sample.id))
+      await waitFor(async () => (await api(`/reminders?pet_type=${petType}`, tokenA)).some((item) => item.id === sample.id && item.status === 'completed'),
+        { description: `${petType} explicit completion persisted` })
+      const completion = await assertOnboardingCompleted(petType)
+      const relationship = await api(`/pets/${petType}/relationship`, tokenA)
+      assert(relationship.intimacy_xp > 0 && relationship.user_id === identities.a, 'Care did not grow the correct relationship')
+      assert(completion.relationshipId === relationship.id, 'Onboarding persisted against a different relationship')
+      const weekly = await api(`/pets/${petType}/weekly-summary`, tokenA)
+      assert(weekly.pet_type === petType, 'Weekly summary returned the wrong pet')
+      for (const other of otherPets) {
+        const after = await api(`/pets/${other}/relationship`, tokenA)
+        assert(after.intimacy_xp === beforeOthers[other].intimacy_xp, 'Another pet received this pet\'s XP')
+        assert(JSON.stringify(after.outfit.equipped_outfits) === JSON.stringify(beforeOthers[other].outfit.equipped_outfits), 'Another pet received this pet\'s outfit')
+      }
+      await main.screenshot(join(artifacts, `${petType}-real-companion.png`))
+      petEvidence[petType] = { ...completion, xp: relationship.intimacy_xp, reminderId: sample.id, deliveryLagMs: lag }
+      return petEvidence[petType]
+    })
+  }
+  await record('switching among three pets restores independent completed state', async () => {
+    for (const petType of ['cat', 'dog', 'pig']) {
+      await selectActualPet(petType)
+      await assertOnboardingCompleted(petType)
+      const relationship = await api(`/pets/${petType}/relationship`, tokenA)
+      assert(relationship.outfit.equipped_outfits.neck === `${petType}_basic_scarf`, 'Pet switch lost or mixed outfit state')
+    }
+    return { pets: ['cat', 'dog', 'pig'], statesPreserved: true }
+  })
   await record('restart restores account and preserves completed reminder', async () => {
     await stopDesktop()
     await launchDesktop()
     await pages['main-panel.html'].waitForSelector(S.mainDashboard)
-    assert(await pages['main-panel.html'].evaluate('window.desktopBridge.getPetState().then(s=>s.petType === "pig" && s.userId === 101)'), 'Account not restored')
+    assert(await pages['main-panel.html'].evaluate(`window.desktopBridge.getPetState().then(s=>s.petType === "pig" && s.userId === ${identities.a})`), 'Account not restored')
     const rows = await api('/reminders?pet_type=pig', tokenA)
     assert(rows.length === 1 && rows[0].status === 'completed', 'Reminder duplicated or reopened')
   })
@@ -272,9 +576,14 @@ try {
     await pages['main-panel.html'].click(S.logout)
     await login('b')
     await pages['main-panel.html'].click(S.petOptionPig)
-    await waitFor(() => pages['pet.html'].evaluate('window.desktopBridge.getPetState().then(s=>s.userId === 202)'), { description: 'B account propagated' })
+    await waitFor(() => pages['pet.html'].evaluate(`window.desktopBridge.getPetState().then(s=>s.userId === ${identities.b})`), { description: 'B account propagated' })
     const tokenB = await tokenFor('b')
-    assert((await api('/reminders?pet_type=pig', tokenB)).length === 0, 'A reminders leaked into B')
+    for (const petType of ['pig', 'cat', 'dog']) {
+      assert((await api(`/reminders?pet_type=${petType}`, tokenB)).length === 0, 'A reminders leaked into B')
+      const relationship = await api(`/pets/${petType}/relationship`, tokenB)
+      assert(relationship.user_id === identities.b && Object.keys(relationship.outfit.equipped_outfits).length === 0,
+        'Account B inherited account A relationship or outfit')
+    }
     const forbidden = await fetch(`${baseUrl()}/reminders/${reminder.id}/complete`, { method: 'POST', headers: { Authorization: `Bearer ${tokenB}` } })
     assert(forbidden.status === 404, 'Cross-account completion must be refused')
     await pages['main-panel.html'].click(S.logout)
@@ -282,22 +591,58 @@ try {
     await launchDesktop()
     await pages['main-panel.html'].waitForSelector(S.loginSubmit)
   })
+  }
+  await record('naturally expired registration code is rejected without creating an account', async () => {
+    const expiresAt = Date.parse(expiringMessage.receivedAt) + 5 * 60_000 + 1000
+    if (Date.now() < expiresAt) console.log(`[real-backend] waiting ${Math.ceil((expiresAt - Date.now()) / 1000)} seconds for the real code TTL`)
+    await waitFor(() => Date.now() >= expiresAt, { description: 'natural verification-code expiry', timeoutMs: 310_000, intervalMs: 1000 })
+    await registrationPage.evaluate('localStorage.clear()')
+    await navigateRegistration()
+    await fillRegistration('expired', expiringMessage.code)
+    await registrationPage.click('form button[type="submit"]')
+    await registrationPage.waitForSelector('[role="alert"]')
+    assert(await registrationPage.evaluate(`document.querySelector('[role="alert"]')?.textContent.includes('验证码')`), 'Expired code did not produce verification feedback')
+    const rejected = await fetch(`${baseUrl()}/auth/register`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'accept-expired', email: 'accept-expired@example.com', password, verification_code: expiringMessage.code }) })
+    assert(rejected.status === 400 && (await rejected.json()).detail === 'Verification code expired', 'Expired code was not refused by the real API')
+    const audit = await inspectDatabase()
+    assert(audit.users.length === 2 && !audit.users.some((user) => user.email === 'accept-expired@example.com'), 'Expired code created an account')
+    return { realElapsedMs: Date.now() - Date.parse(expiringMessage.receivedAt), databaseClockModified: false, databaseRowsInjected: false, apiStatus: rejected.status }
+  })
+  const smtpMessages = JSON.parse(await readFile(join(runtime, 'smtp-messages.json'), 'utf8'))
+  report.smtpReceipts = smtpMessages.map(({ html, ...metadata }) => metadata)
+  for (const client of [registrationPage, ...Object.values(pages)]) {
+    collectApiOrigins(client)
+  }
+  assert([...apiOrigins].every((origin) => origin === `http://127.0.0.1:${backendPort}`), 'Acceptance attempted a non-local API origin')
+  report.apiOrigins = [...apiOrigins]
   report.status = 'passed'
 } catch (error) {
   report.status = 'failed'
   report.error = serializeError(error)
+  report.careRewardRequests = collectCareRewardRequests()
+  if (registrationPage) {
+    try {
+      report.registrationFailure = await registrationPage.evaluate(`({ url: location.href, alert: document.querySelector('[role="alert"]')?.textContent, status: document.querySelector('[role="status"]')?.textContent, email: document.querySelector('input[autocomplete="email"]')?.value, username: document.querySelector('input[autocomplete="username"]')?.value, buttons: [...document.querySelectorAll('form button')].map(b => ({ text: b.textContent, disabled: b.disabled })) })`)
+      report.registrationNetwork = registrationPage.diagnostics.network.map((entry) => ({ method: entry.method, url: entry.request?.url || entry.response?.url, status: entry.response?.status }))
+      await registrationPage.evaluate(`document.querySelectorAll('input[autocomplete="one-time-code"],input[type="password"]').forEach(input => { input.value = '' })`)
+      await registrationPage.screenshot(join(artifacts, 'registration-failure.png'))
+    } catch {}
+  }
   for (const [name, client] of Object.entries(pages)) {
     try { await client.screenshot(join(artifacts, `failure-${name}.png`)) } catch {}
-    await writeFile(join(artifacts, `${name}.diagnostics.json`), JSON.stringify(client.diagnostics, null, 2))
+    await writeFile(join(artifacts, `${name}.diagnostics.json`), JSON.stringify(safeDiagnostics(client), null, 2))
   }
 } finally {
-  try {
-    await stopDesktop()
-    await stopProcess(backend)
-    await removeSafeUserDataPath(userData)
-    await removeSafeUserDataPath(runtime)
-    report.cleanedUp = true
-  } catch (error) { report.status = 'failed'; report.cleanupError = serializeError(error) }
+  const cleanupErrors = []
+  report.contextEvents = await collectContextEvents().catch(() => [])
+  report.onboardingStates = await readOnboardingFacts().catch(() => [])
+  for (const cleanup of [stopRegistrationBrowser, stopDesktop, () => stopProcess(backend),
+    () => removeSafeUserDataPath(userData), () => removeSafeUserDataPath(runtime)]) {
+    try { await cleanup() } catch (error) { cleanupErrors.push(serializeError(error)) }
+  }
+  report.cleanedUp = cleanupErrors.length === 0
+  if (cleanupErrors.length) { report.status = 'failed'; report.cleanupErrors = cleanupErrors }
   await writeFile(join(artifacts, 'backend.log'), backendLogs)
   await writeFile(join(artifacts, 'electron.log'), electronLogs)
   report.version = expectedVersion

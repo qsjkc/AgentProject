@@ -117,13 +117,13 @@ export function FocusSessionPanel({ language, accountContext }) {
     }
   }
 
-  if (accountContext?.petType !== 'pig' || !accountContext?.hasSession) return null
+  if (!['pig', 'cat', 'dog'].includes(accountContext?.petType) || !accountContext?.hasSession) return null
   const remaining = state ? getFocusSnapshotRemainingMs(snapshot, now) : 0
   const progress = state?.durationMs ? Math.round((1 - remaining / state.durationMs) * 100) : 0
   const active = status === 'running' || status === 'paused'
 
   return (
-    <section id="companion-focus" tabIndex={-1} className="focus-panel" aria-label={zh ? '陪我专注' : 'Focus together'} data-e2e="focus-panel" data-focus-status={state ? status : 'loading'} aria-busy={loading || busy}>
+    <section id="companion-focus" tabIndex={-1} className="focus-panel" data-pet-type={accountContext.petType} aria-label={zh ? '陪我专注' : 'Focus together'} data-e2e="focus-panel" data-focus-status={state ? status : 'loading'} aria-busy={loading || busy}>
       <div className="focus-heading"><Sprout size={17} aria-hidden="true" /><h2>{zh ? '陪我专注' : 'Focus together'}</h2><span>{zh ? '一小段就好' : 'One little stretch'}</span></div>
       {!state ? (
         <p className="focus-copy" role="status">{loading ? (zh ? '正在找回我们的进度…' : 'Finding our place…') : (zh ? '稍后再一起开始。' : 'We can begin in a moment.')}</p>

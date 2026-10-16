@@ -1,5 +1,7 @@
 import { getRelationshipStageLabel } from '../shared/pet-relationship'
 import { PET_ONBOARDING_SCENES } from '../shared/pet-onboarding-main'
+import { getPetVisual } from '../shared/pets'
+import { t } from '../shared/i18n'
 
 function getSceneCopy(language, scene, relationship) {
   const isChinese = language === 'zh-CN'
@@ -69,7 +71,9 @@ export function PetOnboardingCard({
       aria-live="polite"
     >
       <div className="pet-onboarding-eyebrow">
-        {language === 'zh-CN' ? '和小猪相处' : 'Living with Pig'}
+        {language === 'zh-CN'
+          ? `和${t(language, getPetVisual(relationship?.pet_type || 'pig').labelKey)}相处`
+          : `Living with ${t(language, getPetVisual(relationship?.pet_type || 'pig').labelKey)}`}
       </div>
       <h2 className="pet-onboarding-title" id={titleId}>{copy.title}</h2>
       <p className="pet-onboarding-body">{copy.body}</p>

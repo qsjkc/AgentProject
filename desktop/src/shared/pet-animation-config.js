@@ -43,10 +43,17 @@ import pigSleeping06 from '../../../frontend/src/assets/pets/pig/animations/slee
 import pigPatSprite from '../../../frontend/src/assets/pets/pig/animations/pat/sprite.png'
 import pigEatSprite from '../../../frontend/src/assets/pets/pig/animations/eat/sprite.png'
 import pigCleanSprite from '../../../frontend/src/assets/pets/pig/animations/clean/sprite.png'
+import catCoreAtlas from '../../../frontend/src/assets/pets/cat/animations/core-atlas.png'
+import catCareAtlas from '../../../frontend/src/assets/pets/cat/animations/care-atlas.png'
+import dogCoreAtlas from '../../../frontend/src/assets/pets/dog/animations/core-atlas.png'
+import dogCareAtlas from '../../../frontend/src/assets/pets/dog/animations/care-atlas.png'
+import { sheets as dogSheets, actions as dogActions } from '../../../frontend/src/assets/pets/dog/animations/manifest.json'
 
 import { getPetVisual } from './pets'
+import { createAtlasGeometry, getCompanionSpriteAnimation } from './pet-sprite-animation'
 
 const DEFAULT_FRAME_DURATION_MS = 110
+const dogGeometry = createAtlasGeometry(dogSheets, dogActions)
 
 const pigAnimations = {
   idle: [pigIdle01, pigIdle02, pigIdle03, pigIdle04, pigIdle05, pigIdle06],
@@ -108,6 +115,15 @@ export function getPetAnimationFrames(petType, action) {
 }
 
 export function getPetAnimation(petType, action) {
+  if (petType === 'cat' || petType === 'dog') {
+    const atlases = petType === 'cat'
+      ? {
+          core: catCoreAtlas, care: catCareAtlas,
+          coreRowOffsets: [0, 9, 10, 19, 28], careRowOffsets: [9, 4, 1, 14, 18],
+        }
+      : { core: dogCoreAtlas, care: dogCareAtlas, geometry: dogGeometry }
+    return getCompanionSpriteAnimation(atlases, action)
+  }
   const sprite = petType === 'pig' ? pigSpriteAnimations[action] : null
   if (sprite) {
     return {
@@ -122,9 +138,6 @@ export function getPetAnimation(petType, action) {
     type: 'frames',
     frames,
     frameCount: frames.length,
-    frameDuration:
-      petType === 'pig'
-        ? pigAnimationDurations[action] || DEFAULT_FRAME_DURATION_MS
-        : DEFAULT_FRAME_DURATION_MS,
+    frameDuration: pigAnimationDurations[action] || DEFAULT_FRAME_DURATION_MS,
   }
 }

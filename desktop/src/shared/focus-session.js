@@ -1,6 +1,8 @@
+const PET_TYPES = ['cat', 'dog', 'pig']
+
 export function isFocusSnapshotCurrent(snapshot, context) {
   return Boolean(
-    context?.hasSession && context.petType === 'pig'
+    context?.hasSession && PET_TYPES.includes(context.petType)
     && typeof context.server === 'string' && Boolean(context.server)
     && snapshot?.server === context.server.replace(/\/+$/, '')
     && snapshot?.userId === context.userId && snapshot?.petType === context.petType

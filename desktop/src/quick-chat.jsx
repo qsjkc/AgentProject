@@ -447,8 +447,7 @@ function QuickChatApp() {
           return
         }
         if (
-          petType === 'pig'
-          && reminderContext.petType === 'pig'
+          ['pig', 'cat', 'dog'].includes(reminderContext.petType)
           && petContextRef.current.petType === reminderContext.petType
           && Number.isInteger(Number(reminderContext.userId))
           && Number(reminderContext.userId) > 0
@@ -456,7 +455,7 @@ function QuickChatApp() {
           && Number(reminder.user_id) === Number(reminderContext.userId)
         ) {
           const onboardingResult = await window.desktopBridge?.recordPetOnboardingObservation?.(
-            'pig',
+            reminderContext.petType,
             PET_ONBOARDING_CAPABILITIES.REMINDER_CREATED,
             { reminderId: reminder.id },
             reminderContext,

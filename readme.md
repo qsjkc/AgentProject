@@ -2,9 +2,11 @@
 
 Detachym Agent Pet 是一个桌宠桌面端 + Web 门户 + FastAPI 后端的一体化项目。
 
-以小猪陪伴为主线，桌面端提供聊天、提醒、成长和换装，以及“陪我专注”和“上周的我们”。专注支持 15/25/45 分钟、暂停与继续，关闭主面板仍会计时；记录按账号、宠物和服务地址保存在本机。Web 门户提供产品介绍、账号管理与实际发布版本的下载入口。
+桌面端的小猪、猫咪和小狗均提供聊天、提醒、照顾、主动陪伴、成长换装、首次引导，以及“陪我专注”和“上周的我们”。专注支持 15/25/45 分钟、暂停与继续，关闭主面板仍会计时；记录按账号、宠物和服务地址保存在本机。Web 门户提供产品介绍、账号管理与实际发布版本的下载入口。
 
 新账号默认遇见小猪，已有宠物选择保持不变。空白对话提供三个轻量开场建议，选择后填入草稿，由用户决定何时发送；登录支持明确字段标签、键盘操作和失败后的直接重试。
+
+猫狗各有独立的连续动作图集，覆盖待机、走动、跳跃、开心、疑惑、提醒、睡觉、摸摸、进食和清洁，每个基础动作 6 帧；小猪保留已有逐帧动画。配饰图集共用，佩戴位置分别配置。三种宠物的关系、装扮解锁和首次引导分别记录，已有高等级猫狗会按等级补齐装扮，但不会补播历史升级回礼。下载页以线上发布版本为准。
 
 提醒由主进程按最近截止时间唤醒并再次核对服务端状态，隐藏桌宠仍可处理到期事项。桌宠尊重系统减少动态效果设置，隐藏时暂停视觉动画。知识库支持 `.txt`、`.md`、`.pdf`，上传失败记录可在列表中删除后重试，大文本索引及删除按实际向量库批次上限处理。
 
@@ -74,7 +76,12 @@ docker compose up -d --build
 | `backend/` | `venv\Scripts\python.exe -m pytest -q` | API、提醒投递与数据库会话 |
 | `desktop/` | `npm.cmd test`、`npm.cmd run build:renderer` | 桌面逻辑与渲染器构建 |
 | `desktop/` | `npm.cmd run test:e2e` | 真实 Electron 窗口，使用本地模拟接口 |
-| `desktop/` | `npm.cmd run test:real-backend` | 真实 Electron 与本地 FastAPI、隔离的临时 SQLite |
+| `desktop/` | `npm.cmd run test:real-backend` | 实际网页新账号注册、SMTP STARTTLS/AUTH 收件、真实 Electron 三宠流程，全部使用临时 SQLite 和本地 SMTP 收件器 |
+| `desktop/` | `npm.cmd run test:packaged:real-backend` | 同一流程运行打包后的程序，先执行 `npm.cmd run pack` |
+
+真实后端验收先在 `frontend/` 执行 `npm.cmd run build`，要求 Windows Microsoft Edge 和 `backend/venv`。账号由网页注册创建，验证码从本地 SMTP 收件器读取；自然等待五分钟验证过期拒绝，不预置账号、不改数据库时间。此检查不证明外部邮箱实际收到邮件。
+
+发布后可用 `backend/venv/Scripts/python.exe deploy/verify_live_pet_release.py --base-url https://your-domain --expected-version <version> --credentials-env .env --report <report.json>` 检查公开服务。脚本通过现有管理员账号创建两个临时账号，验证三宠成长、装扮、猫狗真实模型聊天和提醒，再删除本轮账号；它不替代邮箱注册验收。
 
 桌面端到端验证需要已安装项目依赖和已构建渲染器；真实后端验证还需要 `backend/venv`。源码测试通过不代表安装包已重新构建或已完成线上验收。本轮功能、证据和未验证项见 [产品优化与验证记录](本轮产品优化与验证.md)。
 

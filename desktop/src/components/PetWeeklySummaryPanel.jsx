@@ -21,7 +21,9 @@ export function PetWeeklySummaryPanel({ language, petType, accountContext }) {
   const refreshedAtRef = useRef(null)
   if (!gateRef.current) gateRef.current = createAccountOperationGate()
   currentContextRef.current = accountContext
-  const available = petType === 'pig' && Boolean(accountContext?.userId && accountContext?.session?.token)
+  const available = ['pig', 'cat', 'dog'].includes(petType)
+    && accountContext?.petType === petType
+    && Boolean(accountContext?.userId && accountContext?.session?.token)
   const zh = language === 'zh-CN'
 
   const load = useCallback(async () => {
@@ -36,7 +38,7 @@ export function PetWeeklySummaryPanel({ language, petType, accountContext }) {
       getCurrentContext: () => currentContextRef.current,
       operation: async () => {
         const context = await captureApiOperationContext(request, 'pet')
-        return getPetWeeklySummary('pig', context)
+        return getPetWeeklySummary(request.petType, context)
       },
       onSuccess: (nextSummary) => {
         setSummary(nextSummary)
@@ -48,6 +50,7 @@ export function PetWeeklySummaryPanel({ language, petType, accountContext }) {
     if (pendingRef.current === request) pendingRef.current = null
   }, [
     available,
+    petType,
     accountContext?.userId,
     accountContext?.session?.generation,
     accountContext?.session?.token,
@@ -84,7 +87,7 @@ export function PetWeeklySummaryPanel({ language, petType, accountContext }) {
   const period = getPetWeeklySummaryPeriod(language, summary)
 
   return (
-    <section className="pet-weekly-panel" aria-label={title} aria-busy={loading} data-e2e="pet-weekly-summary">
+    <section className="pet-weekly-panel" data-pet-type={petType} aria-label={title} aria-busy={loading} data-e2e="pet-weekly-summary">
       <div className="pet-weekly-header">
         <h2 className="pet-weekly-title"><BookHeart size={16} aria-hidden="true" />{title}</h2>
         <button

@@ -1,3 +1,5 @@
+const PET_TYPES = ['cat', 'dog', 'pig']
+
 const DURATIONS = [15, 25, 45]
 const MAX_DURATION_MS = 45 * 60 * 1000
 
@@ -56,7 +58,7 @@ function transitionFocusSession(state, command, payload, now, createId) {
 }
 
 function createFocusAccountKey({ server, hasSession, userId, petType } = {}) {
-  if (!hasSession || !Number.isInteger(userId) || userId <= 0 || petType !== 'pig' || typeof server !== 'string' || !server) return null
+  if (!hasSession || !Number.isInteger(userId) || userId <= 0 || !PET_TYPES.includes(petType) || typeof server !== 'string' || !server) return null
   return JSON.stringify([server.replace(/\/+$/, ''), userId, petType])
 }
 
