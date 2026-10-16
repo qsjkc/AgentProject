@@ -33,7 +33,7 @@ import {
   doesPetAnimationBlockCare,
   petAnimationReducer,
 } from './shared/pet-animation-state'
-import { getPetCareActions, getPetCareToolbarLabel } from './shared/pet-care-actions'
+import { getPetCareActions, getPetCareToolbarLabel, isPetCareContextReady } from './shared/pet-care-actions'
 import { captureFocusSnapshot, getFocusSnapshotRemainingMs, isFocusSnapshotCurrent } from './shared/focus-session'
 import {
   DEFAULT_COMPANION_SETTINGS,
@@ -3246,6 +3246,13 @@ function PetApp() {
   }, [hasSession, petType, preferences.pet_type, rewardInteraction])
 
   const careActions = useMemo(() => getPetCareActions(language, petType), [language, petType])
+  const careContextReady = isPetCareContextReady({
+    hasSession,
+    userId,
+    petType,
+    relationship: petRelationship,
+    onboardingLoaded: onboardingStateLoaded,
+  })
 
   const handleCareAction = useCallback(
     (event, action) => {
@@ -3253,6 +3260,13 @@ function PetApp() {
       event.stopPropagation()
       if (
         !action ||
+        !isPetCareContextReady({
+          hasSession: hasSessionRef.current,
+          userId: userIdRef.current,
+          petType: petTypeRef.current,
+          relationship: relationshipRef.current,
+          onboardingLoaded: onboardingStateLoadedRef.current,
+        }) ||
         activeCareAction ||
         doesPetAnimationBlockCare(petAnimationState.action, petAnimationState.locked) ||
         phaseRef.current !== VOICE_PHASES.IDLE
@@ -3716,6 +3730,7 @@ function PetApp() {
             {careActions.map((action) => {
               const Icon = CARE_ACTION_ICONS[action.id]
               const disabled =
+                !careContextReady ||
                 Boolean(activeCareAction) ||
                 doesPetAnimationBlockCare(petAnimationState.action, petAnimationState.locked) ||
                 voiceUiState.phase !== VOICE_PHASES.IDLE

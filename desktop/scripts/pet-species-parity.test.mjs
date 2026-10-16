@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import onboarding from '../electron/pet-onboarding-store.cjs'
 import playbackStore from '../electron/pet-milestone-playback-store.cjs'
-import { getPetCareActions, getPetCareToolbarLabel } from '../src/shared/pet-care-actions.js'
+import { getPetCareActions, getPetCareToolbarLabel, isPetCareContextReady } from '../src/shared/pet-care-actions.js'
 import { getPetCompanionCopy, getPetRelationshipMilestoneCopy } from '../src/shared/pet-personality.js'
 import { getPetWeeklyCompanionCopy } from '../src/shared/pet-weekly-summary.js'
 import {
@@ -25,6 +25,25 @@ const quietContext = {
   hasSession: true, userId: 17, visibilityState: 'visible', systemIdleSeconds: 0,
   voicePhase: 'idle', animationState: { action: 'idle', locked: false }, now,
 }
+
+test('care waits for the current account and pet to hydrate without blocking guests or settled older relationships', () => {
+  const ready = {
+    hasSession: true, userId: 17, petType: 'cat', onboardingLoaded: true,
+    relationship: { id: 29, user_id: 17, pet_type: 'cat' },
+  }
+  assert.equal(isPetCareContextReady({ ...ready, onboardingLoaded: false }), false)
+  assert.equal(isPetCareContextReady({ ...ready, relationship: null }), false)
+  assert.equal(isPetCareContextReady({ ...ready, relationship: { ...ready.relationship, id: null } }), false)
+  assert.equal(isPetCareContextReady({ ...ready, userId: 18 }), false)
+  assert.equal(isPetCareContextReady({ ...ready, petType: 'dog' }), false)
+  assert.equal(isPetCareContextReady(ready), true)
+  // Loading completion, not an active guide, is the requirement: completed,
+  // dismissed and ineligible older relationships must still accept care.
+  for (const status of ['active', 'completed', 'dismissed', null]) {
+    assert.equal(isPetCareContextReady({ ...ready, onboardingState: status && { status } }), true)
+  }
+  assert.equal(isPetCareContextReady({ hasSession: false, onboardingLoaded: false }), true)
+})
 
 for (const petType of ['pig', 'cat', 'dog']) {
   const otherPet = petType === 'cat' ? 'dog' : 'cat'

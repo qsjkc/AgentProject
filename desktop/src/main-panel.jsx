@@ -764,6 +764,8 @@ function MainPanelApp() {
     && readyRelationshipContext.petType === currentPetType
     && isSessionSnapshotCurrent(readyRelationshipContext.session, activeSessionSnapshotRef.current)
   )
+  const petSelectionPending = savingPet || petRelationshipLoading
+    || (!petDataReady && !petRelationshipError)
 
   useEffect(() => {
     if (!pendingFocusNavigationRef.current || !authenticated || effectiveTab !== 'chat' || !PET_OPTIONS.includes(currentPetType)) return undefined
@@ -2271,7 +2273,7 @@ function MainPanelApp() {
   }
 
   const handlePetSelect = async (nextPetType) => {
-    if (!user || savingPet || nextPetType === currentPetType) {
+    if (!user || petSelectionPending || nextPetType === currentPetType) {
       return
     }
 
@@ -2957,7 +2959,7 @@ function MainPanelApp() {
                 onSelect={(nextPetType) => {
                   void handlePetSelect(nextPetType)
                 }}
-                saving={savingPet}
+                saving={petSelectionPending}
               />
               {(!petDataReady || petRelationshipError) && (
                 <section className="main-companion-sync" aria-busy={petRelationshipLoading} aria-label={language === 'zh-CN' ? '桌宠同步' : 'Companion sync'}>

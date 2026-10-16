@@ -1,3 +1,5 @@
+import { isPetRelationshipForAccountContext } from './pet-account-context.js'
+
 const CARE_ACTION_DEFINITIONS = [
   {
     id: 'pat',
@@ -62,6 +64,19 @@ const PET_MESSAGES = {
 
 function getLocale(language) {
   return language === 'zh-CN' ? 'zh-CN' : 'en'
+}
+
+export function isPetCareContextReady({ hasSession, userId, petType, relationship, onboardingLoaded }) {
+  // Guest interactions remain local. Signed-in care must wait until the same
+  // relationship can also record the interaction in its onboarding state.
+  if (!hasSession) return true
+  const relationshipId = Number(relationship?.id)
+  return Boolean(
+    onboardingLoaded
+    && Number.isInteger(relationshipId)
+    && relationshipId > 0
+    && isPetRelationshipForAccountContext(relationship, { hasSession, userId, petType })
+  )
 }
 
 export function getPetCareActions(language, petType) {

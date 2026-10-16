@@ -243,6 +243,14 @@ function safeDiagnostics(client) {
     status: entry.response?.status, errorText: entry.errorText,
   })) }
 }
+function collectCareRewardRequests() {
+  return Object.values(pages).flatMap((client) => client.diagnostics.network.flatMap((entry) => {
+    if (!entry.request?.url?.endsWith('/relationship/rewards')) return []
+    let payload
+    try { payload = JSON.parse(entry.request.postData || '{}') } catch { return [] }
+    return payload.action ? [{ at: entry.at, url: entry.request.url, action: payload.action }] : []
+  }))
+}
 async function login(suffix) {
   const main = pages['main-panel.html']
   await main.input(S.loginApiBaseUrl, baseUrl())
@@ -279,6 +287,35 @@ async function assertOnboardingCompleted(petType) {
     ))
     return state ? { petType, relationshipId: state.relationship_id, finishReason: state.finish_reason } : null
   }, { description: `${petType} persisted onboarding completion` })
+}
+
+async function readOnboardingFacts() {
+  const config = JSON.parse(await readFile(join(userData, 'config.json'), 'utf8'))
+  return Object.values(config.petOnboardingStates || {}).map((state) => ({
+    user_id: state.user_id, pet_type: state.pet_type, relationship_id: state.relationship_id,
+    status: state.status, finish_reason: state.finish_reason,
+    observed_capability_ids: state.observed_capability_ids,
+  }))
+}
+
+async function patReadyPet(petType, token) {
+  await pages['main-panel.html'].evaluate('window.desktopBridge.hideMainPanel()')
+  await pages['pet.html'].bringToFront()
+  await waitFor(async () => (await readOnboardingFacts()).some((state) => (
+    state.user_id === identities.a && state.pet_type === petType && state.status === 'active'
+  )), { description: `${petType} initial onboarding state created` })
+  await waitFor(() => pages['pet.html'].evaluate(`(() => {
+    const button = document.querySelector(${JSON.stringify(S.petCarePat)});
+    return Boolean(button && !button.disabled);
+  })()`), { description: `${petType} pat toolbar enabled after entry animation` })
+  const before = await api(`/pets/${petType}/daily-summary`, token)
+  await pages['pet.html'].click(S.petCarePat)
+  await waitFor(async () => (await api(`/pets/${petType}/daily-summary`, token)).care_count > before.care_count,
+    { description: `${petType} actual pat reward persisted` })
+  await waitFor(async () => (await readOnboardingFacts()).some((state) => (
+    state.user_id === identities.a && state.pet_type === petType
+    && state.observed_capability_ids?.includes('pet_interaction')
+  )), { description: `${petType} actual pat onboarding observation persisted` })
 }
 
 async function waitForNaturalReminder(petType, reminderId, token) {
@@ -362,8 +399,7 @@ try {
     return { relationshipId: relationship.id }
   })
   await record('care interaction and one-minute reminder creation', async () => {
-    await pages['pet.html'].bringToFront()
-    await pages['pet.html'].click(S.petCarePat)
+    await patReadyPet('pig', tokenA)
     await pages['pet.html'].evaluate('window.desktopBridge.openMainPanel()')
     await pages['main-panel.html'].click(S.onboardingReminderCreate)
     reminder = await waitFor(async () => (await api('/reminders?pet_type=pig', tokenA))[0],
@@ -401,10 +437,7 @@ try {
       for (const section of ['pet-daily-summary', 'pet-weekly-summary', 'focus-panel']) {
         await main.waitForSelector(`[data-e2e="${section}"][data-pet-type="${petType}"]`)
       }
-      await pages['pet.html'].bringToFront()
-      await pages['pet.html'].click(S.petCarePat)
-      await waitFor(async () => (await api(`/pets/${petType}/daily-summary`, tokenA)).care_count >= 1,
-        { description: `${petType} real care event persisted` })
+      await patReadyPet(petType, tokenA)
       await pages['pet.html'].evaluate('window.desktopBridge.openMainPanel()')
       await main.click(S.onboardingReminderCreate)
       const sample = await waitFor(async () => (await api(`/reminders?pet_type=${petType}`, tokenA))[0],
@@ -587,6 +620,7 @@ try {
 } catch (error) {
   report.status = 'failed'
   report.error = serializeError(error)
+  report.careRewardRequests = collectCareRewardRequests()
   if (registrationPage) {
     try {
       report.registrationFailure = await registrationPage.evaluate(`({ url: location.href, alert: document.querySelector('[role="alert"]')?.textContent, status: document.querySelector('[role="status"]')?.textContent, email: document.querySelector('input[autocomplete="email"]')?.value, username: document.querySelector('input[autocomplete="username"]')?.value, buttons: [...document.querySelectorAll('form button')].map(b => ({ text: b.textContent, disabled: b.disabled })) })`)
@@ -602,6 +636,7 @@ try {
 } finally {
   const cleanupErrors = []
   report.contextEvents = await collectContextEvents().catch(() => [])
+  report.onboardingStates = await readOnboardingFacts().catch(() => [])
   for (const cleanup of [stopRegistrationBrowser, stopDesktop, () => stopProcess(backend),
     () => removeSafeUserDataPath(userData), () => removeSafeUserDataPath(runtime)]) {
     try { await cleanup() } catch (error) { cleanupErrors.push(serializeError(error)) }
