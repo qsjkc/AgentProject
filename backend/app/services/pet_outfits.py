@@ -28,8 +28,20 @@ PET_OUTFIT_CATALOG = {
             "unlock_level": 5,
         },
     ),
-    "cat": (),
-    "dog": (),
+    "cat": (
+        {"id": "cat_basic_scarf", "slot": "neck", "unlock_level": 1},
+        {"id": "cat_sleep_cap", "slot": "head", "unlock_level": 2},
+        {"id": "cat_bell", "slot": "side", "unlock_level": 3},
+        {"id": "cat_work_badge", "slot": "side", "unlock_level": 4},
+        {"id": "cat_star_hat", "slot": "head", "unlock_level": 5},
+    ),
+    "dog": (
+        {"id": "dog_basic_scarf", "slot": "neck", "unlock_level": 1},
+        {"id": "dog_sleep_cap", "slot": "head", "unlock_level": 2},
+        {"id": "dog_bell", "slot": "side", "unlock_level": 3},
+        {"id": "dog_work_badge", "slot": "side", "unlock_level": 4},
+        {"id": "dog_star_hat", "slot": "head", "unlock_level": 5},
+    ),
 }
 
 

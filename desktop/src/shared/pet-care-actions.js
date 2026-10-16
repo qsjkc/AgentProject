@@ -46,12 +46,26 @@ const PIG_MESSAGES = {
   },
 }
 
+const PET_MESSAGES = {
+  pig: PIG_MESSAGES,
+  cat: {
+    pat: { 'zh-CN': '喵，手法不错。再摸一下也可以。', en: 'Mrr. Good technique. You may pat me again.' },
+    feed: { 'zh-CN': '这块点心我收下了。算你记得我的口味。', en: 'I accept this treat. You remembered what I like.' },
+    clean: { 'zh-CN': '毛毛整理好了，现在可以继续优雅地陪你。', en: 'Fur in order. I can keep you company in style.' },
+  },
+  dog: {
+    pat: { 'zh-CN': '汪！被你摸摸，尾巴都停不下来啦！', en: 'Woof! A pat from you makes my tail go wild!' },
+    feed: { 'zh-CN': '好香！谢谢你，下一小段也一起加油！', en: 'Yum! Thank you! Let us tackle the next little stretch together!' },
+    clean: { 'zh-CN': '洗干净啦！精神满满，继续陪着你！', en: 'All clean! Fresh and ready to stay by your side!' },
+  },
+}
+
 function getLocale(language) {
   return language === 'zh-CN' ? 'zh-CN' : 'en'
 }
 
 export function getPetCareActions(language, petType) {
-  if (petType !== 'pig') {
+  if (!Object.hasOwn(PET_MESSAGES, petType)) {
     return []
   }
 
@@ -59,10 +73,13 @@ export function getPetCareActions(language, petType) {
   return CARE_ACTION_DEFINITIONS.map((definition) => ({
     ...definition,
     label: LABELS[definition.id][locale],
-    message: PIG_MESSAGES[definition.id][locale],
+    message: PET_MESSAGES[petType][definition.id][locale],
   }))
 }
 
-export function getPetCareToolbarLabel(language) {
-  return getLocale(language) === 'zh-CN' ? '照顾小猪' : 'Care for pig'
+export function getPetCareToolbarLabel(language, petType = 'pig') {
+  const names = { cat: '小猫', dog: '小狗', pig: '小猪' }
+  return getLocale(language) === 'zh-CN'
+    ? `照顾${names[petType] || '宠物'}`
+    : `Care for ${Object.hasOwn(names, petType) ? petType : 'pet'}`
 }

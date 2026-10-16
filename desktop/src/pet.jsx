@@ -26,7 +26,7 @@ import {
   VOICE_PHASES,
   voiceStateReducer,
 } from './shared/voice-state'
-import { getMessagePool, getPetMessagePool, normalizeLanguage, t } from './shared/i18n'
+import { getPetMessagePool, normalizeLanguage, t } from './shared/i18n'
 import {
   ANIMATION_ACTIONS,
   createInitialPetAnimationState,
@@ -118,6 +118,8 @@ const DEFAULT_PREFERENCES = {
   quick_chat_enabled: true,
   bubble_frequency: 120,
 }
+
+const PET_TYPES = ['cat', 'dog', 'pig']
 
 const DRAG_THRESHOLD = 8
 const REPLY_VISIBLE_MS = 8000
@@ -216,7 +218,6 @@ function PetApp() {
   const keyHeldRef = useRef(false)
   const transientBubbleTimerRef = useRef(null)
   const intimacyFeedbackTimerRef = useRef(null)
-  const idleBubbleTimerRef = useRef(null)
   const uiIdleTimerRef = useRef(null)
   const processingTimerRef = useRef(null)
   const replyTimerRef = useRef(null)
@@ -422,7 +423,7 @@ function PetApp() {
   useEffect(() => {
     focusSnapshotRef.current = null
     focusServerRef.current = null
-    if (!hasSession || petType !== 'pig') return undefined
+    if (!hasSession || !PET_TYPES.includes(petType)) return undefined
     let mounted = true
     let receivedUpdate = false
     const receiveSnapshot = (snapshot) => {
@@ -470,7 +471,10 @@ function PetApp() {
   ), [getCurrentPetAccountContext])
 
   const replaceMilestoneRuntimeState = useCallback((value) => {
-    const nextPlayback = normalizePetMilestonePlaybackState(value, 'pig')
+    const nextPlayback = normalizePetMilestonePlaybackState(value, petTypeRef.current)
+    if (nextPlayback && nextPlayback.pet_type !== petTypeRef.current) {
+      return milestonePlaybackRef.current
+    }
     milestonePlaybackRef.current = nextPlayback
     setMilestonePlayback(nextPlayback)
     return nextPlayback
@@ -482,12 +486,12 @@ function PetApp() {
     expectedContext = null,
   ) => {
     const capturedContext = expectedContext || getCurrentPetAccountContext()
-    const nextPlayback = normalizePetMilestonePlaybackState(value, 'pig')
-    if (!nextPlayback || !window.desktopBridge?.setPetMilestonePlayback) {
+    const nextPlayback = normalizePetMilestonePlaybackState(value, capturedContext.petType)
+    if (!nextPlayback || nextPlayback.pet_type !== capturedContext.petType || !window.desktopBridge?.setPetMilestonePlayback) {
       throw new Error('pet_milestone_persistence_unavailable')
     }
     const response = await window.desktopBridge.setPetMilestonePlayback(
-      'pig',
+      capturedContext.petType,
       nextPlayback,
       nextPlayback.revision,
       createExpectedPetAccountContext(capturedContext),
@@ -496,7 +500,7 @@ function PetApp() {
       throw createAuthContextChangedError()
     }
     if (!response?.ok) {
-      const conflict = getPetMilestonePersistenceConflict(response, 'pig')
+      const conflict = getPetMilestonePersistenceConflict(response, capturedContext.petType)
       if (conflict && isMilestoneContextCurrent(epoch)) {
         replaceMilestoneRuntimeState(conflict.current)
       }
@@ -507,9 +511,10 @@ function PetApp() {
       error.current = conflict?.current || null
       throw error
     }
-    const stored = normalizePetMilestonePlaybackState(response.playback, 'pig')
+    const stored = normalizePetMilestonePlaybackState(response.playback, capturedContext.petType)
     if (
       !stored
+      || stored.pet_type !== capturedContext.petType
       || stored.claim_token !== nextPlayback.claim_token
       || stored.revision !== nextPlayback.revision + 1
     ) {
@@ -529,7 +534,7 @@ function PetApp() {
       throw new Error('pet_milestone_persistence_unavailable')
     }
     const response = await window.desktopBridge.clearPetMilestonePlayback(
-      'pig',
+      capturedContext.petType,
       claimToken,
       expectedRevision,
       createExpectedPetAccountContext(capturedContext),
@@ -538,7 +543,7 @@ function PetApp() {
       throw createAuthContextChangedError()
     }
     if (!response?.ok) {
-      const conflict = getPetMilestonePersistenceConflict(response, 'pig')
+      const conflict = getPetMilestonePersistenceConflict(response, capturedContext.petType)
       if (conflict && isMilestoneContextCurrent(epoch)) {
         replaceMilestoneRuntimeState(conflict.current)
       }
@@ -642,7 +647,7 @@ function PetApp() {
           return false
         }
         await acknowledgePetRelationshipMilestone(
-          'pig',
+          operationContext.petType,
           milestone.id,
           playback.claim_token,
           operationContext,
@@ -692,7 +697,7 @@ function PetApp() {
           }
           const reconcileToken = createPetMilestoneClaimToken()
           const reconcileState = createPetMilestonePlaybackState({
-            petType: 'pig',
+            petType: playback.pet_type,
             status: PET_MILESTONE_PLAYBACK_STATUS.CLAIM,
             claimToken: reconcileToken,
             milestone: {
@@ -783,7 +788,7 @@ function PetApp() {
       let claimState = activePlayback
       if (!claimState) {
         claimState = createPetMilestonePlaybackState({
-          petType: 'pig',
+          petType: operationContext.petType,
           status: PET_MILESTONE_PLAYBACK_STATUS.CLAIM,
           claimToken: createPetMilestoneClaimToken(),
         })
@@ -806,7 +811,7 @@ function PetApp() {
       }
 
       const milestone = await claimPetRelationshipMilestone(
-        'pig',
+        operationContext.petType,
         claimState.claim_token,
         operationContext,
       )
@@ -848,7 +853,7 @@ function PetApp() {
       if (claimState.displayed && claimState.milestone) {
         if (milestone.id === claimState.milestone.id) {
           const reconciledAckPending = createPetMilestonePlaybackState({
-            petType: 'pig',
+            petType: operationContext.petType,
             status: PET_MILESTONE_PLAYBACK_STATUS.ACK_PENDING,
             claimToken: claimState.claim_token,
             milestone,
@@ -874,7 +879,7 @@ function PetApp() {
       }
 
       const queued = createPetMilestonePlaybackState({
-        petType: 'pig',
+        petType: operationContext.petType,
         status: PET_MILESTONE_PLAYBACK_STATUS.CLAIM,
         claimToken: claimState.claim_token,
         milestone,
@@ -889,7 +894,7 @@ function PetApp() {
 
       if (!isPetRelationshipReadyForMilestone(relationshipRef.current, milestone)) {
         try {
-          const refreshedRelationship = await refreshPetRelationship('pig', operationContext)
+          const refreshedRelationship = await refreshPetRelationship(operationContext.petType, operationContext)
           if (!isMilestoneContextCurrent(epoch)) {
             return
           }
@@ -961,7 +966,7 @@ function PetApp() {
 
       replaceMilestoneRuntimeState(storedPlaying)
       const message = getPetRelationshipMilestoneCopy(
-        'pig',
+        operationContext.petType,
         languageRef.current,
         milestone,
       )
@@ -1015,7 +1020,8 @@ function PetApp() {
   }, [])
 
   const isOnboardingContextCurrent = useCallback((context) => (
-    isPetOnboardingContextCurrent({
+    context?.petType === petTypeRef.current
+    && isPetOnboardingContextCurrent({
       expectedEpoch: context?.epoch,
       currentEpoch: onboardingContextEpochRef.current,
       expectedUserId: context?.userId,
@@ -1031,6 +1037,13 @@ function PetApp() {
   const replaceOnboardingRuntimeState = useCallback((value, context = null) => {
     const nextState = normalizePetOnboardingStateResponse(value)
     if (context && !isOnboardingContextCurrent(context)) {
+      return onboardingStateRef.current
+    }
+    if (nextState && (
+      nextState.pet_type !== petTypeRef.current
+      || nextState.user_id !== Number(userIdRef.current)
+      || nextState.relationship_id !== Number(relationshipRef.current?.id)
+    )) {
       return onboardingStateRef.current
     }
     const current = onboardingStateRef.current
@@ -1074,7 +1087,7 @@ function PetApp() {
     }
     try {
       const state = await window.desktopBridge?.getPetOnboardingState?.(
-        'pig',
+        context.petType,
         createExpectedPetAccountContext(context),
       )
       if (!isOnboardingContextCurrent(context)) {
@@ -1132,7 +1145,7 @@ function PetApp() {
     })
     try {
       const response = await window.desktopBridge?.releasePetOnboardingPresentation?.(
-        'pig',
+        guide.context.petType,
         guide.stepId,
         guide.token,
         createExpectedPetAccountContext(guide.context),
@@ -1189,7 +1202,7 @@ function PetApp() {
       }
 
       const renewalResponse = await window.desktopBridge?.claimPetOnboardingPresentation?.(
-        'pig',
+        current.context.petType,
         stepId,
         token,
         createExpectedPetAccountContext(current.context),
@@ -1207,7 +1220,7 @@ function PetApp() {
         clearOnboardingGuideRuntime(stepId, token)
         setOnboardingGuideCooldown(stepId, 'lease-rejected')
         void window.desktopBridge?.releasePetOnboardingPresentation?.(
-          'pig',
+          current.context.petType,
           stepId,
           token,
           createExpectedPetAccountContext(current.context),
@@ -1225,7 +1238,7 @@ function PetApp() {
         || !isOnboardingContextCurrent(current.context)
       ) {
         void window.desktopBridge?.releasePetOnboardingPresentation?.(
-          'pig',
+          current.context.petType,
           stepId,
           token,
           createExpectedPetAccountContext(current.context),
@@ -1234,7 +1247,7 @@ function PetApp() {
       }
 
       const response = await window.desktopBridge?.ackPetOnboardingPresentation?.(
-        'pig',
+        current.context.petType,
         stepId,
         token,
         createExpectedPetAccountContext(current.context),
@@ -1247,7 +1260,7 @@ function PetApp() {
         clearOnboardingGuideRuntime(stepId, token)
         setOnboardingGuideCooldown(stepId, 'lease-rejected')
         void window.desktopBridge?.releasePetOnboardingPresentation?.(
-          'pig',
+          current.context.petType,
           stepId,
           token,
           createExpectedPetAccountContext(current.context),
@@ -1268,7 +1281,7 @@ function PetApp() {
         clearOnboardingGuideRuntime(stepId, token)
         setOnboardingGuideCooldown(stepId, 'lease-rejected')
         void window.desktopBridge?.releasePetOnboardingPresentation?.(
-          'pig',
+          current.context.petType,
           stepId,
           token,
           createExpectedPetAccountContext(current.context),
@@ -1316,7 +1329,7 @@ function PetApp() {
     const guide = clearOnboardingGuideRuntime()
     if (guide) {
       void window.desktopBridge?.releasePetOnboardingPresentation?.(
-        'pig',
+        guide.context.petType,
         guide.stepId,
         guide.token,
         createExpectedPetAccountContext(guide.context),
@@ -1363,7 +1376,7 @@ function PetApp() {
     }
     try {
       const response = await window.desktopBridge?.recordPetOnboardingObservation?.(
-        'pig',
+        context.petType,
         PET_ONBOARDING_CAPABILITIES.PET_INTERACTION,
         { source },
         createExpectedPetAccountContext(context),
@@ -1436,7 +1449,7 @@ function PetApp() {
         ? existingPresentation.token
         : createPetOnboardingPresentationToken()
       const response = await window.desktopBridge?.claimPetOnboardingPresentation?.(
-        'pig',
+        context.petType,
         stepId,
         token,
         createExpectedPetAccountContext(context),
@@ -1476,7 +1489,7 @@ function PetApp() {
         })
       ) {
         const releaseResponse = await window.desktopBridge?.releasePetOnboardingPresentation?.(
-          'pig',
+          context.petType,
           stepId,
           token,
           createExpectedPetAccountContext(context),
@@ -1811,15 +1824,16 @@ function PetApp() {
       epoch,
       userId: expectedUserId,
       relationshipId: expectedRelationshipId,
+      petType,
       session: sessionSnapshotRef.current,
       authoritative: authoritativeContextRef.current,
     }
     const contextEligible = (
-      petType === 'pig'
+      PET_TYPES.includes(petType)
       && hasSession
       && Number.isInteger(expectedUserId)
       && expectedUserId > 0
-      && petRelationship?.pet_type === 'pig'
+      && petRelationship?.pet_type === petType
       && Number.isInteger(expectedRelationshipId)
       && expectedRelationshipId > 0
       && Number(petRelationship?.user_id) === expectedUserId
@@ -1846,6 +1860,7 @@ function PetApp() {
         && (
           normalized.user_id !== expectedUserId
           || normalized.relationship_id !== expectedRelationshipId
+          || normalized.pet_type !== petType
         )
       ) {
         return
@@ -1858,7 +1873,7 @@ function PetApp() {
 
     const unsubscribe = window.desktopBridge?.onPetOnboardingChanged?.(acceptState)
     void window.desktopBridge?.getPetOnboardingState?.(
-      'pig',
+      context.petType,
       createExpectedPetAccountContext(context),
     )
       .then(acceptState)
@@ -1893,7 +1908,7 @@ function PetApp() {
   ])
 
   useEffect(() => {
-    if (petType !== 'pig' || !hasSession) {
+    if (!PET_TYPES.includes(petType) || !hasSession) {
       return undefined
     }
     const poll = () => {
@@ -1911,7 +1926,7 @@ function PetApp() {
 
   useEffect(() => {
     onboardingEngagementTickRef.current = Date.now()
-    if (petType !== 'pig' || !hasSession) {
+    if (!PET_TYPES.includes(petType) || !hasSession) {
       return undefined
     }
     const tick = async () => {
@@ -1943,7 +1958,7 @@ function PetApp() {
           return
         }
         const response = await window.desktopBridge?.recordPetOnboardingEngagement?.(
-          'pig',
+          context.petType,
           deltaMs,
           createExpectedPetAccountContext(context),
         )
@@ -1981,7 +1996,7 @@ function PetApp() {
     milestonePlaybackLoadedRef.current = false
     replaceMilestoneRuntimeState(null)
 
-    if (petType !== 'pig' || !accountContextKey) {
+    if (!PET_TYPES.includes(petType) || !accountContextKey) {
       return () => {
         mounted = false
         if (milestoneContextEpochRef.current === epoch) {
@@ -1996,12 +2011,15 @@ function PetApp() {
         const operationContext = await capturePetApiOperation(expectedAccountContext, 'relationship')
         let savedPlayback = normalizePetMilestonePlaybackState(
           await window.desktopBridge?.getPetMilestonePlayback?.(
-            'pig',
+            operationContext.petType,
             createExpectedPetAccountContext(operationContext),
           ),
-          'pig',
+          operationContext.petType,
         )
         if (!mounted || !isMilestoneContextCurrent(epoch)) {
+          return
+        }
+        if (savedPlayback && savedPlayback.pet_type !== operationContext.petType) {
           return
         }
         if (savedPlayback?.status === PET_MILESTONE_PLAYBACK_STATUS.PLAYING) {
@@ -2061,7 +2079,7 @@ function PetApp() {
   ])
 
   useEffect(() => {
-    if (petType !== 'pig' || !hasSession) {
+    if (!PET_TYPES.includes(petType) || !hasSession) {
       return undefined
     }
     const poll = () => {
@@ -2093,7 +2111,7 @@ function PetApp() {
 
   useEffect(() => {
     if (
-      petType === 'pig'
+      PET_TYPES.includes(petType)
       && hasSession
       && voiceUiState.phase === VOICE_PHASES.IDLE
       && !activeCareAction
@@ -2338,25 +2356,9 @@ function PetApp() {
         const previousRelationship = relationshipRef.current
         relationshipRef.current = relationship
         setPetRelationship(relationship)
-        if (relationship.pet_type === 'pig') {
-          void milestonePumpRef.current?.()
-          void onboardingPumpRef.current?.()
-        }
+        void milestonePumpRef.current?.()
+        void onboardingPumpRef.current?.()
         if (!previousRelationship) {
-          return
-        }
-        if (
-          relationship.pet_type !== 'pig'
-          && relationship.level > previousRelationship.level
-        ) {
-          const message = getPetRelationshipEventCopy(
-            relationship.pet_type,
-            languageRef.current,
-            'level_up',
-            relationship,
-          )
-          setTransientBubbleForDuration(message, 3600)
-          dispatchPetAnimation({ type: 'LEVEL_UP', message })
           return
         }
         if (didEquippedOutfitChange(previousRelationship, relationship)) {
@@ -2506,11 +2508,11 @@ function PetApp() {
 
   useEffect(() => {
     const showIntroUnlessOnboardingOwnsIt = () => {
-      if (hasSessionRef.current && petTypeRef.current === 'pig') {
+      if (hasSessionRef.current && PET_TYPES.includes(petTypeRef.current)) {
         const stableRelationship = (
           Number.isInteger(userIdRef.current)
           && userIdRef.current > 0
-          && relationshipRef.current?.pet_type === 'pig'
+          && relationshipRef.current?.pet_type === petTypeRef.current
           && Number(relationshipRef.current?.user_id) === userIdRef.current
         )
         if (!stableRelationship || !onboardingStateLoadedRef.current) {
@@ -2557,11 +2559,11 @@ function PetApp() {
     if (
       !voiceIntroPendingRef.current
       || !hasSession
-      || petType !== 'pig'
+      || !PET_TYPES.includes(petType)
       || !onboardingStateLoaded
       || !Number.isInteger(userId)
       || userId <= 0
-      || petRelationship?.pet_type !== 'pig'
+      || petRelationship?.pet_type !== petType
       || Number(petRelationship?.user_id) !== userId
     ) {
       return
@@ -2584,42 +2586,7 @@ function PetApp() {
   ])
 
   useEffect(() => {
-    if (idleBubbleTimerRef.current) {
-      window.clearInterval(idleBubbleTimerRef.current)
-      idleBubbleTimerRef.current = null
-    }
-
-    if (petType === 'pig') {
-      return undefined
-    }
-
-    const frequencySeconds = Math.max(30, Number(preferences.bubble_frequency) || DEFAULT_PREFERENCES.bubble_frequency)
-    idleBubbleTimerRef.current = window.setInterval(() => {
-      if (
-        phaseRef.current !== VOICE_PHASES.IDLE ||
-        dragRef.current.pointerId !== null ||
-        transientBubble ||
-        settlingPointerRef.current
-      ) {
-        return
-      }
-
-      const pool = hasSessionRef.current
-        ? getPetMessagePool(languageRef.current, petTypeRef.current, 'IdleMessages')
-        : getMessagePool(languageRef.current, 'petSadMessages')
-      setTransientBubbleForDuration(pickRandom(pool), 2800)
-    }, frequencySeconds * 1000)
-
-    return () => {
-      if (idleBubbleTimerRef.current) {
-        window.clearInterval(idleBubbleTimerRef.current)
-        idleBubbleTimerRef.current = null
-      }
-    }
-  }, [petType, preferences.bubble_frequency, setTransientBubbleForDuration, transientBubble])
-
-  useEffect(() => {
-    if (petType !== 'pig' || !hasSession) {
+    if (!PET_TYPES.includes(petType) || !hasSession) {
       return undefined
     }
 
@@ -2630,7 +2597,7 @@ function PetApp() {
         !mounted ||
         isFocusActive() ||
         companionRequestInFlightRef.current ||
-        petTypeRef.current !== 'pig' ||
+        petTypeRef.current !== petType ||
         !hasSessionRef.current ||
         !companionStateReadyRef.current ||
         document.visibilityState !== 'visible' ||
@@ -2663,7 +2630,7 @@ function PetApp() {
           !mounted
           || isFocusActive()
           || !isPetAccountOperationCurrent(requestContext, getCurrentPetAccountContext())
-          || petTypeRef.current !== 'pig'
+          || petTypeRef.current !== requestContext.petType
           || document.visibilityState !== 'visible'
           || !canCommitPetCompanionResult({
             onboardingGuide: onboardingGuideRef.current,
@@ -2690,8 +2657,8 @@ function PetApp() {
             return
           }
           const [dailyResult, weeklyResult] = await Promise.allSettled([
-            getPetDailySummary('pig', operationContext),
-            getPetWeeklySummary('pig', operationContext),
+            getPetDailySummary(requestContext.petType, operationContext),
+            getPetWeeklySummary(requestContext.petType, operationContext),
           ])
           if (dailyResult.status === 'fulfilled') {
             dailySummary = dailyResult.value
@@ -2707,7 +2674,7 @@ function PetApp() {
             !mounted
             || isFocusActive()
             || !isPetAccountOperationCurrent(requestContext, getCurrentPetAccountContext())
-            || petTypeRef.current !== 'pig'
+            || petTypeRef.current !== requestContext.petType
             || !hasSessionRef.current
             || document.visibilityState !== 'visible'
             || phaseRef.current !== VOICE_PHASES.IDLE
@@ -2725,7 +2692,7 @@ function PetApp() {
             return
           }
           const copy = getPetCompanionCopy(
-            'pig',
+            requestContext.petType,
             languageRef.current,
             result.event,
             relationshipRef.current,
@@ -2752,14 +2719,14 @@ function PetApp() {
             })
             if (copy.weeklyReviewKey) {
               void markPetWeeklySummaryShown(
-                'pig',
+                requestContext.petType,
                 copy.weeklyReviewKey,
                 operationContext,
               ).catch((error) => {
                 loggerRef.current.error('companion:weekly-summary-shown-failed', error)
               })
               try {
-                await markPetWeeklySummarySeen('pig', copy.weeklyReviewKey, operationContext)
+                await markPetWeeklySummarySeen(requestContext.petType, copy.weeklyReviewKey, operationContext)
                 if (!isPetAccountOperationCurrent(requestContext, getCurrentPetAccountContext())) {
                   return
                 }
@@ -2783,7 +2750,7 @@ function PetApp() {
         if (JSON.stringify(nextState) !== JSON.stringify(previousState)) {
           companionStateRef.current = nextState
           await window.desktopBridge?.setCompanionState?.(
-            'pig',
+            requestContext.petType,
             nextState,
             createExpectedPetAccountContext(requestContext),
           )
@@ -2923,15 +2890,12 @@ function PetApp() {
       ) {
         return
       }
-      const idleActions =
-        petTypeRef.current === 'pig'
-          ? [
-              ANIMATION_ACTIONS.WALK,
-              ANIMATION_ACTIONS.JUMP,
-              ANIMATION_ACTIONS.LOOK_AROUND,
-              ANIMATION_ACTIONS.STRETCH,
-            ]
-          : [ANIMATION_ACTIONS.WALK, ANIMATION_ACTIONS.JUMP]
+      const idleActions = [
+        ANIMATION_ACTIONS.WALK,
+        ANIMATION_ACTIONS.JUMP,
+        ANIMATION_ACTIONS.LOOK_AROUND,
+        ANIMATION_ACTIONS.STRETCH,
+      ]
       dispatchPetAnimation({ type: 'IDLE_TICK', action: pickRandom(idleActions) })
     }, PET_IDLE_ANIMATION_INTERVAL_MS)
 
@@ -3191,9 +3155,6 @@ function PetApp() {
 
   useEffect(
     () => () => {
-      if (idleBubbleTimerRef.current) {
-        window.clearInterval(idleBubbleTimerRef.current)
-      }
       if (rafRef.current) {
         window.cancelAnimationFrame(rafRef.current)
       }
@@ -3208,7 +3169,7 @@ function PetApp() {
       onboardingGuideRef.current = null
       if (guide) {
         void window.desktopBridge?.releasePetOnboardingPresentation?.(
-          'pig',
+          guide.context.petType,
           guide.stepId,
           guide.token,
           createExpectedPetAccountContext(guide.context),
@@ -3559,7 +3520,7 @@ function PetApp() {
       }
 
       const ackPending = createPetMilestonePlaybackState({
-        petType: 'pig',
+        petType: current.pet_type,
         status: PET_MILESTONE_PLAYBACK_STATUS.ACK_PENDING,
         claimToken: current.claim_token,
         milestone: current.milestone,
@@ -3750,7 +3711,7 @@ function PetApp() {
                 : ''
             }`}
             role="toolbar"
-            aria-label={getPetCareToolbarLabel(language)}
+            aria-label={getPetCareToolbarLabel(language, petType)}
           >
             {careActions.map((action) => {
               const Icon = CARE_ACTION_ICONS[action.id]

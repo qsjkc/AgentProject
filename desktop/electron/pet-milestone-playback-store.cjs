@@ -1,3 +1,5 @@
+const PET_TYPES = ['cat', 'dog', 'pig']
+
 const PLAYBACK_STATUSES = new Set(['claim', 'playing', 'ack_pending'])
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
@@ -38,7 +40,7 @@ function isValidPetMilestonePlayback(
   const normalizedAccountUserId = Number(accountUserId)
   const playbackAccountUserId = Number(value?.account_user_id)
   if (
-    petType !== 'pig'
+    !PET_TYPES.includes(petType)
     || !isRecord(value)
     || (value.pet_type || petType) !== petType
     || !PLAYBACK_STATUSES.has(value.status)

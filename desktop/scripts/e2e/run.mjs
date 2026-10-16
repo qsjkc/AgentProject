@@ -23,8 +23,12 @@ import {
   mapRendererTargets,
   waitForDevToolsActivePort,
 } from './cdp-client.mjs'
-import { FULL_SCENARIO_ORDER, REQUIRED_E2E_BRIDGE_API, REQUIRED_SELECTORS, SCENARIOS } from './p1k-scenarios.mjs'
+import { FULL_SCENARIO_ORDER as BASE_SCENARIO_ORDER, REQUIRED_E2E_BRIDGE_API, REQUIRED_SELECTORS, SCENARIOS as BASE_SCENARIOS } from './p1k-scenarios.mjs'
+import { petParityScenario } from './pet-parity-scenarios.mjs'
 import { startStubServer } from './stub-server.mjs'
+
+const SCENARIOS = Object.freeze({ ...BASE_SCENARIOS, 'pet-parity': petParityScenario })
+const FULL_SCENARIO_ORDER = Object.freeze([...BASE_SCENARIO_ORDER, 'pet-parity'])
 
 const execFileAsync = promisify(execFile)
 const E2E_TEMP_PREFIX = 'detachym-e2e-'

@@ -1,3 +1,5 @@
+const PET_TYPES = ['cat', 'dog', 'pig']
+
 export const PET_ONBOARDING_CAPABILITIES = Object.freeze({
   PET_INTERACTION: 'pet_interaction',
   RELATIONSHIP_VIEWED: 'relationship_viewed',
@@ -82,7 +84,7 @@ export function normalizePetOnboardingMainStateResponse(value) {
     userId === null
     || relationshipId === null
     || revision === null
-    || candidate.pet_type !== 'pig'
+    || !PET_TYPES.includes(candidate.pet_type)
     || !PET_ONBOARDING_STATUSES.includes(candidate.status)
     || !Array.isArray(candidate.observed_capability_ids)
     || (candidate.reminder_id !== null && candidate.reminder_id !== undefined && reminderId === null)
@@ -94,7 +96,7 @@ export function normalizePetOnboardingMainStateResponse(value) {
     version: PET_ONBOARDING_VERSION,
     user_id: userId,
     relationship_id: relationshipId,
-    pet_type: 'pig',
+    pet_type: candidate.pet_type,
     status: candidate.status,
     observed_capability_ids: observedCapabilityIds,
     reminder_id: reminderId,
@@ -107,13 +109,13 @@ export function createPetOnboardingContextKey({ userId, relationshipId, petType 
   const normalizedUserId = normalizePositiveInteger(userId)
   const normalizedRelationshipId = normalizePositiveInteger(relationshipId)
   if (
-    petType !== 'pig'
+    !PET_TYPES.includes(petType)
     || normalizedUserId === null
     || normalizedRelationshipId === null
   ) {
     return null
   }
-  return `${normalizedUserId}:${normalizedRelationshipId}:pig`
+  return `${normalizedUserId}:${normalizedRelationshipId}:${petType}`
 }
 
 export function isPetOnboardingStateForContext(state, context) {
@@ -180,10 +182,11 @@ export function isPetOnboardingStateCurrent({
 }) {
   if (
     !authenticated
-    || petType !== 'pig'
+    || !PET_TYPES.includes(petType)
     || !documentVisible
     || !relationship
-    || relationship.pet_type !== 'pig'
+    || relationship.pet_type !== petType
+    || state?.pet_type !== petType
     || !state
     || state.status !== 'active'
   ) {
@@ -232,7 +235,8 @@ export function derivePetOnboardingScene(state) {
   return null
 }
 
-export function createPetOnboardingSampleReminderPayload(language, now = new Date()) {
+export function createPetOnboardingSampleReminderPayload(language, now = new Date(), petType = 'pig') {
+  if (!PET_TYPES.includes(petType)) throw new TypeError('A supported pet type is required.')
   const baseTime = now instanceof Date ? now : new Date(now)
   if (Number.isNaN(baseTime.getTime())) {
     throw new TypeError('A valid onboarding reminder time is required.')
@@ -240,7 +244,7 @@ export function createPetOnboardingSampleReminderPayload(language, now = new Dat
 
   const isChinese = language === 'zh-CN'
   return {
-    pet_type: 'pig',
+    pet_type: petType,
     title: isChinese ? '喝水' : 'Drink water',
     source_text: isChinese ? '1 分钟后提醒我喝水' : 'Remind me to drink water in 1 minute',
     remind_at: new Date(baseTime.getTime() + 60_000).toISOString(),

@@ -12,15 +12,14 @@ import type { PetType } from '../types'
 
 const petOptions: Array<{ value: PetType; label: string; description: string }> = [
   { value: 'pig', label: '小猪', description: '温柔放松，可以一起专注、聊聊今天。' },
-  { value: 'cat', label: '猫咪', description: '轻盈、灵巧，适合高频工作场景。' },
-  { value: 'dog', label: '小狗', description: '更偏陪伴感，适合把快捷聊天作为主入口。' },
+  { value: 'cat', label: '猫咪', description: '轻盈、灵巧，可以一起专注、记住日常小事。' },
+  { value: 'dog', label: '小狗', description: '热情、亲近，可以聊聊今天、一起慢慢成长。' },
 ]
 
 export default function Account() {
   const { token, user, updatePreferences } = useAuthStore()
   const currentPreference = user?.preferences
   const [petType, setPetType] = useState<PetType>(currentPreference?.pet_type ?? 'pig')
-  const [bubbleFrequency, setBubbleFrequency] = useState(currentPreference?.bubble_frequency ?? 120)
   const [passwordForm, setPasswordForm] = useState({ current_password: '', new_password: '' })
   const { release, loading: releaseLoading, error: releaseError, retry: retryRelease } = useDesktopRelease()
   const [prefMessage, setPrefMessage] = useState('')
@@ -67,7 +66,6 @@ export default function Account() {
   useEffect(() => {
     if (currentPreference) {
       setPetType(currentPreference.pet_type)
-      setBubbleFrequency(currentPreference.bubble_frequency)
     }
   }, [currentPreference])
 
@@ -97,7 +95,7 @@ export default function Account() {
       const preferences = await userApi.updatePreferences({
         pet_type: petType,
         quick_chat_enabled: currentPreference?.quick_chat_enabled ?? true,
-        bubble_frequency: petType === 'pig' ? currentPreference?.bubble_frequency ?? 120 : bubbleFrequency,
+        bubble_frequency: currentPreference?.bubble_frequency ?? 120,
       })
       if (!operation.isCurrent()) return
       updatePreferences(preferences)
@@ -177,25 +175,12 @@ export default function Account() {
               ))}
             </div>
 
-            {petType === 'pig' ? (
-              <div className="rounded-[1.5rem] border border-slate-200 bg-slate-50 p-4">
+            <div className="rounded-[1.5rem] border border-slate-200 bg-slate-50 p-4">
                 <div className="font-medium text-slate-900">按你的节奏陪伴</div>
                 <p className="mt-2 text-sm leading-6 text-slate-600">
-                  小猪会结合相处状态和时段主动回应。你可以在桌面主面板的“主动陪伴”中调整陪伴方式；“陪我专注”进行时，它会安静陪着你。
+                  {petOptions.find((pet) => pet.value === petType)?.label}会结合相处状态和时段主动回应。你可以在桌面主面板的“主动陪伴”中调整陪伴方式；“陪我专注”进行时，它会安静陪着你。
                 </p>
-              </div>
-            ) : <label className="block rounded-[1.5rem] border border-slate-200 bg-slate-50 p-4">
-              <span className="text-sm font-medium text-slate-900">气泡频率（秒）</span>
-              <input
-                type="number"
-                required
-                min={30}
-                max={3600}
-                value={bubbleFrequency}
-                onChange={(event) => setBubbleFrequency(Number(event.target.value))}
-                className="mt-3 w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 outline-none transition focus:border-slate-950"
-              />
-            </label>}
+            </div>
 
             {prefError && <div role="alert" className="rounded-2xl bg-rose-50 px-4 py-3 text-sm text-rose-700">{prefError}</div>}
             {prefMessage && <div role="status" className="rounded-2xl bg-emerald-50 px-4 py-3 text-sm text-emerald-700">{prefMessage}</div>}

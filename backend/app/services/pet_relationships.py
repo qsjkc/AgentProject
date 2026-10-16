@@ -620,7 +620,7 @@ def get_relationship_milestone_outfit_id(
     pet_type: str,
     level: int,
 ) -> str | None:
-    if pet_type != "pig" or level < 2:
+    if level < 2:
         return None
     return next(
         (
