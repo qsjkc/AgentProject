@@ -151,16 +151,16 @@ async function registerViaWeb(suffix) {
   await registrationPage.evaluate('localStorage.clear()')
   await navigateRegistration()
   await fillRegistration(suffix)
-  await registrationPage.click('form button[type="button"]')
+  await clickEnabled(registrationPage, 'form button[type="button"]')
   const message = await receivedCode(`accept-${suffix}@example.com`)
   const invalidCode = message.code === '000000' ? '999999' : '000000'
   await registrationPage.input('input[autocomplete="one-time-code"]', invalidCode)
-  await registrationPage.click('form button[type="submit"]')
+  await clickEnabled(registrationPage, 'form button[type="submit"]')
   await registrationPage.waitForSelector('[role="alert"]')
   assert(await registrationPage.evaluate(`document.querySelector('[role="alert"]')?.textContent.includes('验证码')`), 'Wrong code did not produce verification feedback')
   assert(!(await inspectDatabase()).users.some((user) => user.email === `accept-${suffix}@example.com`), 'Wrong code created an account')
   await registrationPage.input('input[autocomplete="one-time-code"]', message.code)
-  await registrationPage.click('form button[type="submit"]')
+  await clickEnabled(registrationPage, 'form button[type="submit"]')
   await waitFor(() => registrationPage.evaluate('location.pathname === "/account" && !!localStorage.getItem("token")'),
     { description: 'successful real registration and automatic Web login' })
   const token = await registrationPage.evaluate('localStorage.getItem("token")')
@@ -256,8 +256,20 @@ async function login(suffix) {
   await main.input(S.loginApiBaseUrl, baseUrl())
   await main.input(S.loginUsername, `accept-${suffix}`)
   await main.input(S.loginPassword, password)
-  await main.click(S.loginSubmit)
+  await clickEnabled(main, S.loginSubmit)
   await main.waitForSelector(S.mainDashboard, { timeoutMs: 15_000 })
+}
+async function waitForEnabled(page, selector, description) {
+  await waitFor(() => page.evaluate(`(() => {
+    const button = document.querySelector(${JSON.stringify(selector)});
+    return Boolean(button && !button.disabled);
+  })()`), { description })
+}
+async function clickEnabled(page, selector) {
+  // Raw CDP dispatches pointer input even to disabled buttons. Match a real
+  // available user action; perform exactly one click and verify its outcome.
+  await waitForEnabled(page, selector, `enabled action ${selector}`)
+  return page.click(selector)
 }
 async function record(name, run) {
   console.log(`[real-backend] ${name} started`)
@@ -273,7 +285,7 @@ async function record(name, run) {
 
 async function selectActualPet(petType) {
   await pages['pet.html'].evaluate('window.desktopBridge.openMainPanel()')
-  await pages['main-panel.html'].click(`[data-e2e="pet-option-${petType}"]`)
+  await clickEnabled(pages['main-panel.html'], `[data-e2e="pet-option-${petType}"]`)
   await waitFor(() => pages['pet.html'].evaluate(`window.desktopBridge.getPetState().then(s => s.petType === ${JSON.stringify(petType)} && s.userId === ${identities.a})`),
     { description: `${petType} desktop state` })
   await pages['main-panel.html'].waitForSelector(`[data-e2e="pet-relationship-summary"].relationship-summary-${petType}`)
@@ -309,13 +321,32 @@ async function patReadyPet(petType, token) {
     return Boolean(button && !button.disabled);
   })()`), { description: `${petType} pat toolbar enabled after entry animation` })
   const before = await api(`/pets/${petType}/daily-summary`, token)
-  await pages['pet.html'].click(S.petCarePat)
+  await clickEnabled(pages['pet.html'], S.petCarePat)
   await waitFor(async () => (await api(`/pets/${petType}/daily-summary`, token)).care_count > before.care_count,
     { description: `${petType} actual pat reward persisted` })
   await waitFor(async () => (await readOnboardingFacts()).some((state) => (
     state.user_id === identities.a && state.pet_type === petType
     && state.observed_capability_ids?.includes('pet_interaction')
   )), { description: `${petType} actual pat onboarding observation persisted` })
+}
+
+async function equipInitialScarf(petType, token) {
+  const main = pages['main-panel.html']
+  await waitForEnabled(main, `[data-item-id="${petType}_basic_scarf"]`, `${petType} outfit control enabled`)
+  const before = await api(`/pets/${petType}/relationship`, token)
+  await clickEnabled(main, `[data-item-id="${petType}_basic_scarf"]`)
+  // Outfit persistence and its XP reward are separate API requests. Wait for
+  // the whole visible operation before taking another pet's isolation baseline.
+  await waitFor(() => main.evaluate(`(() => {
+    const panel = document.querySelector('.outfit-panel[data-pet-type="${petType}"]');
+    return Boolean(panel?.querySelector('[data-item-id="${petType}_basic_scarf"][aria-pressed="true"]')
+      && panel.querySelector('.outfit-clear-button')?.disabled === false);
+  })()`), { description: `${petType} outfit save and reward operation finished` })
+  return waitFor(async () => {
+    const relationship = await api(`/pets/${petType}/relationship`, token)
+    return relationship.outfit.equipped_outfits.neck === `${petType}_basic_scarf`
+      && relationship.intimacy_xp >= before.intimacy_xp + 3 ? relationship : null
+  }, { description: `${petType} initial scarf and dress-up XP persisted` })
 }
 
 async function waitForNaturalReminder(petType, reminderId, token) {
@@ -401,7 +432,7 @@ try {
   await record('care interaction and one-minute reminder creation', async () => {
     await patReadyPet('pig', tokenA)
     await pages['pet.html'].evaluate('window.desktopBridge.openMainPanel()')
-    await pages['main-panel.html'].click(S.onboardingReminderCreate)
+    await clickEnabled(pages['main-panel.html'], S.onboardingReminderCreate)
     reminder = await waitFor(async () => (await api('/reminders?pet_type=pig', tokenA))[0],
       { description: 'persisted real reminder' })
     assert(Math.abs(Date.parse(reminder.remind_at) - Date.now() - 60_000) < 15_000, 'Reminder must be one minute ahead')
@@ -414,8 +445,9 @@ try {
     assert(reminder.status === 'pending', 'Delivery must not auto-complete')
     const deliveryLagMs = Date.parse(reminder.triggered_at) - Date.parse(reminder.remind_at)
     assert(deliveryLagMs >= 0 && deliveryLagMs <= 5000, `Known reminder deadline exceeded five seconds: ${deliveryLagMs} ms`)
-    await pages['main-panel.html'].click(S.pendingReminderRefresh)
-    await pages['main-panel.html'].click(S.pendingReminderComplete.replace('{id}', reminder.id))
+    await clickEnabled(pages['main-panel.html'], S.pendingReminderRefresh)
+    await waitForEnabled(pages['main-panel.html'], S.pendingReminderRefresh, 'pending reminder refresh finished before completion')
+    await clickEnabled(pages['main-panel.html'], S.pendingReminderComplete.replace('{id}', reminder.id))
     const completed = await waitFor(async () => (await api('/reminders?pet_type=pig', tokenA))
       .find((row) => row.id === reminder.id && row.status === 'completed'), { description: 'explicit completion persisted' })
     await pages['main-panel.html'].screenshot(join(artifacts, 'completed-reminder.png'))
@@ -423,8 +455,7 @@ try {
   })
   await record('pig unlocked outfit and persisted onboarding', async () => {
     const completion = await assertOnboardingCompleted('pig')
-    await pages['main-panel.html'].click('[data-item-id="pig_basic_scarf"]')
-    await waitFor(async () => (await api('/pets/pig/relationship', tokenA)).outfit.equipped_outfits.neck === 'pig_basic_scarf', { description: 'pig outfit persisted' })
+    await equipInitialScarf('pig', tokenA)
     return completion
   })
   const petEvidence = {}
@@ -439,23 +470,22 @@ try {
       }
       await patReadyPet(petType, tokenA)
       await pages['pet.html'].evaluate('window.desktopBridge.openMainPanel()')
-      await main.click(S.onboardingReminderCreate)
+      await clickEnabled(main, S.onboardingReminderCreate)
       const sample = await waitFor(async () => (await api(`/reminders?pet_type=${petType}`, tokenA))[0],
         { description: `${petType} real onboarding reminder` })
       assert(sample.pet_type === petType && sample.user_id === identities.a, 'Sample reminder crossed account/pet ownership')
       assert(Math.abs(Date.parse(sample.remind_at) - Date.now() - 60_000) < 15_000, 'Sample reminder was not scheduled one minute ahead')
-      await main.click(`[data-item-id="${petType}_basic_scarf"]`)
-      await waitFor(async () => (await api(`/pets/${petType}/relationship`, tokenA)).outfit.equipped_outfits.neck === `${petType}_basic_scarf`,
-        { description: `${petType} own outfit persisted` })
-      await main.click('[data-e2e="focus-start"]')
+      await equipInitialScarf(petType, tokenA)
+      await clickEnabled(main, '[data-e2e="focus-start"]')
       await main.waitForSelector('[data-e2e="focus-panel"][data-focus-status="running"]')
-      await main.click('[data-e2e="focus-end"]')
+      await clickEnabled(main, '[data-e2e="focus-end"]')
       await main.waitForSelector('[data-e2e="focus-panel"][data-focus-status="idle"]')
       const delivered = await waitForNaturalReminder(petType, sample.id, tokenA)
       const lag = Date.parse(delivered.triggered_at) - Date.parse(delivered.remind_at)
       assert(lag >= 0 && lag <= 5000 && delivered.status === 'pending', 'Natural delivery failed its deadline or auto-completed')
-      await main.click(S.pendingReminderRefresh)
-      await main.click(S.pendingReminderComplete.replace('{id}', sample.id))
+      await clickEnabled(main, S.pendingReminderRefresh)
+      await waitForEnabled(main, S.pendingReminderRefresh, `${petType} pending reminder refresh finished before completion`)
+      await clickEnabled(main, S.pendingReminderComplete.replace('{id}', sample.id))
       await waitFor(async () => (await api(`/reminders?pet_type=${petType}`, tokenA)).some((item) => item.id === sample.id && item.status === 'completed'),
         { description: `${petType} explicit completion persisted` })
       const completion = await assertOnboardingCompleted(petType)
@@ -466,7 +496,8 @@ try {
       assert(weekly.pet_type === petType, 'Weekly summary returned the wrong pet')
       for (const other of otherPets) {
         const after = await api(`/pets/${other}/relationship`, tokenA)
-        assert(after.intimacy_xp === beforeOthers[other].intimacy_xp, 'Another pet received this pet\'s XP')
+        assert(after.intimacy_xp === beforeOthers[other].intimacy_xp, 'Another pet received this pet\'s XP',
+          { activePet: petType, otherPet: other, beforeXp: beforeOthers[other].intimacy_xp, afterXp: after.intimacy_xp })
         assert(JSON.stringify(after.outfit.equipped_outfits) === JSON.stringify(beforeOthers[other].outfit.equipped_outfits), 'Another pet received this pet\'s outfit')
       }
       await main.screenshot(join(artifacts, `${petType}-real-companion.png`))
@@ -496,11 +527,11 @@ try {
     let unavailable = false
     try { await api('/reminders?pet_type=pig', tokenA) } catch { unavailable = true }
     assert(unavailable, 'Backend must actually be unavailable during this check')
-    await pages['main-panel.html'].click(S.pendingReminderRefresh)
+    await clickEnabled(pages['main-panel.html'], S.pendingReminderRefresh)
     await startBackend()
     await pages['main-panel.html'].reload()
     await pages['main-panel.html'].waitForSelector(S.mainDashboard)
-    await pages['main-panel.html'].click(S.pendingReminderRefresh)
+    await clickEnabled(pages['main-panel.html'], S.pendingReminderRefresh)
     const rows = await api('/reminders?pet_type=pig', tokenA)
     assert(rows.length === 1 && rows[0].status === 'completed', 'Outage lost completed state')
   })
@@ -509,7 +540,7 @@ try {
     const quick = pages['quick-chat.html']
     const deviceTimeZone = await quick.evaluate('Intl.DateTimeFormat().resolvedOptions().timeZone')
     await quick.input(S.quickChatInput, '每天上午九点十五分提醒我喝水')
-    await quick.click(S.quickChatSend)
+    await clickEnabled(quick, S.quickChatSend)
     const recurring = await waitFor(async () => (await api('/reminders?pet_type=pig', tokenA))
       .find((row) => row.series_id), { description: 'real recurring reminder from quick chat' })
     assert(recurring.title === '喝水' && recurring.recurrence_type === 'daily', 'Incorrect recurring reminder')
@@ -517,27 +548,33 @@ try {
     assert(series?.timezone === deviceTimeZone, `Recurring reminder did not retain the desktop timezone: ${series?.timezone} / ${deviceTimeZone}`)
     const localTime = new Date(recurring.remind_at).toLocaleTimeString('en-GB', { timeZone: deviceTimeZone })
     assert(localTime === '09:15:00', `Chinese minutes lost: ${localTime}`)
+    await waitForEnabled(quick, S.quickChatSend, 'quick chat reminder operation finished')
     await quick.screenshot(join(artifacts, 'recurring-reminder.png'))
     await pages['pet.html'].evaluate('window.desktopBridge.openMainPanel()')
     return { reminderId: recurring.id, seriesId: recurring.series_id, localTime, deviceTimeZone }
   })
   await record('relative reminder correction and real persistence', async () => {
     const main = pages['main-panel.html']
-    await main.click('[data-e2e="new-chat"]')
+    await clickEnabled(main, '[data-e2e="new-chat"]')
     await main.input('[data-e2e="main-chat-input"]', '每周九点提醒我伸个懒腰')
-    await main.click('[data-e2e="main-chat-send"]')
+    await clickEnabled(main, '[data-e2e="main-chat-send"]')
     await main.waitForSelector('[data-e2e="main-reminder-draft-error"]')
     assert(await main.evaluate("document.querySelector('[data-e2e=main-chat-input]').value === '每周九点提醒我伸个懒腰'"), 'Invalid reminder draft was lost')
     const beforeRows = await api('/reminders?pet_type=pig', tokenA)
     const draft = '十七分钟后提醒我伸个懒腰'
     await main.input('[data-e2e="main-chat-input"]', draft)
     const beforeTime = Date.now()
-    await main.click('[data-e2e="main-chat-send"]')
+    await clickEnabled(main, '[data-e2e="main-chat-send"]')
     const relative = await waitFor(async () => (await api('/reminders?pet_type=pig', tokenA)).find((row) => row.source_text === draft), { description: 'real relative reminder' })
     const delayMs = Date.parse(relative.remind_at) - beforeTime
     assert(relative.title === '伸个懒腰' && relative.recurrence_type === 'once', 'Relative reminder title or recurrence changed')
     assert(delayMs >= 17 * 60_000 && delayMs <= 17 * 60_000 + 5000, 'Relative deadline changed before real persistence')
     assert((await api('/reminders?pet_type=pig', tokenA)).length === beforeRows.length + 1, 'Relative reminder created duplicates')
+    await waitFor(() => main.evaluate(`(() => {
+      const button = document.querySelector('[data-e2e="main-chat-send"]');
+      return ['发送消息', 'Send Message'].includes(button?.textContent.trim())
+        && document.querySelector('[data-e2e="main-chat-input"]')?.value === '';
+    })()`), { description: 'main reminder operation finished' })
     return { reminderId: relative.id, delayMs, retainedDraft: true }
   })
   await record('upcoming reminder reschedule and cancellation persist', async () => {
@@ -545,7 +582,7 @@ try {
     const relative = (await api('/reminders?pet_type=pig', tokenA)).find((row) => row.source_text === '十七分钟后提醒我伸个懒腰')
     assert(relative, 'Relative reminder missing before management')
     const id = relative.id
-    await main.click(`[data-e2e-reminder-edit="${id}"]`)
+    await clickEnabled(main, `[data-e2e-reminder-edit="${id}"]`)
     const target = await main.evaluate(`(() => {
       const date = new Date(Date.now() + 2 * 60 * 60_000);
       const pad = value => String(value).padStart(2, '0');
@@ -556,27 +593,37 @@ try {
       input.dispatchEvent(new Event('change', { bubbles: true }));
       return new Date(value).toISOString();
     })()`)
-    await main.click(`[data-e2e-reminder-save-edit="${id}"]`)
+    await clickEnabled(main, `[data-e2e-reminder-save-edit="${id}"]`)
     const moved = await waitFor(async () => (await api('/reminders?pet_type=pig', tokenA))
       .find((row) => row.id === id && Date.parse(row.remind_at) === Date.parse(target)), { description: 'real reschedule persisted' })
     assert(moved.title === relative.title && moved.status === 'pending' && !moved.triggered_at, 'Reschedule changed reminder identity or delivery state')
     const lateTrigger = await fetch(`${baseUrl()}/reminders/${id}/trigger`, { method: 'POST', headers: { Authorization: `Bearer ${tokenA}` } })
     assert(lateTrigger.status === 409, 'Late trigger must not consume a future reminder')
+    await waitFor(() => main.evaluate(`(() => {
+      const row = document.querySelector('[data-e2e-upcoming-reminder-id="${id}"]');
+      return row?.getAttribute('aria-busy') === 'false'
+        && row.querySelector('time')?.dateTime === ${JSON.stringify(moved.remind_at)}
+        && !row.querySelector('[data-e2e-reminder-time="${id}"]');
+    })()`), { description: 'reschedule result committed to the actual UI' })
+    await waitForEnabled(main, `[data-e2e-reminder-cancel="${id}"]`, 'cancel enabled after reschedule completes')
     await main.screenshot(join(artifacts, 'upcoming-reminder-rescheduled.png'))
-    await main.click(`[data-e2e-reminder-cancel="${id}"]`)
+    await clickEnabled(main, `[data-e2e-reminder-cancel="${id}"]`)
     const canceled = await waitFor(async () => (await api('/reminders?pet_type=pig', tokenA))
       .find((row) => row.id === id && row.status === 'canceled'), { description: 'real reminder cancellation persisted' })
     assert(canceled.cancellation_source === 'user', 'Cancellation source not persisted')
     await main.reload()
     await main.waitForSelector('[data-e2e="upcoming-reminders"]')
+    await waitForEnabled(main, '[data-e2e="upcoming-reminder-refresh"]', 'reloaded upcoming reminders finished loading')
+    assert(!await main.evaluate(`Boolean(document.querySelector('[data-e2e="upcoming-reminder-error"]'))`), 'Reloaded upcoming reminders failed to load')
     assert(await main.evaluate(`!document.querySelector('[data-e2e-upcoming-reminder-id="${id}"]')`), 'Canceled reminder returned after reload')
     return { reminderId: id, rescheduledTo: moved.remind_at, canceled: true, lateTriggerRejected: true }
   })
   await record('account B isolation and logout persistence', async () => {
-    await pages['main-panel.html'].click(S.logout)
+    await clickEnabled(pages['main-panel.html'], S.logout)
     await login('b')
-    await pages['main-panel.html'].click(S.petOptionPig)
+    await clickEnabled(pages['main-panel.html'], S.petOptionPig)
     await waitFor(() => pages['pet.html'].evaluate(`window.desktopBridge.getPetState().then(s=>s.userId === ${identities.b})`), { description: 'B account propagated' })
+    await pages['main-panel.html'].waitForSelector(S.relationshipSummary)
     const tokenB = await tokenFor('b')
     for (const petType of ['pig', 'cat', 'dog']) {
       assert((await api(`/reminders?pet_type=${petType}`, tokenB)).length === 0, 'A reminders leaked into B')
@@ -586,7 +633,7 @@ try {
     }
     const forbidden = await fetch(`${baseUrl()}/reminders/${reminder.id}/complete`, { method: 'POST', headers: { Authorization: `Bearer ${tokenB}` } })
     assert(forbidden.status === 404, 'Cross-account completion must be refused')
-    await pages['main-panel.html'].click(S.logout)
+    await clickEnabled(pages['main-panel.html'], S.logout)
     await stopDesktop()
     await launchDesktop()
     await pages['main-panel.html'].waitForSelector(S.loginSubmit)
@@ -599,7 +646,7 @@ try {
     await registrationPage.evaluate('localStorage.clear()')
     await navigateRegistration()
     await fillRegistration('expired', expiringMessage.code)
-    await registrationPage.click('form button[type="submit"]')
+    await clickEnabled(registrationPage, 'form button[type="submit"]')
     await registrationPage.waitForSelector('[role="alert"]')
     assert(await registrationPage.evaluate(`document.querySelector('[role="alert"]')?.textContent.includes('验证码')`), 'Expired code did not produce verification feedback')
     const rejected = await fetch(`${baseUrl()}/auth/register`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
