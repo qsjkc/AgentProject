@@ -18,6 +18,22 @@ const requestBody = (request) => {
 
 async function selectPet(context, petType) {
   await callE2e(context.pages.main, 'showWindow', 'main-panel')
+  // The dashboard mounts before the login relationship capability is adopted.
+  // Wait for that initial handoff (and any preceding switch) before asking the
+  // real selector to start a new account-scoped request.
+  await expectSnapshot(context.pages.main, (snapshot) => (
+    snapshot.account?.userId === USERS.A.id
+    && snapshot.relationship?.pet_type === snapshot.account?.petType
+    && snapshot.relationship?.user_id === USERS.A.id
+    && snapshot.renderer?.[0]?.relationshipId === snapshot.relationship?.id
+    && snapshot.relationshipCapabilityAdopted === true
+  ), 'current relationship ready before switching pets')
+  await waitFor(() => context.pages.main.evaluate(`(() => {
+    const target = document.querySelector('[data-e2e="pet-option-${petType}"]')
+    return target && !target.disabled
+      && Boolean(document.querySelector('[data-e2e="pet-relationship-summary"]'))
+      && !document.querySelector('.main-companion-sync')
+  })()`), { description: `${petType} selector ready after relationship sync` })
   await context.pages.main.click(`[data-e2e="pet-option-${petType}"]`)
   await expectSnapshot(context.pages.main, (snapshot) => (
     snapshot.account?.petType === petType
