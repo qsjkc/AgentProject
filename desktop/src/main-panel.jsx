@@ -670,6 +670,7 @@ function MainPanelApp() {
   const [newChatVersion, setNewChatVersion] = useState(0)
   const [savingPet, setSavingPet] = useState(false)
   const [savingOutfit, setSavingOutfit] = useState(false)
+  const [reminderSaveContext, setReminderSaveContext] = useState(null)
   const [savingVoiceSettings, setSavingVoiceSettings] = useState(false)
   const [savingCompanionSettings, setSavingCompanionSettings] = useState(false)
   const [apiBaseUrl, setApiBaseUrlState] = useState('')
@@ -979,6 +980,27 @@ function MainPanelApp() {
       getCurrentMainPanelAccountContext(),
     )
   )
+
+  const reminderSavePending = Boolean(reminderSaveContext && isMainPanelAccountRequestCurrent(reminderSaveContext))
+  const reminderDraftBlocked = (savingOutfit || petOnboardingBusy || reminderSavePending) && parseReminder(prompt.trim()).ok
+
+  const syncReminderRelationship = async (requestContext) => {
+    const relationship = await getPetRelationship(requestContext.petType, requestContext)
+    if (!isMainPanelAccountRequestCurrent(requestContext)) return null
+    if (
+      Number(relationship?.user_id) !== Number(requestContext.userId)
+      || relationship?.pet_type !== requestContext.petType
+      || (requestContext.relationshipId != null && Number(relationship?.id) !== Number(requestContext.relationshipId))
+    ) throw new Error('relationship_context_mismatch')
+    const cached = await window.desktopBridge?.cachePetRelationship?.(relationship, requestContext)
+    if (!isMainPanelAccountRequestCurrent(requestContext)) return null
+    if (!cached?.ok || !cached.authoritative) {
+      throw new Error(cached?.reason || 'relationship_cache_rejected')
+    }
+    activeAuthoritativeContextRef.current = cached.authoritative
+    setPetRelationship(relationship)
+    return { ...requestContext, authoritative: cached.authoritative }
+  }
 
   const loadPetRelationship = async (petType) => {
     const requestId = relationshipRequestRef.current + 1
@@ -1621,7 +1643,7 @@ function MainPanelApp() {
   ])
 
   const handleSend = async () => {
-    if (!prompt.trim() || loading || selectingSession) {
+    if (!prompt.trim() || loading || selectingSession || reminderDraftBlocked) {
       return
     }
 
@@ -1639,12 +1661,14 @@ function MainPanelApp() {
     if (parsedReminder.ok) {
       const reminderUserIdAtSend = user?.id
       const reminderPetTypeAtSend = currentPetType
-      const reminderRequestContext = {
+      let reminderRequestContext = {
         ...getCurrentMainPanelAccountContext(),
         relationshipId: petOnboardingContextRef.current.relationshipId,
         epoch: accountRequestEpochRef.current,
         session: activeSessionSnapshotRef.current,
       }
+      const pendingReminderRequest = reminderRequestContext
+      setReminderSaveContext(pendingReminderRequest)
       setPrompt('')
       setLoading(true)
       setStatusText(t(language, 'waitingResponse'))
@@ -1728,23 +1752,17 @@ function MainPanelApp() {
             }
           }
         }
-        void getPetRelationship(reminderPetTypeAtSend, reminderRequestContext).then(async (nextRelationship) => {
-          if (
-            isMainPanelAccountRequestCurrent(reminderRequestContext)
-            &&
-            petOnboardingContextRef.current.petType === reminderPetTypeAtSend
-            && Number(petOnboardingContextRef.current.userId) === Number(reminderUserIdAtSend)
-            && Number(nextRelationship?.user_id) === Number(reminderUserIdAtSend)
-          ) {
-            await window.desktopBridge?.cachePetRelationship?.(nextRelationship, reminderRequestContext)
-          }
-        }).catch((error) => {
+        // Complete the relationship transition before releasing reminder and
+        // outfit controls. The notification must use the post-cache capability.
+        const refreshedContext = await syncReminderRelationship(reminderRequestContext).catch((error) => {
           void logDesktopDebug({
             event: 'main-panel-relationship-refresh-failed',
             source: 'reminder-created',
             reason: error instanceof Error ? error.message : String(error),
           })
+          return null
         })
+        if (refreshedContext) reminderRequestContext = refreshedContext
         if (!isMainPanelAccountRequestCurrent(reminderRequestContext)) {
           return
         }
@@ -1765,6 +1783,7 @@ function MainPanelApp() {
           setStatusText(formatError(error, t(language, 'messageDeliveryFailed')))
         }
       } finally {
+        setReminderSaveContext((current) => current === pendingReminderRequest ? null : current)
         if (isConversationCurrent()) {
           setLoading(false)
         }
@@ -1898,7 +1917,7 @@ function MainPanelApp() {
   }
 
   const handleCreateOnboardingReminder = async () => {
-    if (petOnboardingBusy || !PET_OPTIONS.includes(currentPetType)) {
+    if (petOnboardingBusy || savingOutfit || reminderSavePending || !PET_OPTIONS.includes(currentPetType)) {
       return
     }
     setPetOnboardingBusy(true)
@@ -1969,22 +1988,19 @@ function MainPanelApp() {
       ) {
         return
       }
-      void getPetRelationship(onboardingRequestContext.petType, onboardingRequestContext).then(async (nextRelationship) => {
-        if (
-          isMainPanelAccountRequestCurrent(onboardingRequestContext)
-          && expectedContextKey === petOnboardingContextKeyRef.current
-          && Number(nextRelationship?.user_id) === Number(petOnboardingContextRef.current.userId)
-          && nextRelationship?.pet_type === onboardingRequestContext.petType
-        ) {
-          setPetRelationship(nextRelationship)
-          await window.desktopBridge?.cachePetRelationship?.(nextRelationship, onboardingRequestContext)
-        }
-      }).catch((error) => {
+      // The cache write advances the relationship capability. Keep this action
+      // busy until it settles so a following outfit save cannot start with the
+      // capability that this refresh is about to replace.
+      await syncReminderRelationship(onboardingRequestContext).catch((error) => {
         void logDesktopDebug({
           event: 'main-panel-onboarding-relationship-refresh-failed',
           reason: error instanceof Error ? error.message : String(error),
         })
       })
+      if (
+        !isMainPanelAccountRequestCurrent(onboardingRequestContext)
+        || expectedContextKey !== petOnboardingContextKeyRef.current
+      ) return
       void loadPetDailySummary(onboardingRequestContext.petType)
       setStatusText(copy)
     } catch (error) {
@@ -2421,6 +2437,8 @@ function MainPanelApp() {
       !PET_OPTIONS.includes(currentPetType)
       || !petRelationship
       || savingOutfit
+      || petOnboardingBusy
+      || reminderSavePending
     ) {
       return
     }
@@ -2987,7 +3005,7 @@ function MainPanelApp() {
                   language={language}
                   scene={petOnboardingScene}
                   relationship={petRelationship}
-                  busy={petOnboardingBusy}
+                  busy={petOnboardingBusy || savingOutfit || reminderSavePending}
                   error={petOnboardingError}
                   onCreateSampleReminder={() => {
                     void handleCreateOnboardingReminder()
@@ -3028,7 +3046,7 @@ function MainPanelApp() {
                 language={language}
                 petType={currentPetType}
                 relationship={petRelationship}
-                saving={savingOutfit}
+                saving={savingOutfit || petOnboardingBusy || reminderSavePending}
                 onChange={(slot, itemId) => {
                   void handleOutfitChange(slot, itemId)
                 }}
@@ -3172,7 +3190,7 @@ function MainPanelApp() {
                 />
                 {reminderDraftFeedback && <div id="main-reminder-draft-feedback" className="reminder-draft-feedback" role="alert" data-e2e="main-reminder-draft-error">{reminderDraftFeedback}</div>}
                 <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-                  <button type="button" className="button-primary" data-e2e="main-chat-send" onClick={handleSend} disabled={loading || selectingSession || !prompt.trim()}>
+                  <button type="button" className="button-primary" data-e2e="main-chat-send" onClick={handleSend} disabled={loading || selectingSession || reminderDraftBlocked || !prompt.trim()}>
                     {loading ? t(language, 'sending') : t(language, 'sendMessage')}
                   </button>
                 </div>

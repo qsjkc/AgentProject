@@ -89,10 +89,39 @@ async function exerciseCareAndReminder(context, petType) {
 
   await callE2e(context.pages.main, 'showWindow', 'main-panel')
   await context.pages.main.waitForSelector(REQUIRED_SELECTORS.onboardingReminderCreate)
-  await context.pages.main.click(REQUIRED_SELECTORS.onboardingReminderCreate)
-  const reminder = await waitFor(() => account.reminders.find((item) => item.pet_type === petType), {
-    description: `${petType} onboarding reminder creation`,
-  })
+  const outfit = `[data-item-id="${petType}_basic_scarf"]`
+  const heldRefresh = context.stub.holdNext('GET', `/api/v1/pets/${petType}/relationship`)
+  let refreshArrived = false
+  void heldRefresh.arrived.then(() => { refreshArrived = true })
+  let reminder
+  try {
+    await context.pages.main.click(REQUIRED_SELECTORS.onboardingReminderCreate)
+    reminder = await waitFor(() => account.reminders.find((item) => item.pet_type === petType), {
+      description: `${petType} onboarding reminder creation`,
+    })
+    await waitFor(() => refreshArrived, { description: `${petType} post-reminder relationship refresh` })
+    assert(await context.pages.main.evaluate(`document.querySelector(${JSON.stringify(outfit)})?.disabled`),
+      'Outfit allowed a write while the reminder was replacing its relationship capability')
+    const requestsBeforeClick = context.stub.requests.length
+    await context.pages.main.click(outfit)
+    assert(!context.stub.requests.slice(requestsBeforeClick).some((request) => request.pathname.endsWith('/relationship/outfit')),
+      'A disabled outfit control still issued a mutation')
+  } finally {
+    heldRefresh.release()
+  }
+  await waitFor(() => context.pages.main.evaluate(`document.querySelector(${JSON.stringify(outfit)})?.disabled === false`),
+    { description: `${petType} outfit ready after relationship cache transition` })
+  await context.pages.main.click(outfit)
+  await waitFor(() => context.stub.requests.slice(beforeCare).some((request) => (
+    request.method === 'POST'
+    && request.pathname === `/api/v1/pets/${petType}/relationship/rewards`
+    && requestBody(request).action === 'dress_up'
+  )), { description: `${petType} outfit save continues to its reward with the new capability` })
+  await waitFor(() => context.pages.main.evaluate(`(() => {
+    const option = document.querySelector(${JSON.stringify(outfit)})
+    return option?.getAttribute('aria-pressed') === 'true'
+      && option.closest('.outfit-panel')?.querySelector('.outfit-clear-button')?.disabled === false
+  })()`), { description: `${petType} outfit save and reward settle visibly` })
   assert(Math.abs(Date.parse(reminder.remind_at) - Date.now() - 60_000) < 15_000,
     'Sample reminder is not approximately one minute ahead', { petType, reminder })
   assertEqual(reminder.user_id, USERS.A.id, 'Sample reminder belongs to the wrong account')
@@ -114,10 +143,9 @@ async function exerciseCareAndReminder(context, petType) {
   return { reminderId: reminder.id, onboarding: completed.onboarding }
 }
 
-async function equipScarfAndPauseFocus(context, petType) {
+async function verifyScarfAndPauseFocus(context, petType) {
   const main = context.pages.main
   const outfit = `[data-item-id="${petType}_basic_scarf"]`
-  await main.click(outfit)
   await waitFor(() => main.evaluate(`document.querySelector(${JSON.stringify(outfit)})?.getAttribute('aria-pressed') === 'true'`), {
     description: `${petType} scarf visibly equipped`,
   })
@@ -130,6 +158,79 @@ async function equipScarfAndPauseFocus(context, petType) {
   await main.click('[data-e2e="focus-toggle"]')
   await main.waitForSelector(focusState('paused'))
   return main.evaluate(`document.querySelector('[data-e2e="focus-time"]')?.textContent`)
+}
+
+async function verifyChatReminderRefresh(context, petType) {
+  const main = context.pages.main
+  const outfit = `[data-item-id="${petType}_basic_scarf"]`
+  const clear = '.outfit-clear-button'
+  await waitFor(() => main.evaluate(`document.querySelector('${clear}')?.disabled === false`),
+    { description: 'previous outfit operation settled' })
+  await main.click(clear)
+  await waitFor(() => main.evaluate(`document.querySelector(${JSON.stringify(outfit)})?.disabled === false`),
+    { description: 'scarf removed before chat reminder' })
+  await main.input('[data-e2e="main-chat-input"]', '十分钟后提醒我看看窗外')
+  const before = context.stub.requests.length
+  const heldRefresh = context.stub.holdNext('GET', `/api/v1/pets/${petType}/relationship`)
+  let arrived = false
+  void heldRefresh.arrived.then(() => { arrived = true })
+  try {
+    await main.click('[data-e2e="main-chat-send"]')
+    await waitFor(() => arrived, { description: 'chat reminder post-create relationship refresh' })
+    assert(await main.evaluate(`document.querySelector(${JSON.stringify(outfit)})?.disabled`),
+      'Chat reminder released outfit controls before its relationship cache settled')
+    assert(await main.evaluate("/发送中|Sending/.test(document.querySelector('[data-e2e=main-chat-send]')?.textContent)"),
+      'Chat reminder left its sending state before its relationship cache settled')
+  } finally {
+    heldRefresh.release()
+  }
+  await waitFor(() => main.evaluate(`document.querySelector(${JSON.stringify(outfit)})?.disabled === false`),
+    { description: 'chat reminder releases outfit controls after adopting its new capability' })
+  await main.click(outfit)
+  await waitFor(() => context.stub.requests.slice(before).some((request) => (
+    request.method === 'POST'
+    && request.pathname === `/api/v1/pets/${petType}/relationship/rewards`
+    && requestBody(request).action === 'dress_up'
+  )), { description: 'outfit reward after chat reminder refresh' })
+  await waitFor(() => main.evaluate(`document.querySelector('${clear}')?.disabled === false`),
+    { description: 'outfit completes after chat reminder capability transition' })
+  assertEqual(context.stub.requests.slice(before).filter((request) => (
+    request.method === 'POST' && request.pathname === '/api/v1/reminders'
+  )).length, 1, 'Chat reminder synchronization created duplicate reminders')
+
+  await main.input('[data-e2e="main-chat-input"]', '十一分钟后提醒我旧账号刷新边界')
+  const staleRefresh = context.stub.holdNext('GET', `/api/v1/pets/${petType}/relationship`)
+  let staleArrived = false
+  void staleRefresh.arrived.then(() => { staleArrived = true })
+  let requestId
+  try {
+    await main.click('[data-e2e="main-chat-send"]')
+    await waitFor(() => staleArrived, { description: 'account A reminder relationship response held' })
+    requestId = main.diagnostics.network.findLast((entry) => (
+      entry.method === 'Network.requestWillBeSent'
+      && entry.request?.url.endsWith(`/pets/${petType}/relationship`)
+    ))?.requestId
+    assert(requestId, 'Missing held relationship network request')
+    await main.click(REQUIRED_SELECTORS.logout)
+    await loginAs(context, USERS.B)
+    await expectSnapshot(main, (snapshot) => (
+      snapshot.account?.userId === USERS.B.id && snapshot.relationship?.user_id === USERS.B.id
+      && snapshot.renderer?.[0]?.relationshipId === createRelationship(USERS.B).id
+    ), 'account B settled while account A response remains held')
+  } finally {
+    staleRefresh.release()
+  }
+  await waitFor(() => main.diagnostics.network.some((entry) => (
+    entry.requestId === requestId && entry.method === 'Network.responseReceived'
+  )), { description: 'released account A response arrives after account switch' })
+  await main.evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))')
+  const afterSwitch = await callE2e(main, 'snapshot')
+  assertEqual(afterSwitch.relationship?.user_id, USERS.B.id, 'Late account A refresh contaminated account B')
+  assertEqual(afterSwitch.relationship?.pet_type, 'pig', 'Late dog refresh contaminated account B default pet')
+  assert(!afterSwitch.activityJournal?.some((entry) => entry.userId === USERS.A.id
+    && entry.afterAccountSwitch && entry.path === `/pets/${petType}/relationship`),
+  'Late account A relationship response was accepted after switching accounts')
+  return { heldRefreshBlockedOutfit: true, saveAndRewardAfterRefresh: true, lateAccountResponseRejected: true }
 }
 
 export async function petParityScenario(context) {
@@ -150,7 +251,7 @@ export async function petParityScenario(context) {
     const before = await callE2e(context.pages.main, 'snapshot')
     assert(before.onboarding?.status !== 'completed', `${petType} inherited completed onboarding`)
     results[petType] = await exerciseCareAndReminder(context, petType)
-    results[petType].pausedTime = await equipScarfAndPauseFocus(context, petType)
+    results[petType].pausedTime = await verifyScarfAndPauseFocus(context, petType)
     await context.pages.main.screenshot(`${context.artifactPath}/${petType}-parity.png`)
   }
   assert(results.cat.reminderId !== results.dog.reminderId, 'Cat and dog shared the same sample reminder')
@@ -170,5 +271,6 @@ export async function petParityScenario(context) {
     await context.pages.main.click('[data-e2e="focus-end"]')
     await context.pages.main.waitForSelector(focusState('idle'))
   }
-  return { pets: results, petSwitchIsolation: true, actualToolbar: true, realOnboardingReminderFlow: true, localStubOnly: true }
+  const chatReminderRefresh = await verifyChatReminderRefresh(context, 'dog')
+  return { pets: results, petSwitchIsolation: true, actualToolbar: true, realOnboardingReminderFlow: true, chatReminderRefresh, localStubOnly: true }
 }
