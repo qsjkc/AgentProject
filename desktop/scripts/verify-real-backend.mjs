@@ -1,7 +1,7 @@
 // Real Electron UI -> real FastAPI -> disposable SQLite. No production writes.
 import { spawn, execFile } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
-import { mkdir, mkdtemp, readFile, writeFile, rm, access } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, writeFile, rm, access, readdir } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -281,6 +281,43 @@ async function assertOnboardingCompleted(petType) {
   }, { description: `${petType} persisted onboarding completion` })
 }
 
+async function waitForNaturalReminder(petType, reminderId, token) {
+  await pages['main-panel.html'].evaluate('window.desktopBridge.hideMainPanel()')
+  const result = await waitFor(async () => {
+    const state = await pages['pet.html'].evaluate('window.desktopBridge.getPetState()')
+    if (state.petType !== petType || state.userId !== identities.a) {
+      return { interruptedContext: { petType: state.petType, userId: state.userId } }
+    }
+    return (await api(`/reminders?pet_type=${petType}`, token))
+      .find((row) => row.id === reminderId && row.triggered_at)
+  }, { description: `${petType} natural reminder delivery`, timeoutMs: 100_000, intervalMs: 1000 })
+  assert(!result.interruptedContext, 'Desktop account or pet changed unexpectedly while waiting for its reminder', {
+    expected: { petType, userId: identities.a }, actual: result.interruptedContext,
+  })
+  await pages['pet.html'].evaluate('window.desktopBridge.openMainPanel()')
+  return result
+}
+
+async function collectContextEvents() {
+  const directory = join(runtime, 'AppData/Detachym/logs')
+  const events = []
+  for (const file of await readdir(directory).catch(() => [])) {
+    if (!file.startsWith('desktop-main-') || !file.endsWith('.log')) continue
+    for (const line of (await readFile(join(directory, file), 'utf8')).split('\n').filter(Boolean)) {
+      let record
+      try { record = JSON.parse(line) } catch { continue }
+      const event = record.payload?.event || record.event
+      if (!/switch-pet|main-panel-switch|voice-global-shortcut-triggered/.test(event || '')) continue
+      const payload = record.payload || record
+      // Keep only context metadata, never session capabilities or credentials.
+      events.push({ at: record.ts, event, role: record.role, petType: payload.petType,
+        fromPetType: payload.fromPetType, toPetType: payload.toPetType,
+        targetPetType: payload.targetPetType, phase: payload.phase })
+    }
+  }
+  return events
+}
+
 try {
   await mkdir(artifacts, { recursive: true })
   await mkdir(join(runtime, 'AppData'), { recursive: true })
@@ -337,10 +374,7 @@ try {
   })
   await record('natural reminder delivery and explicit completion', async () => {
     // No clock changes, DB edits, forced polls, or E2E controls.
-    reminder = await waitFor(async () => {
-      const rows = await api('/reminders?pet_type=pig', tokenA)
-      return rows.find((row) => row.id === reminder.id && row.triggered_at)
-    }, { description: 'natural reminder delivery', timeoutMs: 100_000, intervalMs: 1000 })
+    reminder = await waitForNaturalReminder('pig', reminder.id, tokenA)
     assert(reminder.status === 'pending', 'Delivery must not auto-complete')
     const deliveryLagMs = Date.parse(reminder.triggered_at) - Date.parse(reminder.remind_at)
     assert(deliveryLagMs >= 0 && deliveryLagMs <= 5000, `Known reminder deadline exceeded five seconds: ${deliveryLagMs} ms`)
@@ -384,9 +418,7 @@ try {
       await main.waitForSelector('[data-e2e="focus-panel"][data-focus-status="running"]')
       await main.click('[data-e2e="focus-end"]')
       await main.waitForSelector('[data-e2e="focus-panel"][data-focus-status="idle"]')
-      const delivered = await waitFor(async () => (await api(`/reminders?pet_type=${petType}`, tokenA))
-        .find((item) => item.id === sample.id && item.triggered_at),
-      { description: `${petType} natural reminder delivery`, timeoutMs: 100_000, intervalMs: 1000 })
+      const delivered = await waitForNaturalReminder(petType, sample.id, tokenA)
       const lag = Date.parse(delivered.triggered_at) - Date.parse(delivered.remind_at)
       assert(lag >= 0 && lag <= 5000 && delivered.status === 'pending', 'Natural delivery failed its deadline or auto-completed')
       await main.click(S.pendingReminderRefresh)
@@ -569,6 +601,7 @@ try {
   }
 } finally {
   const cleanupErrors = []
+  report.contextEvents = await collectContextEvents().catch(() => [])
   for (const cleanup of [stopRegistrationBrowser, stopDesktop, () => stopProcess(backend),
     () => removeSafeUserDataPath(userData), () => removeSafeUserDataPath(runtime)]) {
     try { await cleanup() } catch (error) { cleanupErrors.push(serializeError(error)) }
