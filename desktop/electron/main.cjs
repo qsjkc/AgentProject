@@ -2584,6 +2584,12 @@ function getE2eSnapshot() {
   const context = getCurrentStableAccountContext()
   const relationship = context.hasSession ? getCachedPetRelationship(context.petType) : null
   return {
+    windows: {
+      mainPanel: {
+        visible: Boolean(mainPanelWindow && !mainPanelWindow.isDestroyed() && mainPanelWindow.isVisible()),
+        minimized: Boolean(mainPanelWindow && !mainPanelWindow.isDestroyed() && mainPanelWindow.isMinimized()),
+      },
+    },
     account: context.hasSession
       ? { userId: context.userId, petType: context.petType }
       : null,

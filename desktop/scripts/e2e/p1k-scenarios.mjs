@@ -912,13 +912,37 @@ export async function loginAccessibilityScenario(context) {
   const main = context.pages.main
   const requestStart = context.stub.requests.length
   await main.input(REQUIRED_SELECTORS.loginApiBaseUrl, context.stub.apiBaseUrl)
+  const nativeWindowControls = []
   for (const action of ['minimize', 'hide']) {
     const control = `[data-e2e="login-${action}"]`
     assert(await main.evaluate(`Boolean(document.querySelector(${JSON.stringify(control)})?.getAttribute('aria-label'))`), 'Login window control is unnamed')
-    await main.click(control)
-    await waitFor(() => main.evaluate("document.visibilityState === 'hidden'"), { description: `login window ${action}` })
+    await main.evaluate(`(() => {
+      window.__e2eWindowControlClick = null
+      document.querySelector(${JSON.stringify(control)}).addEventListener('click', event => {
+        window.__e2eWindowControlClick = { trusted: event.isTrusted, at: Date.now() }
+      }, { once: true })
+    })()`)
+    const point = await main.click(control)
+    try {
+      // The control changes the native window. Page visibility alone does not
+      // reliably report Windows minimization while a CDP session is attached.
+      const snapshot = await expectSnapshot(main, snapshot => action === 'minimize'
+        ? snapshot.windows?.mainPanel?.minimized === true
+        : snapshot.windows?.mainPanel?.visible === false, `native login window ${action}`)
+      const click = await main.evaluate('window.__e2eWindowControlClick')
+      assert(click?.trusted, `Login ${action} was not activated by actual pointer input`)
+      nativeWindowControls.push({ action, ...snapshot.windows.mainPanel,
+        pageVisibility: await main.evaluate('document.visibilityState') })
+    } catch (error) {
+      error.details = { ...error.details, control, point, state: await main.evaluate(`({
+        click: window.__e2eWindowControlClick, visibility: document.visibilityState,
+        focused: document.hasFocus(), hit: document.elementFromPoint(${point.x}, ${point.y})?.outerHTML,
+      })`) }
+      throw error
+    }
     await callE2e(main, 'showWindow', 'main-panel')
-    await waitFor(() => main.evaluate("document.visibilityState === 'visible'"), { description: 'login window restores' })
+    await expectSnapshot(main, snapshot => snapshot.windows?.mainPanel?.visible === true
+      && snapshot.windows?.mainPanel?.minimized === false, 'native login window restores')
     assertEqual(await main.evaluate("document.querySelector('[data-e2e=login-api-base-url]').value"), context.stub.apiBaseUrl, 'Hiding the login window discarded the service address')
   }
   const fields = await main.evaluate(`['server', 'username', 'password'].map((name) => {
@@ -955,7 +979,7 @@ export async function loginAccessibilityScenario(context) {
   await main.click(REQUIRED_SELECTORS.loginSubmit)
   await main.waitForSelector(REQUIRED_SELECTORS.mainDashboard)
   await expectSnapshot(main, (snapshot) => snapshot.account?.userId === USERS.A.id, 'corrected credentials succeed')
-  return { associatedLabels: true, invalidInputsStayLocal: true, errorAnnounced: true, visibleFocus: true, windowControls: true, retrySucceeds: true }
+  return { associatedLabels: true, invalidInputsStayLocal: true, errorAnnounced: true, visibleFocus: true, windowControls: true, nativeWindowControls, retrySucceeds: true }
 }
 
 export async function conversationStartersScenario(context) {
