@@ -50,7 +50,19 @@ function launchProcess(command, args, options) {
 
 async function stopProcess(child) {
   if (!child || child.exitCode !== null || child.signalCode !== null || !child.pid) return
-  await execAsync('taskkill.exe', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true })
+  try {
+    await execAsync('taskkill.exe', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true })
+  } catch (error) {
+    // Browser.close may finish between the initial exit check and taskkill.
+    // Accept only a confirmed exit of this exact child, never a live process.
+    try {
+      await waitFor(() => child.exitCode !== null || child.signalCode !== null,
+        { description: 'owned process already exited during cleanup', timeoutMs: 1000 })
+      return
+    } catch {
+      throw error
+    }
+  }
   await waitFor(() => child.exitCode !== null || child.signalCode !== null, { description: 'owned process exit' })
 }
 
@@ -269,7 +281,29 @@ async function clickEnabled(page, selector) {
   // Raw CDP dispatches pointer input even to disabled buttons. Match a real
   // available user action; perform exactly one click and verify its outcome.
   await waitForEnabled(page, selector, `enabled action ${selector}`)
-  return page.click(selector)
+  const encoded = JSON.stringify(selector)
+  await page.evaluate(`document.querySelector(${encoded})?.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' })`)
+  let previousRect = null
+  const point = await waitFor(async () => {
+    const candidate = await page.evaluate(`(() => {
+      const button = document.querySelector(${encoded});
+      if (!button || button.disabled) return null;
+      const rect = button.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return null;
+      const x = rect.left + rect.width / 2, y = rect.top + rect.height / 2;
+      const hit = document.elementFromPoint(x, y);
+      if (!hit || !button.contains(hit)) return null;
+      return { x, y, width: rect.width, height: rect.height };
+    })()`)
+    const stable = candidate && previousRect && ['x', 'y', 'width', 'height']
+      .every((key) => Math.abs(candidate[key] - previousRect[key]) < 0.25)
+    previousRect = candidate
+    return stable ? candidate : null
+  }, { description: `stable visible pointer target ${selector}` })
+  await page.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: point.x, y: point.y, button: 'none', buttons: 0 })
+  await page.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: point.x, y: point.y, button: 'left', buttons: 1, clickCount: 1 })
+  await page.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: point.x, y: point.y, button: 'left', buttons: 0, clickCount: 1 })
+  return point
 }
 async function record(name, run) {
   console.log(`[real-backend] ${name} started`)
