@@ -94,8 +94,6 @@ export default function Account() {
     try {
       const preferences = await userApi.updatePreferences({
         pet_type: petType,
-        quick_chat_enabled: currentPreference?.quick_chat_enabled ?? true,
-        bubble_frequency: currentPreference?.bubble_frequency ?? 120,
       })
       if (!operation.isCurrent()) return
       updatePreferences(preferences)
