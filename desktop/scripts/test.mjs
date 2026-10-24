@@ -2866,6 +2866,93 @@ assert.equal(retainedScopeRegistry.authorize({
   currentContext: retainedScopeContext,
 }).ok, false)
 
+// Repeated lower-scope captures use the renderer's original relationship
+// capability. Do not authorize that source in the loop: doing so would touch
+// its LRU position and conceal a renewal-only eviction regression.
+for (const maxPerSender of [32, 2]) {
+  let repeatedRenewNow = 100
+  const repeatedRenewSender = { id: `repeated-renew-${maxPerSender}` }
+  const repeatedRenewRegistry = createOperationCapabilityRegistry({
+    authoritativeState: createAuthoritativeOperationContextState(),
+    now: () => repeatedRenewNow,
+    ttlMs: 30,
+    maxPerSender,
+    createId: () => `repeated-renew-${++nextCapabilityId}`,
+  })
+  repeatedRenewRegistry.registerRendererInstance({
+    sender: repeatedRenewSender,
+    senderRole: 'main-panel',
+    rendererInstanceNonce: 'repeated-renew-nonce',
+  })
+  const source = repeatedRenewRegistry.issue({
+    sender: repeatedRenewSender,
+    senderRole: 'main-panel',
+    rendererInstanceNonce: 'repeated-renew-nonce',
+    scope: 'relationship',
+    currentContext: authoritativeBase,
+  })
+  const renewOptions = {
+    sender: repeatedRenewSender,
+    senderRole: 'main-panel',
+    rendererInstanceNonce: 'repeated-renew-nonce',
+    capability: source,
+    requiredScope: 'pet',
+    currentContext: authoritativeBase,
+    expectedSemantic: { userId: 17, petType: 'pig', relationshipId: 29 },
+  }
+  for (let index = 0; index < 96; index += 1) {
+    repeatedRenewNow += 31
+    const requiredScope = index % 2 === 0 ? 'pet' : 'account'
+    const child = repeatedRenewRegistry.renew({ ...renewOptions, requiredScope })
+    assert.ok(child?.id, `lower-scope renewal ${index + 1} must retain its source at capacity ${maxPerSender}`)
+    assert.notEqual(child.id, source.id)
+    assert.ok(repeatedRenewRegistry.sizeForSender(repeatedRenewSender) <= maxPerSender)
+    assert.equal(repeatedRenewRegistry.authorize({ ...renewOptions, capability: child, requiredScope }).ok, true)
+    assert.equal(repeatedRenewRegistry.authorize({ ...renewOptions, capability: child, requiredScope: 'relationship' }).reason, 'capability-scope-mismatch')
+    for (const invalid of [
+      { sender: otherPetSender },
+      { senderRole: 'pet' },
+      { rendererInstanceNonce: 'stale-nonce' },
+      { currentContext: { ...authoritativeBase, userId: 18 }, expectedSemantic: { userId: 18, petType: 'pig' } },
+      { currentContext: { ...authoritativeBase, petType: 'dog' }, expectedSemantic: { userId: 17, petType: 'dog' } },
+      { expectedSemantic: { userId: 18, petType: 'pig' } },
+      { expectedSemantic: { userId: 17, petType: 'dog' } },
+    ]) assert.equal(repeatedRenewRegistry.renew({ ...renewOptions, ...invalid }), null)
+  }
+  assert.equal(repeatedRenewRegistry.sizeForSender(repeatedRenewSender), maxPerSender)
+  // Keeping the source renewable must not extend its authorization TTL or
+  // change its relationship scope as a side effect of issuing child scopes.
+  assert.equal(repeatedRenewRegistry.authorize({ ...renewOptions, requiredScope: 'relationship' }).reason, 'capability-expired')
+  assert.deepEqual(repeatedRenewRegistry.renew({ ...renewOptions, requiredScope: 'relationship' }), source)
+  assert.equal(repeatedRenewRegistry.authorize({ ...renewOptions, requiredScope: 'relationship' }).ok, true)
+}
+
+// A one-entry registry cannot retain both source and child; keep the existing
+// behavior that the returned, pinned child is usable and remains least-scope.
+const singleRenewSender = { id: 'single-renew' }
+const singleRenewRegistry = createOperationCapabilityRegistry({
+  authoritativeState: createAuthoritativeOperationContextState(),
+  maxPerSender: 1,
+  createId: () => `single-renew-${++nextCapabilityId}`,
+})
+const singleRenewSource = singleRenewRegistry.issue({
+  sender: singleRenewSender, senderRole: 'main-panel', scope: 'relationship', currentContext: authoritativeBase,
+})
+const singleRenewOptions = {
+  sender: singleRenewSender, senderRole: 'main-panel', requiredScope: 'pet', currentContext: authoritativeBase,
+  expectedSemantic: { userId: 17, petType: 'pig' },
+}
+const singleRenewChild = singleRenewRegistry.renew({ ...singleRenewOptions, capability: singleRenewSource })
+assert.ok(singleRenewChild?.id)
+assert.equal(singleRenewRegistry.sizeForSender(singleRenewSender), 1)
+assert.equal(singleRenewRegistry.authorize({ ...singleRenewOptions, capability: singleRenewSource }).reason, 'capability-not-found')
+assert.equal(singleRenewRegistry.authorize({ ...singleRenewOptions, capability: singleRenewChild }).ok, true)
+assert.equal(singleRenewRegistry.authorize({ ...singleRenewOptions, capability: singleRenewChild, requiredScope: 'relationship' }).reason, 'capability-scope-mismatch')
+assert.equal(singleRenewRegistry.issueTrusted({
+  sender: singleRenewSender, senderRole: 'main-panel', scope: 'relationship', currentContext: authoritativeBase,
+}), null)
+assert.deepEqual(singleRenewRegistry.renew({ ...singleRenewOptions, capability: singleRenewChild }), singleRenewChild)
+
 let lifecycleNow = 100
 const lifecycleSender = { id: 'renderer-lifecycle' }
 const lifecycleState = createAuthoritativeOperationContextState()
