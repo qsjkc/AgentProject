@@ -1,5 +1,6 @@
 import { assert, assertEqual, waitFor } from './assertions.mjs'
 import { USERS, createRelationship, createStubFixture } from './fixtures.mjs'
+import { getPetOutfitCatalog } from '../../src/shared/pet-outfits.js'
 import {
   REQUIRED_SELECTORS,
   callE2e,
@@ -16,7 +17,7 @@ const requestBody = (request) => {
   try { return JSON.parse(request.body) } catch { return {} }
 }
 
-async function selectPet(context, petType) {
+async function selectPet(context, petType, { requireNewAccountOnboarding = true } = {}) {
   await callE2e(context.pages.main, 'showWindow', 'main-panel')
   // The dashboard mounts before the login relationship capability is adopted.
   // Wait for that initial handoff (and any preceding switch) before asking the
@@ -43,9 +44,14 @@ async function selectPet(context, petType) {
   ), `${petType} selected and relationship hydrated`)
   await expectSnapshot(context.pages.pet, (snapshot) => (
     snapshot.account?.petType === petType
-    && snapshot.onboarding?.pet_type === petType
-    && snapshot.onboarding?.relationship_id === createRelationship(USERS.A, petType).id
+    && snapshot.relationship?.pet_type === petType
+    && snapshot.relationship?.user_id === USERS.A.id
+    && snapshot.relationship?.id === createRelationship(USERS.A, petType).id
     && snapshot.renderer?.[0]?.onboardingCurrent === true
+    && (requireNewAccountOnboarding
+      ? snapshot.onboarding?.pet_type === petType
+        && snapshot.onboarding?.relationship_id === createRelationship(USERS.A, petType).id
+      : snapshot.renderer?.[0]?.onboardingLoaded === true)
   ), `${petType} desktop onboarding context hydrated`)
 }
 
@@ -273,4 +279,82 @@ export async function petParityScenario(context) {
   }
   const chatReminderRefresh = await verifyChatReminderRefresh(context, 'dog')
   return { pets: results, petSwitchIsolation: true, actualToolbar: true, realOnboardingReminderFlow: true, chatReminderRefresh, localStubOnly: true }
+}
+
+export async function dressedPetScenario(context) {
+  assertEqual(new URL(context.stub.apiBaseUrl).hostname, '127.0.0.1', 'Wardrobe acceptance must use the isolated stub')
+  await ensureBaseBridge(context)
+  context.stub.fixture = createStubFixture()
+  // An established account exercises every unlocked slot. New-account unlocks
+  // and rewards are covered separately by the real backend acceptance.
+  const account = context.stub.fixture.accounts.get(USERS.A.id)
+  for (const [petType, relationship] of account.relationshipByPet) {
+    relationship.level = 5
+    relationship.intimacy_xp = 1000
+    relationship.outfit.unlocked_outfit_ids = getPetOutfitCatalog(petType).map((item) => item.id)
+  }
+  await resetToLoggedOut(context)
+  await loginAs(context, USERS.A)
+  const results = {}
+  for (const petType of ['pig', 'cat', 'dog']) {
+    await selectPet(context, petType, { requireNewAccountOnboarding: false })
+    for (const [slot, suffix] of [
+      ['neck', 'basic_scarf'], ['head', 'sleep_cap'], ['side', 'bell'],
+      ['head', 'star_hat'], ['side', 'work_badge'],
+    ]) {
+      await context.pages.main.click(`.outfit-slot-tab[data-slot="${slot}"]`)
+      const selector = `[data-item-id="${petType}_${suffix}"]`
+      await waitFor(() => context.pages.main.evaluate(`document.querySelector(${JSON.stringify(selector)})?.disabled === false`),
+        { description: `${petType}/${suffix} ready to equip` })
+      await context.pages.main.click(selector)
+      await waitFor(() => context.pages.main.evaluate(`(() => {
+        const option = document.querySelector(${JSON.stringify(selector)})
+        return option?.getAttribute('aria-pressed') === 'true'
+          && document.querySelector('.outfit-clear-button')?.disabled === false
+      })()`), { description: `${petType}/${suffix} save and reward settled` })
+    }
+    const key = 'scarf__star_hat__work_badge'
+    await hideMainPanel(context)
+    await callE2e(context.pages.pet, 'showWindow', 'pet')
+    const selector = `svg.pet-image[data-pet-type="${petType}"][data-outfit-key="${key}"]`
+    await context.pages.pet.waitForSelector(selector)
+    const frameSamples = new Set()
+    const sourceViews = new Set()
+    await waitFor(async () => {
+      const sample = await context.pages.pet.evaluate(`(() => {
+        const image = document.querySelector(${JSON.stringify(selector)})
+        return { index: image?.dataset.animationFrame, source: image?.querySelector('svg')?.getAttribute('viewBox') }
+      })()`)
+      if (sample.source) {
+        frameSamples.add(sample.index)
+        sourceViews.add(sample.source)
+      }
+      return sourceViews.size >= 3
+    }, { description: `${petType} dressed sprite is actually animating`, intervalMs: 80 })
+    const imageSize = await context.pages.pet.evaluate(`(async () => {
+      const element = document.querySelector(${JSON.stringify(selector)})
+      const image = new Image()
+      image.src = element.querySelector('image').getAttribute('href')
+      await image.decode()
+      return { width: image.naturalWidth, height: image.naturalHeight,
+        overlays: document.querySelectorAll('.pet-outfit-layer').length }
+    })()`)
+    assert(imageSize.width > 600 && imageSize.height > 600, 'Dressed animation image failed to load')
+    assertEqual(imageSize.overlays, 0, 'Accessory-only floating layers remain')
+    await context.pages.pet.screenshot(`${context.artifactPath}/${petType}-dressed.png`)
+    results[petType] = { key, decodedImage: imageSize, observedAnimationFrames: [...frameSamples], distinctPaintedSourceFrames: sourceViews.size }
+    await callE2e(context.pages.main, 'showWindow', 'main-panel')
+  }
+  for (const petType of ['pig', 'cat', 'dog']) {
+    await selectPet(context, petType, { requireNewAccountOnboarding: false })
+    await context.pages.pet.waitForSelector(`svg.pet-image[data-pet-type="${petType}"][data-outfit-key="scarf__star_hat__work_badge"]`)
+  }
+  await context.pages.main.click(REQUIRED_SELECTORS.logout)
+  await loginAs(context, USERS.B)
+  await expectSnapshot(context.pages.pet, (snapshot) => (
+    snapshot.account?.userId === USERS.B.id && snapshot.relationship?.user_id === USERS.B.id
+  ), 'account B relationship replaces dressed account A')
+  await waitFor(() => context.pages.pet.evaluate("document.querySelector('.pet-image')?.dataset.outfitKey === undefined"),
+    { description: 'account B does not inherit account A painted costume' })
+  return { pets: results, allFiveItemsEquipped: true, simultaneousSlots: true, petSwitchRestore: true, accountIsolation: true, localStubOnly: true }
 }

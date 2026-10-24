@@ -4,7 +4,6 @@ import { Cookie, Hand, Sparkles } from 'lucide-react'
 
 import './desktop.css'
 import { PetAnimator } from './components/PetAnimator'
-import { PetOutfitRenderer } from './components/PetOutfitRenderer'
 import {
   captureApiOperationContext,
   assertApiOperationContextCurrent,
@@ -3772,10 +3771,6 @@ function PetApp() {
                 cycleId={petAnimationState.milestoneId}
                 alt={t(language, 'desktopPetAlt', { pet: petLabel })}
                 onCycleComplete={handlePetAnimationCycleComplete}
-              />
-              <PetOutfitRenderer
-                petType={petType}
-                action={petAnimationState.action}
                 outfit={petRelationship?.pet_type === petType ? petRelationship.outfit : null}
                 previewItemId={
                   milestonePlayback?.status === PET_MILESTONE_PLAYBACK_STATUS.PLAYING

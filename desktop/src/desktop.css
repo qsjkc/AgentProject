@@ -136,22 +136,8 @@ select {
   background-repeat: no-repeat;
 }
 
-.pet-outfit-layer {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-}
-
-.pet-outfit-item,
 .outfit-sprite {
   display: block;
-  background-repeat: no-repeat;
-}
-
-.pet-outfit-item {
-  position: absolute;
-  pointer-events: none;
-  filter: drop-shadow(0 3px 4px rgba(15, 23, 42, 0.14));
 }
 
 .pet-care-toolbar {

@@ -115,6 +115,7 @@ export function PetOutfitPanel({
               <OutfitSprite
                 petType={petType}
                 itemId={item.id}
+                outfit={outfit}
                 className="outfit-option-preview"
               />
               <span className="outfit-option-copy">
