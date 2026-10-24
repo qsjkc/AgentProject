@@ -46,7 +46,10 @@ def main():
             headers['Content-Type'] = 'application/x-www-form-urlencoded' if form else 'application/json'
         req = urllib.request.Request(base + path, data=data, headers=headers, method=method)
         try:
-            response = urllib.request.urlopen(req, timeout=30)
+            # Non-streaming model replies may use the provider's 60-second
+            # read timeout before the API commits and returns the response.
+            timeout = 90 if path == '/api/v1/chat/message' else 30
+            response = urllib.request.urlopen(req, timeout=timeout)
         except urllib.error.HTTPError as error:
             response = error
         with response:
