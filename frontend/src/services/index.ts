@@ -33,9 +33,9 @@ export interface ChangePasswordRequest {
 }
 
 export interface PreferenceUpdateRequest {
-  pet_type: PetType
-  quick_chat_enabled: boolean
-  bubble_frequency: number
+  pet_type?: PetType
+  quick_chat_enabled?: boolean
+  bubble_frequency?: number
 }
 
 export const authApi = {
