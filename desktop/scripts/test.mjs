@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import './window-bounds.test.mjs'
 import './focus-session.test.mjs'
+import './focus-history.test.mjs'
 import './pet-species-parity.test.mjs'
 import './voice-auth.test.mjs'
 import './voice-rtc-loading.test.mjs'

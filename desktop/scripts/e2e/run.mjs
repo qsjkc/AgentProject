@@ -25,10 +25,11 @@ import {
 } from './cdp-client.mjs'
 import { FULL_SCENARIO_ORDER as BASE_SCENARIO_ORDER, REQUIRED_E2E_BRIDGE_API, REQUIRED_SELECTORS, SCENARIOS as BASE_SCENARIOS } from './p1k-scenarios.mjs'
 import { dressedPetScenario, petParityScenario } from './pet-parity-scenarios.mjs'
+import { focusHistoryScenario, prepareFocusHistoryFixture } from './focus-history-scenarios.mjs'
 import { startStubServer } from './stub-server.mjs'
 
-const SCENARIOS = Object.freeze({ ...BASE_SCENARIOS, 'pet-parity': petParityScenario, 'dressed-pets': dressedPetScenario })
-const FULL_SCENARIO_ORDER = Object.freeze([...BASE_SCENARIO_ORDER, 'pet-parity', 'dressed-pets'])
+const SCENARIOS = Object.freeze({ ...BASE_SCENARIOS, 'pet-parity': petParityScenario, 'dressed-pets': dressedPetScenario, 'focus-history': focusHistoryScenario })
+const FULL_SCENARIO_ORDER = Object.freeze([...BASE_SCENARIO_ORDER, 'pet-parity', 'dressed-pets', 'focus-history'])
 
 const execFileAsync = promisify(execFile)
 const E2E_TEMP_PREFIX = 'detachym-e2e-'
@@ -318,11 +319,15 @@ export async function run(options = parseArgs(process.argv.slice(2))) {
 
   try {
     stub = await startStubServer()
+    if (options.scenario === 'suite' || options.scenario === 'focus-history') {
+      report.focusHistoryFixture = await prepareFocusHistoryFixture({ userDataPath, apiBaseUrl: stub.apiBaseUrl })
+    }
     electron = startElectron({ userDataPath, stub, stdoutLines, stderrLines })
     report.electron = { pid: electron.pid, args: electron.args, executable: electronPath }
     const devTools = await waitForDevToolsActivePort(userDataPath, { timeoutMs: 25_000 })
     report.devTools = devTools
     context = createTargetContext(devTools.port, stub, artifactPath)
+    context.focusHistoryFixture = report.focusHistoryFixture
     await discoverInitialTargets(context)
     report.targets = [...context.targets].map(([entry, target]) => ({
       entry,

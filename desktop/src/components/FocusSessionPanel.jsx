@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Check, Pause, Play, RefreshCw, Sprout } from 'lucide-react'
 
 import { captureApiOperationContext } from '../shared/api'
 import { captureFocusSnapshot, formatFocusTime, getFocusSnapshotRemainingMs, isFocusSnapshotCurrent } from '../shared/focus-session'
+import { getFocusHistoryRefreshDelay, getFocusHistorySummary } from '../shared/focus-history'
 import './focus-session.css'
 
 export function FocusSessionPanel({ language, accountContext }) {
@@ -13,6 +14,7 @@ export function FocusSessionPanel({ language, accountContext }) {
   const [minutes, setMinutes] = useState(25)
   const [intention, setIntention] = useState('')
   const [now, setNow] = useState(() => performance.now())
+  const [calendarNow, setCalendarNow] = useState(() => Date.now())
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
@@ -36,6 +38,7 @@ export function FocusSessionPanel({ language, accountContext }) {
     setSnapshot(captured)
     setError('')
     setNow(receivedAt)
+    setCalendarNow(Date.now())
     return true
   }, [])
 
@@ -69,17 +72,27 @@ export function FocusSessionPanel({ language, accountContext }) {
     setBusy(false)
     const unsubscribe = window.desktopBridge?.onFocusSessionChanged?.(applySnapshot)
     void load()
-    const onVisible = () => { if (document.visibilityState === 'visible') void load() }
+    const onFocus = () => { setCalendarNow(Date.now()); void load() }
+    const onVisible = () => { if (document.visibilityState === 'visible') onFocus() }
     document.addEventListener('visibilitychange', onVisible)
+    window.addEventListener('focus', onFocus)
     return () => {
       mountedRef.current = false
       requestRef.current += 1
       unsubscribe?.()
       document.removeEventListener('visibilitychange', onVisible)
+      window.removeEventListener('focus', onFocus)
     }
   }, [applySnapshot, contextKey, load])
 
+  useEffect(() => {
+    const timer = window.setTimeout(() => setCalendarNow(Date.now()), getFocusHistoryRefreshDelay(Date.now()))
+    return () => window.clearTimeout(timer)
+  }, [calendarNow])
+
   const state = isFocusSnapshotCurrent(snapshot, accountContext) ? snapshot.state : null
+  const history = useMemo(() => getFocusHistorySummary(snapshot, accountContext, calendarNow), [snapshot, accountContext, calendarNow])
+  const historyDate = useMemo(() => new Intl.DateTimeFormat(zh ? 'zh-CN' : 'en', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }), [zh, calendarNow])
   const status = state?.status || 'idle'
   useEffect(() => {
     if (status !== 'running') return undefined
@@ -155,6 +168,20 @@ export function FocusSessionPanel({ language, accountContext }) {
         </>
       )}
       {active && <p className="focus-note">{zh ? '关闭面板仍会计时。重要提醒照常送达。' : 'The timer continues with this panel closed. Reminders stay on.'}</p>}
+      {state && <div className="focus-history" data-e2e="focus-history">
+        <h3>{zh ? '今天的小成果' : 'Today’s little wins'}</h3>
+        <p className="focus-history-summary" data-e2e="focus-history-summary">{zh ? <>完成 <strong data-e2e="focus-history-today-count">{history.todayCount}</strong> 段<span aria-hidden="true"> · </span><strong data-e2e="focus-history-today-minutes">{history.todayMinutes}</strong> 分钟</> : <><strong data-e2e="focus-history-today-count">{history.todayCount}</strong> completed<span aria-hidden="true"> · </span><strong data-e2e="focus-history-today-minutes">{history.todayMinutes}</strong> min</>}</p>
+        {history.recent.length ? <>
+          <p className="focus-history-label">{zh ? '最近完成 · 近 7 天' : 'Recently completed · Last 7 days'}</p>
+          <ol className="focus-history-list" data-e2e="focus-history-list">
+            {history.recent.map((entry) => <li key={entry.id} data-e2e-focus-history-id={entry.id}>
+              <span className="focus-history-intention">{entry.intention || (zh ? '安静专注的一小段' : 'A quiet little stretch')}</span>
+              <span className="focus-history-meta"><time dateTime={new Date(entry.completedAt).toISOString()}>{historyDate.format(entry.completedAt)}</time><span>{entry.durationMs / 60000} {zh ? '分钟' : 'min'}</span></span>
+            </li>)}
+          </ol>
+        </> : <p className="focus-history-empty" data-e2e="focus-history-empty">{zh ? '每一小段都算数，完成后会记在这里。' : 'Every little stretch counts. Finished sessions will appear here.'}</p>}
+        <p className="focus-history-note">{zh ? '仅保存在这台设备，按账号和宠物分别记录。' : 'Saved only on this device, separately for each account and pet.'}</p>
+      </div>}
       {error && <div className="focus-error" role="alert"><span>{error}</span><button type="button" onClick={() => void load()} disabled={loading || busy} aria-label={zh ? '重新读取专注状态' : 'Reload focus status'}><RefreshCw size={14} aria-hidden="true" /></button></div>}
     </section>
   )
