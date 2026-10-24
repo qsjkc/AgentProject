@@ -292,6 +292,36 @@ export async function dressedPetScenario(context) {
   }
 }
 
+async function setDressedMotionPolicy(page, value) {
+  // matches changes before the MediaQueryList change event is necessarily
+  // delivered. A coincidental frame zero does not acknowledge that event.
+  await page.evaluate(`(() => {
+    const media = matchMedia('(prefers-reduced-motion: reduce)')
+    const state = { media, acknowledged: false }
+    state.listener = () => {
+      if (media.matches === ${value === 'reduce'}) state.acknowledged = true
+    }
+    window.__dressedMotionPolicy = state
+    media.addEventListener('change', state.listener)
+    state.listener()
+  })()`)
+  try {
+    await page.send('Emulation.setEmulatedMedia', {
+      features: [{ name: 'prefers-reduced-motion', value }],
+    })
+    await waitFor(() => page.evaluate('window.__dressedMotionPolicy?.acknowledged'),
+      { description: `dressed motion policy ${value} event delivered` })
+    // Allow the playback listener's React update to commit before sampling.
+    await page.evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))')
+  } finally {
+    await page.evaluate(`(() => {
+      const state = window.__dressedMotionPolicy
+      state?.media.removeEventListener('change', state.listener)
+      delete window.__dressedMotionPolicy
+    })()`)
+  }
+}
+
 async function verifyDressedPets(context) {
   context.stub.fixture = createStubFixture()
   // An established account exercises every unlocked slot. New-account unlocks
@@ -327,23 +357,32 @@ async function verifyDressedPets(context) {
     await callE2e(context.pages.pet, 'showWindow', 'pet')
     const selector = `svg.pet-image[data-pet-type="${petType}"][data-outfit-key="${key}"]`
     await context.pages.pet.waitForSelector(selector)
+    await expectSnapshot(context.pages.pet, (snapshot) => (
+      snapshot.renderer?.[0]?.animation === 'idle' && snapshot.renderer[0].animationLocked === false
+        && snapshot.renderer[0].visibility === 'visible'
+    ), `${petType} wardrobe celebration settles before motion sampling`)
     // Exercise both supported policies explicitly. A CI host may request
     // reduced motion by default, in which case a static pet is correct.
-    await context.pages.pet.send('Emulation.setEmulatedMedia', {
-      features: [{ name: 'prefers-reduced-motion', value: 'reduce' }],
-    })
+    await setDressedMotionPolicy(context.pages.pet, 'reduce')
     await waitFor(() => context.pages.pet.evaluate("matchMedia('(prefers-reduced-motion: reduce)').matches && document.querySelector('.pet-image')?.dataset.animationFrame === '0'"),
       { description: `${petType} dressed sprite respects reduced motion` })
-    const staticChanges = await context.pages.pet.evaluate(`new Promise(resolve => {
-      let changes = 0
-      const observer = new MutationObserver(() => { changes += 1 })
-      observer.observe(document.querySelector(${JSON.stringify(selector)}), { attributes: true, attributeFilter: ['data-animation-frame'] })
-      setTimeout(() => { observer.disconnect(); resolve(changes) }, 750)
+    const staticSample = await context.pages.pet.evaluate(`new Promise(resolve => {
+      const image = document.querySelector(${JSON.stringify(selector)})
+      const changes = []
+      const observer = new MutationObserver(records => {
+        for (const record of records) changes.push({ before: record.oldValue, after: image.dataset.animationFrame })
+      })
+      observer.observe(image, { attributes: true, attributeFilter: ['data-animation-frame'], attributeOldValue: true })
+      setTimeout(() => {
+        observer.disconnect()
+        resolve({ changes, frame: image.dataset.animationFrame,
+          reducedMotion: matchMedia('(prefers-reduced-motion: reduce)').matches,
+          visible: document.visibilityState, idle: Boolean(document.querySelector('.pet-action-idle')) })
+      }, 750)
     })`)
-    assertEqual(staticChanges, 0, `${petType} dressed sprite advances despite reduced motion`)
-    await context.pages.pet.send('Emulation.setEmulatedMedia', {
-      features: [{ name: 'prefers-reduced-motion', value: 'no-preference' }],
-    })
+    assert(staticSample.changes.length === 0 && staticSample.frame === '0' && staticSample.reducedMotion,
+      `${petType} dressed sprite advances despite reduced motion`, staticSample)
+    await setDressedMotionPolicy(context.pages.pet, 'no-preference')
     await waitFor(() => context.pages.pet.evaluate("!matchMedia('(prefers-reduced-motion: reduce)').matches && document.visibilityState === 'visible'"),
       { description: `${petType} visible with normal motion enabled` })
     const frameSamples = new Set()
