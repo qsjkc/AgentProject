@@ -1,11 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { getPetAnimation } from '../shared/pet-animation-config'
+import { getDressedPetAnimation } from '../shared/pet-dressed-assets'
 import { isLoopingPetAnimation } from '../shared/pet-animation-state'
 import { createPetAnimationPlayback } from '../shared/pet-animation-playback'
+import { getAtlasFrameLayout, getSpriteFrameOffset, getSpriteFramePosition } from '../shared/pet-sprite-animation'
 
-export function PetAnimator({ petType, action, cycleId = null, alt, onCycleComplete }) {
-  const animation = useMemo(() => getPetAnimation(petType, action), [petType, action])
+export function PetAnimator({ petType, action, outfit = null, previewItemId = null, cycleId = null, alt, onCycleComplete }) {
+  const animation = useMemo(() => (
+    getDressedPetAnimation(petType, action, outfit, previewItemId) || getPetAnimation(petType, action)
+  ), [petType, action, outfit, previewItemId])
   const { frameCount, frameDuration } = animation
   const [index, setIndex] = useState(0)
   const onCompleteRef = useRef(onCycleComplete)
@@ -32,15 +36,27 @@ export function PetAnimator({ petType, action, cycleId = null, alt, onCycleCompl
     }
   }, [action, cycleId, petType, frameCount, frameDuration])
 
+  if (animation.type === 'atlas') {
+    const { rect, x, y, width, height } = getAtlasFrameLayout(animation, index)
+    return (
+      <svg className="pet-image pet-sprite" viewBox="0 0 126 126"
+        data-outfit-key={animation.outfitKey || undefined}
+        data-pet-type={petType} data-animation-frame={index} role="img" aria-label={alt}>
+        <svg x={x} y={y} width={width} height={height}
+          viewBox={`${rect.x} ${rect.y} ${rect.width} ${rect.height}`} overflow="hidden">
+          <image href={animation.src} width={animation.geometry.width} height={animation.geometry.height} />
+        </svg>
+      </svg>
+    )
+  }
+
   if (animation.type === 'sprite') {
-    const column = index % animation.columns
-    const row = Math.floor(index / animation.columns)
-    const x = animation.columns > 1 ? (column / (animation.columns - 1)) * 100 : 0
-    const y = animation.rows > 1 ? (row / (animation.rows - 1)) * 100 : 0
+    const { x, y } = getSpriteFramePosition(animation, index)
 
     return (
       <div
         className="pet-image pet-sprite"
+        data-pet-type={petType}
         data-animation-frame={index}
         role="img"
         aria-label={alt}
@@ -48,6 +64,7 @@ export function PetAnimator({ petType, action, cycleId = null, alt, onCycleCompl
           backgroundImage: `url(${animation.src})`,
           backgroundPosition: `${x}% ${y}%`,
           backgroundSize: `${animation.columns * 100}% ${animation.rows * 100}%`,
+          transform: `translateY(${getSpriteFrameOffset(animation, index)}px)`,
         }}
       />
     )
@@ -56,6 +73,7 @@ export function PetAnimator({ petType, action, cycleId = null, alt, onCycleCompl
   return (
     <img
       className="pet-image"
+      data-pet-type={petType}
       data-animation-frame={index}
       src={animation.frames[index] || animation.frames[0]}
       alt={alt}

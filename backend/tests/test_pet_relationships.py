@@ -737,42 +737,199 @@ async def test_activity_backfill_is_idempotent(client: AsyncClient):
 
 
 @pytest.mark.asyncio
-async def test_outfit_api_enforces_slot_and_unlock_level(client: AsyncClient):
-    headers = await register_and_login(client, "outfit-api", "outfit-api@example.com")
+@pytest.mark.parametrize("pet_type", ["pig", "cat", "dog"])
+async def test_outfit_api_enforces_slot_and_unlock_level(client: AsyncClient, pet_type):
+    headers = await register_and_login(client, f"outfit-{pet_type}", f"outfit-{pet_type}@example.com")
+    outfit_url = f"/api/v1/pets/{pet_type}/relationship/outfit"
 
     equipped = await client.put(
-        "/api/v1/pets/pig/relationship/outfit",
+        outfit_url,
         headers=headers,
-        json={"slot": "neck", "item_id": "pig_basic_scarf"},
+        json={"slot": "neck", "item_id": f"{pet_type}_basic_scarf"},
     )
     assert equipped.status_code == 200
     assert equipped.json()["outfit"]["equipped_outfits"] == {
-        "neck": "pig_basic_scarf",
+        "neck": f"{pet_type}_basic_scarf",
     }
 
     locked = await client.put(
-        "/api/v1/pets/pig/relationship/outfit",
+        outfit_url,
         headers=headers,
-        json={"slot": "head", "item_id": "pig_sleep_cap"},
+        json={"slot": "head", "item_id": f"{pet_type}_sleep_cap"},
     )
     assert locked.status_code == 409
     assert locked.json()["detail"] == "outfit_locked"
 
     wrong_slot = await client.put(
-        "/api/v1/pets/pig/relationship/outfit",
+        outfit_url,
         headers=headers,
-        json={"slot": "head", "item_id": "pig_basic_scarf"},
+        json={"slot": "head", "item_id": f"{pet_type}_basic_scarf"},
     )
     assert wrong_slot.status_code == 422
     assert wrong_slot.json()["detail"] == "outfit_slot_mismatch"
 
     cleared = await client.put(
-        "/api/v1/pets/pig/relationship/outfit",
+        outfit_url,
         headers=headers,
         json={"slot": "neck", "item_id": None},
     )
     assert cleared.status_code == 200
     assert cleared.json()["outfit"]["equipped_outfits"] == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("pet_type,other_pet", [("cat", "dog"), ("dog", "cat")])
+async def test_cat_and_dog_rewards_unlock_scoped_outfits_and_milestones(
+    client: AsyncClient, pet_type, other_pet,
+):
+    from sqlalchemy import select
+    from app.models.database import PetRelationship, async_session_maker
+
+    headers = await register_and_login(client, f"growth-{pet_type}", f"growth-{pet_type}@example.com")
+    pet_url = f"/api/v1/pets/{pet_type}"
+    other_url = f"/api/v1/pets/{other_pet}"
+    initial = await client.get(f"{pet_url}/relationship", headers=headers)
+    assert initial.status_code == 200
+    user_id = initial.json()["user_id"]
+    assert initial.json()["outfit"]["unlocked_outfit_ids"] == [f"{pet_type}_basic_scarf"]
+    other_initial = await client.get(f"{other_url}/relationship", headers=headers)
+    assert other_initial.status_code == 200
+    assert other_initial.json()["id"] != initial.json()["id"]
+
+    unlocked = [f"{pet_type}_basic_scarf"]
+    first_day = datetime(2026, 10, 5, 1, 0, 0)
+    for level, xp, suffix, slot in (
+        (2, 100, "sleep_cap", "head"),
+        (3, 260, "bell", "side"),
+        (4, 520, "work_badge", "side"),
+        (5, 900, "star_hat", "head"),
+    ):
+        event_time = first_day + timedelta(days=level - 2)
+        async with async_session_maker() as session:
+            relationship = (await session.execute(select(PetRelationship).where(
+                PetRelationship.id == initial.json()["id"],
+            ))).scalar_one()
+            # Start immediately before a threshold; only the real reward path
+            # may unlock the next outfit and create its milestone.
+            relationship.intimacy_xp = xp - 1
+            relationship.level, relationship.relationship_stage = get_relationship_level(xp - 1)
+            await session.commit()
+            awarded = await award_pet_relationship(
+                session, user_id=user_id, pet_type=pet_type, action="poke",
+                idempotency_key=f"{pet_type}-growth-{level}", now=event_time,
+            )
+            assert awarded["reason"] == "awarded"
+            assert awarded["awarded_xp"] == 1
+            assert awarded["level_up"] is True
+            assert awarded["relationship"]["level"] == level
+            unlocked.append(f"{pet_type}_{suffix}")
+            assert awarded["relationship"]["outfit"]["unlocked_outfit_ids"] == unlocked
+
+            duplicate = await award_pet_relationship(
+                session, user_id=user_id, pet_type=pet_type, action="poke",
+                idempotency_key=f"{pet_type}-growth-{level}", now=event_time,
+            )
+            assert duplicate["reason"] == "duplicate"
+            daily = await get_pet_daily_summary(session, user_id=user_id, pet_type=pet_type, now=event_time)
+            other_daily = await get_pet_daily_summary(session, user_id=user_id, pet_type=other_pet, now=event_time)
+            assert (daily["interaction_count"], daily["xp_gained"]) == (1, 1)
+            assert (other_daily["interaction_count"], other_daily["xp_gained"]) == (0, 0)
+
+        wrong_outfit = await client.put(
+            f"{other_url}/relationship/outfit", headers=headers,
+            json={"slot": slot, "item_id": f"{pet_type}_{suffix}"},
+        )
+        assert wrong_outfit.status_code == 422
+        assert wrong_outfit.json()["detail"] == "unknown_outfit"
+        equipped = await client.put(
+            f"{pet_url}/relationship/outfit", headers=headers,
+            json={"slot": slot, "item_id": f"{pet_type}_{suffix}"},
+        )
+        assert equipped.status_code == 200
+        assert equipped.json()["outfit"]["equipped_outfits"][slot] == f"{pet_type}_{suffix}"
+
+        token = str(uuid4())
+        claimed = await client.post(
+            f"{pet_url}/relationship/milestones/claim", headers=headers,
+            json={"claim_token": token},
+        )
+        assert claimed.status_code == 200
+        milestone = claimed.json()
+        assert (milestone["pet_type"], milestone["level"], milestone["reward_outfit_id"]) == (
+            pet_type, level, f"{pet_type}_{suffix}",
+        )
+        wrong_ack = await client.post(
+            f"{other_url}/relationship/milestones/{milestone['id']}/ack", headers=headers,
+            json={"claim_token": token},
+        )
+        assert wrong_ack.status_code == 404
+        ack_url = f"{pet_url}/relationship/milestones/{milestone['id']}/ack"
+        ack = await client.post(ack_url, headers=headers, json={"claim_token": token})
+        assert ack.status_code == 200
+        assert ack.json()["acknowledged_at"] is not None
+        repeated_ack = await client.post(ack_url, headers=headers, json={"claim_token": token})
+        assert repeated_ack.status_code == 200
+        assert repeated_ack.json() == ack.json()
+        empty_claim = await client.post(
+            f"{pet_url}/relationship/milestones/claim", headers=headers,
+            json={"claim_token": str(uuid4())},
+        )
+        assert empty_claim.status_code == 204
+
+    async with async_session_maker() as session:
+        next_week = first_day + timedelta(days=7)
+        weekly = await get_pet_weekly_summary(session, user_id=user_id, pet_type=pet_type, now=next_week)
+        other_weekly = await get_pet_weekly_summary(session, user_id=user_id, pet_type=other_pet, now=next_week)
+        assert (weekly["active_days"], weekly["interaction_count"], weekly["xp_gained"]) == (4, 4, 4)
+        assert (other_weekly["active_days"], other_weekly["interaction_count"], other_weekly["xp_gained"]) == (0, 0, 0)
+
+    other_final = await client.get(f"{other_url}/relationship", headers=headers)
+    assert other_final.json()["intimacy_xp"] == 0
+    assert other_final.json()["outfit"] == {
+        "unlocked_outfit_ids": [f"{other_pet}_basic_scarf"], "equipped_outfits": {},
+    }
+    other_claim = await client.post(
+        f"{other_url}/relationship/milestones/claim", headers=headers,
+        json={"claim_token": str(uuid4())},
+    )
+    assert other_claim.status_code == 204
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("pet_type", ["cat", "dog"])
+async def test_existing_cat_and_dog_relationships_unlock_without_historical_milestones(
+    client: AsyncClient, pet_type,
+):
+    from sqlalchemy import select
+    from app.models.database import PetRelationship, async_session_maker
+
+    headers = await register_and_login(client, f"legacy-{pet_type}", f"legacy-{pet_type}@example.com")
+    pet_url = f"/api/v1/pets/{pet_type}/relationship"
+    initial = await client.get(pet_url, headers=headers)
+    assert initial.status_code == 200
+    async with async_session_maker() as session:
+        relationship = (await session.execute(select(PetRelationship).where(
+            PetRelationship.id == initial.json()["id"],
+        ))).scalar_one()
+        relationship.intimacy_xp = 300
+        relationship.level = 3
+        relationship.relationship_stage = "clingy"
+        relationship.unlocked_outfits = []
+        relationship.equipped_outfits = {}
+        await session.commit()
+
+    refreshed = await client.get(pet_url, headers=headers)
+    assert refreshed.status_code == 200
+    assert refreshed.json()["id"] == initial.json()["id"]
+    assert (refreshed.json()["intimacy_xp"], refreshed.json()["level"]) == (300, 3)
+    assert refreshed.json()["outfit"] == {
+        "unlocked_outfit_ids": [f"{pet_type}_basic_scarf", f"{pet_type}_sleep_cap", f"{pet_type}_bell"],
+        "equipped_outfits": {},
+    }
+    claimed = await client.post(
+        f"{pet_url}/milestones/claim", headers=headers, json={"claim_token": str(uuid4())},
+    )
+    assert claimed.status_code == 204
 
 
 @pytest.mark.asyncio

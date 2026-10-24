@@ -48,8 +48,14 @@ const PET_OUTFIT_CATALOG = {
       },
     },
   ],
-  cat: [],
-  dog: [],
+}
+
+// Each companion owns its unlocks and equipped IDs while sharing the same wardrobe.
+for (const petType of ['cat', 'dog']) {
+  PET_OUTFIT_CATALOG[petType] = PET_OUTFIT_CATALOG.pig.map((item) => ({
+    ...item,
+    id: item.id.replace('pig_', `${petType}_`),
+  }))
 }
 
 const SLOT_LABELS = {

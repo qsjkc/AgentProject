@@ -166,7 +166,8 @@ test('hidden account and pet clocks retain their elapsed anchors without cross-a
   h.controller.setContext({ ...returned, petType: 'cat' })
   h.adjustWall(-120 * 60000)
   h.advance(20 * 60000)
-  assert.equal(h.controller.current().state, null)
+  assert.equal(h.controller.current().state.status, 'idle')
+  assert.equal(h.controller.current().state.intention, '')
   assert.equal(h.controller.setContext(returned).state.status, 'completed')
   assert.equal(h.completed.length, 0)
 })
@@ -304,10 +305,10 @@ test('account switching hides the previous intention and does not notify the wro
   assert.equal(h.completed.length, 0)
 })
 
-test('logout and switching pets clear active timers and reject mutations', () => {
+test('logout and unsupported pets clear active timers and reject mutations', () => {
   const h = harness()
   h.update('start', { minutes: 25 })
-  for (const context of [{ ...accountA, hasSession: false }, { ...accountA, petType: 'cat' }]) {
+  for (const context of [{ ...accountA, hasSession: false }, { ...accountA, petType: 'rabbit' }]) {
     h.controller.setContext(context)
     assert.equal(h.controller.current().state, null)
     assert.equal(h.timers.size, 0)
@@ -377,3 +378,24 @@ test('countdown rounds partial seconds up, stays bounded and suppresses stale ac
   assert.equal(getFocusRemainingMs(started.state, h.now() - 60000), 900000)
   assert.equal(getFocusRemainingMs(started.state, h.now() + 1000000), 0)
 })
+
+for (const petType of ['cat', 'dog']) {
+  test(`${petType} focus sessions survive pet switches without exposing another pet session`, () => {
+    const h = harness()
+    h.update('start', { minutes: 25, intention: 'Pig only' })
+    const pigSnapshot = h.controller.current()
+    const petContext = { ...accountA, petType }
+    h.controller.setContext(petContext)
+    assert.equal(h.controller.current().state.status, 'idle')
+    assert.equal(isFocusSnapshotCurrent(pigSnapshot, petContext), false)
+    assert.equal(h.update('start', { minutes: 15, intention: `${petType} only` }).ok, true)
+    const petSnapshot = h.controller.current()
+    assert.equal(isFocusSnapshotCurrent(petSnapshot, petContext), true)
+    assert.equal(isFocusSnapshotCurrent(petSnapshot, accountA), false)
+    h.controller.setContext(accountA)
+    assert.equal(h.controller.current().state.intention, 'Pig only')
+    h.controller.setContext(petContext)
+    assert.equal(h.controller.current().state.intention, `${petType} only`)
+    assert.notEqual(createFocusAccountKey(petContext), createFocusAccountKey(accountA))
+  })
+}

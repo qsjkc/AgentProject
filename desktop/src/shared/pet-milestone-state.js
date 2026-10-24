@@ -1,3 +1,5 @@
+const PET_TYPES = ['cat', 'dog', 'pig']
+
 export const PET_MILESTONE_PLAYBACK_STATUS = {
   CLAIM: 'claim',
   PLAYING: 'playing',
@@ -23,7 +25,7 @@ export function normalizePetRelationshipMilestone(value, fallbackPetType = 'pig'
   const petType = value.pet_type || fallbackPetType
   if (
     !id
-    || petType !== 'pig'
+    || !PET_TYPES.includes(petType)
     || !Number.isInteger(level)
     || level < 2
     || level > 5
@@ -76,11 +78,12 @@ export function createPetMilestonePlaybackState({
   const normalizedClaimToken = String(claimToken || normalizedMilestone?.claim_token || '').trim()
   const normalizedRevision = revision
   if (
-    petType !== 'pig'
+    !PET_TYPES.includes(petType)
     || !UUID_PATTERN.test(normalizedClaimToken)
     || !PLAYBACK_STATUSES.has(status)
     || !Number.isInteger(normalizedRevision)
     || normalizedRevision < 0
+    || (milestone !== null && milestone !== undefined && !normalizedMilestone)
   ) {
     return null
   }
@@ -92,7 +95,7 @@ export function createPetMilestonePlaybackState({
   }
   if (
     normalizedMilestone
-    && normalizedMilestone.claim_token !== normalizedClaimToken
+    && (normalizedMilestone.claim_token !== normalizedClaimToken || normalizedMilestone.pet_type !== petType)
   ) {
     return null
   }
@@ -142,7 +145,7 @@ export function isPetMilestonePlaybackContextCurrent({
 }) {
   return Boolean(
     expectedEpoch === currentEpoch
-    && petType === 'pig'
+    && PET_TYPES.includes(petType)
     && hasSession
   )
 }
@@ -175,7 +178,7 @@ export function isPetMilestoneClaimSafe({
   relationship,
 }) {
   return Boolean(
-    petType === 'pig'
+    PET_TYPES.includes(petType)
     && hasSession
     && visibilityState === 'visible'
     && voicePhase === 'idle'
@@ -185,7 +188,7 @@ export function isPetMilestoneClaimSafe({
     && !transientBubble
     && animationState?.action === 'idle'
     && !animationState?.locked
-    && relationship?.pet_type === 'pig'
+    && relationship?.pet_type === petType
   )
 }
 
@@ -199,8 +202,8 @@ export function isPetMilestonePlaybackSafe(context) {
 
 export function isPetRelationshipReadyForMilestone(relationship, milestone) {
   return Boolean(
-    relationship?.pet_type === 'pig'
-    && milestone?.pet_type === 'pig'
+    PET_TYPES.includes(relationship?.pet_type)
+    && milestone?.pet_type === relationship.pet_type
     && Number.isInteger(Number(milestone.level))
     && Number(relationship.level) >= Number(milestone.level)
     && milestone.reward_outfit_id

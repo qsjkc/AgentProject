@@ -188,7 +188,7 @@ function PetRelationshipSummary({ language, petType, relationship, loading, sect
 }
 
 function PetDailySummaryPanel({ language, petType, summary, loading }) {
-  if (petType !== 'pig') {
+  if (!PET_OPTIONS.includes(petType)) {
     return null
   }
 
@@ -211,6 +211,8 @@ function PetDailySummaryPanel({ language, petType, summary, loading }) {
   return (
     <section
       className="daily-summary-panel"
+      data-e2e="pet-daily-summary"
+      data-pet-type={petType}
       aria-busy={loading}
       aria-label={language === 'zh-CN' ? '今日相处' : 'Today together'}
     >
@@ -591,7 +593,7 @@ function CompanionSettingsPanel({
   const [now, setNow] = useState(() => new Date())
 
   useEffect(() => {
-    if (petType !== 'pig') {
+    if (!PET_OPTIONS.includes(petType)) {
       return undefined
     }
     setNow(new Date())
@@ -599,7 +601,7 @@ function CompanionSettingsPanel({
     return () => window.clearInterval(timer)
   }, [petType])
 
-  if (petType !== 'pig') {
+  if (!PET_OPTIONS.includes(petType)) {
     return null
   }
 
@@ -613,7 +615,7 @@ function CompanionSettingsPanel({
   const title = language === 'zh-CN' ? '主动陪伴' : 'Proactive Companion'
 
   return (
-    <section className="companion-panel" aria-labelledby="companion-panel-title">
+    <section className="companion-panel" data-pet-type={petType} aria-labelledby="companion-panel-title">
       <div className="companion-panel-header">
         <div id="companion-panel-title" className="sidebar-title">{title}</div>
         <span className="companion-status-dot" data-status={statusKey} aria-hidden="true" />
@@ -668,6 +670,7 @@ function MainPanelApp() {
   const [newChatVersion, setNewChatVersion] = useState(0)
   const [savingPet, setSavingPet] = useState(false)
   const [savingOutfit, setSavingOutfit] = useState(false)
+  const [reminderSaveContext, setReminderSaveContext] = useState(null)
   const [savingVoiceSettings, setSavingVoiceSettings] = useState(false)
   const [savingCompanionSettings, setSavingCompanionSettings] = useState(false)
   const [apiBaseUrl, setApiBaseUrlState] = useState('')
@@ -762,9 +765,11 @@ function MainPanelApp() {
     && readyRelationshipContext.petType === currentPetType
     && isSessionSnapshotCurrent(readyRelationshipContext.session, activeSessionSnapshotRef.current)
   )
+  const petSelectionPending = savingPet || petRelationshipLoading
+    || (!petDataReady && !petRelationshipError)
 
   useEffect(() => {
-    if (!pendingFocusNavigationRef.current || !authenticated || effectiveTab !== 'chat' || currentPetType !== 'pig') return undefined
+    if (!pendingFocusNavigationRef.current || !authenticated || effectiveTab !== 'chat' || !PET_OPTIONS.includes(currentPetType)) return undefined
     const frame = window.requestAnimationFrame(() => {
       const target = document.querySelector('[data-e2e="focus-panel"]')
         || document.querySelector('[data-e2e="companion-sync-retry"]')
@@ -904,9 +909,10 @@ function MainPanelApp() {
       return null
     }
     try {
+      const context = getExpectedOnboardingAccountContext()
       const state = await window.desktopBridge?.getPetOnboardingState?.(
-        'pig',
-        getExpectedOnboardingAccountContext(),
+        context.petType,
+        context,
       )
       return commitPetOnboardingResponse(state, expectedContextKey)
     } catch (error) {
@@ -934,9 +940,10 @@ function MainPanelApp() {
     const expectedContextKey = petOnboardingContextKey
     const refreshStateForContext = async () => {
       try {
+        const context = getExpectedOnboardingAccountContext()
         const state = await window.desktopBridge?.getPetOnboardingState?.(
-          'pig',
-          getExpectedOnboardingAccountContext(),
+          context.petType,
+          context,
         )
         if (active) {
           applyPetOnboardingResponse(state, expectedContextKey)
@@ -973,6 +980,27 @@ function MainPanelApp() {
       getCurrentMainPanelAccountContext(),
     )
   )
+
+  const reminderSavePending = Boolean(reminderSaveContext && isMainPanelAccountRequestCurrent(reminderSaveContext))
+  const reminderDraftBlocked = (savingOutfit || petOnboardingBusy || reminderSavePending) && parseReminder(prompt.trim()).ok
+
+  const syncReminderRelationship = async (requestContext) => {
+    const relationship = await getPetRelationship(requestContext.petType, requestContext)
+    if (!isMainPanelAccountRequestCurrent(requestContext)) return null
+    if (
+      Number(relationship?.user_id) !== Number(requestContext.userId)
+      || relationship?.pet_type !== requestContext.petType
+      || (requestContext.relationshipId != null && Number(relationship?.id) !== Number(requestContext.relationshipId))
+    ) throw new Error('relationship_context_mismatch')
+    const cached = await window.desktopBridge?.cachePetRelationship?.(relationship, requestContext)
+    if (!isMainPanelAccountRequestCurrent(requestContext)) return null
+    if (!cached?.ok || !cached.authoritative) {
+      throw new Error(cached?.reason || 'relationship_cache_rejected')
+    }
+    activeAuthoritativeContextRef.current = cached.authoritative
+    setPetRelationship(relationship)
+    return { ...requestContext, authoritative: cached.authoritative }
+  }
 
   const loadPetRelationship = async (petType) => {
     const requestId = relationshipRequestRef.current + 1
@@ -1355,11 +1383,12 @@ function MainPanelApp() {
       relationshipObservationContextRef.current = petOnboardingContextKey
       const expectedContextKey = petOnboardingContextKeyRef.current
       try {
+        const context = getExpectedOnboardingAccountContext()
         const result = await window.desktopBridge?.recordPetOnboardingObservation?.(
-          'pig',
+          context.petType,
           PET_ONBOARDING_CAPABILITIES.RELATIONSHIP_VIEWED,
           {},
-          getExpectedOnboardingAccountContext(),
+          context,
         )
         if (result === undefined) {
           throw new Error('onboarding_bridge_unavailable')
@@ -1614,7 +1643,7 @@ function MainPanelApp() {
   ])
 
   const handleSend = async () => {
-    if (!prompt.trim() || loading || selectingSession) {
+    if (!prompt.trim() || loading || selectingSession || reminderDraftBlocked) {
       return
     }
 
@@ -1632,12 +1661,14 @@ function MainPanelApp() {
     if (parsedReminder.ok) {
       const reminderUserIdAtSend = user?.id
       const reminderPetTypeAtSend = currentPetType
-      const reminderRequestContext = {
+      let reminderRequestContext = {
         ...getCurrentMainPanelAccountContext(),
         relationshipId: petOnboardingContextRef.current.relationshipId,
         epoch: accountRequestEpochRef.current,
         session: activeSessionSnapshotRef.current,
       }
+      const pendingReminderRequest = reminderRequestContext
+      setReminderSaveContext(pendingReminderRequest)
       setPrompt('')
       setLoading(true)
       setStatusText(t(language, 'waitingResponse'))
@@ -1692,14 +1723,14 @@ function MainPanelApp() {
           window.dispatchEvent(new Event('detachym:reminder-series-changed'))
         }
         if (
-          reminderPetTypeAtSend === 'pig'
+          PET_OPTIONS.includes(reminderPetTypeAtSend)
           && petOnboardingContextRef.current.petType === reminderPetTypeAtSend
           && Number(petOnboardingContextRef.current.userId) === Number(reminderUserIdAtSend)
           && Number(reminder.user_id) === Number(reminderUserIdAtSend)
         ) {
           const expectedContextKey = petOnboardingContextKeyRef.current
           const onboardingResult = await window.desktopBridge?.recordPetOnboardingObservation?.(
-            'pig',
+            reminderPetTypeAtSend,
             PET_ONBOARDING_CAPABILITIES.REMINDER_CREATED,
             { reminderId: reminder.id },
             reminderRequestContext,
@@ -1721,23 +1752,17 @@ function MainPanelApp() {
             }
           }
         }
-        void getPetRelationship(reminderPetTypeAtSend, reminderRequestContext).then(async (nextRelationship) => {
-          if (
-            isMainPanelAccountRequestCurrent(reminderRequestContext)
-            &&
-            petOnboardingContextRef.current.petType === reminderPetTypeAtSend
-            && Number(petOnboardingContextRef.current.userId) === Number(reminderUserIdAtSend)
-            && Number(nextRelationship?.user_id) === Number(reminderUserIdAtSend)
-          ) {
-            await window.desktopBridge?.cachePetRelationship?.(nextRelationship, reminderRequestContext)
-          }
-        }).catch((error) => {
+        // Complete the relationship transition before releasing reminder and
+        // outfit controls. The notification must use the post-cache capability.
+        const refreshedContext = await syncReminderRelationship(reminderRequestContext).catch((error) => {
           void logDesktopDebug({
             event: 'main-panel-relationship-refresh-failed',
             source: 'reminder-created',
             reason: error instanceof Error ? error.message : String(error),
           })
+          return null
         })
+        if (refreshedContext) reminderRequestContext = refreshedContext
         if (!isMainPanelAccountRequestCurrent(reminderRequestContext)) {
           return
         }
@@ -1758,6 +1783,7 @@ function MainPanelApp() {
           setStatusText(formatError(error, t(language, 'messageDeliveryFailed')))
         }
       } finally {
+        setReminderSaveContext((current) => current === pendingReminderRequest ? null : current)
         if (isConversationCurrent()) {
           setLoading(false)
         }
@@ -1891,7 +1917,7 @@ function MainPanelApp() {
   }
 
   const handleCreateOnboardingReminder = async () => {
-    if (petOnboardingBusy || currentPetType !== 'pig') {
+    if (petOnboardingBusy || savingOutfit || reminderSavePending || !PET_OPTIONS.includes(currentPetType)) {
       return
     }
     setPetOnboardingBusy(true)
@@ -1904,7 +1930,7 @@ function MainPanelApp() {
     }
     try {
       const reminder = await createReminder(
-        createPetOnboardingSampleReminderPayload(language),
+        createPetOnboardingSampleReminderPayload(language, new Date(), onboardingRequestContext.petType),
         onboardingRequestContext,
       )
       if (
@@ -1912,13 +1938,13 @@ function MainPanelApp() {
         ||
         expectedContextKey !== petOnboardingContextKeyRef.current
         || Number(reminder.user_id) !== Number(petOnboardingContextRef.current.userId)
-        || petOnboardingContextRef.current.petType !== 'pig'
+        || petOnboardingContextRef.current.petType !== onboardingRequestContext.petType
       ) {
         throw new Error('onboarding_context_changed')
       }
       window.dispatchEvent(new Event('detachym:reminders-changed'))
       const result = await window.desktopBridge?.recordPetOnboardingObservation?.(
-        'pig',
+        onboardingRequestContext.petType,
         PET_ONBOARDING_CAPABILITIES.REMINDER_CREATED,
         { reminderId: reminder.id },
         onboardingRequestContext,
@@ -1938,7 +1964,7 @@ function MainPanelApp() {
             : 'The reminder was created, but the guide did not sync. Please do not create it again.',
         )
       }
-      const copy = getPetReminderCopy('pig').createdReminder(
+      const copy = getPetReminderCopy(onboardingRequestContext.petType).createdReminder(
         reminder.title,
         new Date(reminder.remind_at).toLocaleString(language === 'zh-CN' ? 'zh-CN' : 'en-US', {
           month: 'numeric',
@@ -1951,7 +1977,7 @@ function MainPanelApp() {
       )
       await window.desktopBridge?.notifyPetReminderEvent?.({
         type: 'created',
-        petType: 'pig',
+        petType: onboardingRequestContext.petType,
         title: reminder.title,
         message: copy,
         reminderId: reminder.id,
@@ -1962,22 +1988,20 @@ function MainPanelApp() {
       ) {
         return
       }
-      void getPetRelationship('pig', onboardingRequestContext).then(async (nextRelationship) => {
-        if (
-          isMainPanelAccountRequestCurrent(onboardingRequestContext)
-          && expectedContextKey === petOnboardingContextKeyRef.current
-          && Number(nextRelationship?.user_id) === Number(petOnboardingContextRef.current.userId)
-        ) {
-          setPetRelationship(nextRelationship)
-          await window.desktopBridge?.cachePetRelationship?.(nextRelationship, onboardingRequestContext)
-        }
-      }).catch((error) => {
+      // The cache write advances the relationship capability. Keep this action
+      // busy until it settles so a following outfit save cannot start with the
+      // capability that this refresh is about to replace.
+      await syncReminderRelationship(onboardingRequestContext).catch((error) => {
         void logDesktopDebug({
           event: 'main-panel-onboarding-relationship-refresh-failed',
           reason: error instanceof Error ? error.message : String(error),
         })
       })
-      void loadPetDailySummary('pig')
+      if (
+        !isMainPanelAccountRequestCurrent(onboardingRequestContext)
+        || expectedContextKey !== petOnboardingContextKeyRef.current
+      ) return
+      void loadPetDailySummary(onboardingRequestContext.petType)
       setStatusText(copy)
     } catch (error) {
       if (
@@ -2011,9 +2035,10 @@ function MainPanelApp() {
     setPetOnboardingError('')
     const expectedContextKey = petOnboardingContextKeyRef.current
     try {
+      const context = getExpectedOnboardingAccountContext()
       const result = await window.desktopBridge?.snoozePetOnboarding?.(
-        'pig',
-        getExpectedOnboardingAccountContext(),
+        context.petType,
+        context,
       )
       if (result === undefined || result?.ok === false) {
         if (result !== undefined) {
@@ -2044,9 +2069,10 @@ function MainPanelApp() {
     setPetOnboardingError('')
     const expectedContextKey = petOnboardingContextKeyRef.current
     try {
+      const context = getExpectedOnboardingAccountContext()
       const result = await window.desktopBridge?.dismissPetOnboarding?.(
-        'pig',
-        getExpectedOnboardingAccountContext(),
+        context.petType,
+        context,
       )
       if (result === undefined || result?.ok === false) {
         if (result !== undefined) {
@@ -2263,7 +2289,7 @@ function MainPanelApp() {
   }
 
   const handlePetSelect = async (nextPetType) => {
-    if (!user || savingPet || nextPetType === currentPetType) {
+    if (!user || petSelectionPending || nextPetType === currentPetType) {
       return
     }
 
@@ -2408,9 +2434,11 @@ function MainPanelApp() {
 
   const handleOutfitChange = async (slot, itemId) => {
     if (
-      currentPetType !== 'pig'
+      !PET_OPTIONS.includes(currentPetType)
       || !petRelationship
       || savingOutfit
+      || petOnboardingBusy
+      || reminderSavePending
     ) {
       return
     }
@@ -2520,8 +2548,8 @@ function MainPanelApp() {
     }
     const completionUserId = completionRequestContext.userId
     const completionPetType = completionRequestContext.petType
-    const isOnboardingCompletion = completionPetType === 'pig'
-      && petOnboardingContextRef.current.petType === 'pig'
+    const isOnboardingCompletion = PET_OPTIONS.includes(completionPetType)
+      && petOnboardingContextRef.current.petType === completionPetType
       && Number(petOnboardingContextRef.current.userId) === Number(completionUserId)
       && Number(completedReminder?.user_id) === Number(completionUserId)
       && isPetOnboardingReminderMatch(completedReminder?.id, petOnboardingState?.reminder_id)
@@ -2531,7 +2559,7 @@ function MainPanelApp() {
       const expectedContextKey = petOnboardingContextKeyRef.current
       try {
         const result = await window.desktopBridge?.recordPetOnboardingObservation?.(
-          'pig',
+          completionPetType,
           PET_ONBOARDING_CAPABILITIES.REMINDER_COMPLETED,
           { reminderId: completedReminder.id },
           completionRequestContext,
@@ -2905,7 +2933,7 @@ function MainPanelApp() {
               </button>
             </nav>
             <div className="main-header-shortcuts">
-              {currentPetType === 'pig' && (
+              {PET_OPTIONS.includes(currentPetType) && (
                 <button type="button" className="main-header-action main-focus-shortcut" data-e2e="open-focus" aria-controls="companion-focus" onClick={handleOpenFocus}>
                   <Sprout size={14} aria-hidden="true" />
                   {language === 'zh-CN' ? '陪我专注' : 'Focus together'}
@@ -2949,7 +2977,7 @@ function MainPanelApp() {
                 onSelect={(nextPetType) => {
                   void handlePetSelect(nextPetType)
                 }}
-                saving={savingPet}
+                saving={petSelectionPending}
               />
               {(!petDataReady || petRelationshipError) && (
                 <section className="main-companion-sync" aria-busy={petRelationshipLoading} aria-label={language === 'zh-CN' ? '桌宠同步' : 'Companion sync'}>
@@ -2977,7 +3005,7 @@ function MainPanelApp() {
                   language={language}
                   scene={petOnboardingScene}
                   relationship={petRelationship}
-                  busy={petOnboardingBusy}
+                  busy={petOnboardingBusy || savingOutfit || reminderSavePending}
                   error={petOnboardingError}
                   onCreateSampleReminder={() => {
                     void handleCreateOnboardingReminder()
@@ -3018,7 +3046,7 @@ function MainPanelApp() {
                 language={language}
                 petType={currentPetType}
                 relationship={petRelationship}
-                saving={savingOutfit}
+                saving={savingOutfit || petOnboardingBusy || reminderSavePending}
                 onChange={(slot, itemId) => {
                   void handleOutfitChange(slot, itemId)
                 }}
@@ -3162,7 +3190,7 @@ function MainPanelApp() {
                 />
                 {reminderDraftFeedback && <div id="main-reminder-draft-feedback" className="reminder-draft-feedback" role="alert" data-e2e="main-reminder-draft-error">{reminderDraftFeedback}</div>}
                 <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-                  <button type="button" className="button-primary" data-e2e="main-chat-send" onClick={handleSend} disabled={loading || selectingSession || !prompt.trim()}>
+                  <button type="button" className="button-primary" data-e2e="main-chat-send" onClick={handleSend} disabled={loading || selectingSession || reminderDraftBlocked || !prompt.trim()}>
                     {loading ? t(language, 'sending') : t(language, 'sendMessage')}
                   </button>
                 </div>

@@ -131,7 +131,7 @@ export function getPetWeeklyCompanionCopy(language, summary) {
   }
   const locale = language === 'zh-CN' ? 'zh-CN' : 'en'
   return {
-    id: `pig-weekly-review-${locale}-${summary.review_key}`,
+    id: `${summary.pet_type || 'pig'}-weekly-review-${locale}-${summary.review_key}`,
     text: getPetWeeklySummaryMessage(language, summary),
     weeklyReviewKey: summary.review_key,
   }

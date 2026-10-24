@@ -1,5 +1,6 @@
 const PET_ONBOARDING_VERSION = 1
 const PET_ONBOARDING_PET_TYPE = 'pig'
+const PET_ONBOARDING_PET_TYPES = ['cat', 'dog', 'pig']
 const PET_ONBOARDING_NEW_RELATIONSHIP_MS = 24 * 60 * 60 * 1000
 const PET_ONBOARDING_ENGAGEMENT_LIMIT_MS = 180 * 1000
 const PET_ONBOARDING_ENGAGEMENT_DELTA_LIMIT_MS = 5 * 1000
@@ -175,13 +176,13 @@ function isUuidV4(value) {
   return typeof value === 'string' && UUID_V4_PATTERN.test(value)
 }
 
-function createPetOnboardingKey(userId, relationshipId) {
+function createPetOnboardingKey(userId, relationshipId, petType = PET_ONBOARDING_PET_TYPE) {
   const normalizedUserId = normalizePositiveInteger(userId)
   const normalizedRelationshipId = normalizePositiveInteger(relationshipId)
-  if (normalizedUserId === null || normalizedRelationshipId === null) {
+  if (normalizedUserId === null || normalizedRelationshipId === null || !PET_ONBOARDING_PET_TYPES.includes(petType)) {
     return null
   }
-  return `${normalizedUserId}:${normalizedRelationshipId}:${PET_ONBOARDING_PET_TYPE}:v${PET_ONBOARDING_VERSION}`
+  return `${normalizedUserId}:${normalizedRelationshipId}:${petType}:v${PET_ONBOARDING_VERSION}`
 }
 
 function normalizePetOnboardingContext(value) {
@@ -204,8 +205,8 @@ function normalizePetOnboardingContext(value) {
   const hasSession = value.has_session ?? value.hasSession
   if (
     hasSession !== true
-    || petType !== PET_ONBOARDING_PET_TYPE
-    || relationshipPetType !== PET_ONBOARDING_PET_TYPE
+    || !PET_ONBOARDING_PET_TYPES.includes(petType)
+    || relationshipPetType !== petType
     || userId === null
     || relationshipId === null
     || relationshipUserId !== userId
@@ -217,8 +218,8 @@ function normalizePetOnboardingContext(value) {
     user_id: userId,
     relationship_id: relationshipId,
     relationship_user_id: relationshipUserId,
-    relationship_pet_type: PET_ONBOARDING_PET_TYPE,
-    pet_type: PET_ONBOARDING_PET_TYPE,
+    relationship_pet_type: petType,
+    pet_type: petType,
     relationship_level: normalizePositiveInteger(
       value.relationship_level ?? value.relationshipLevel ?? value.relationship?.level,
     ),
@@ -293,7 +294,7 @@ function normalizePetOnboardingState(value) {
   if (
     userId === null
     || relationshipId === null
-    || value.pet_type !== PET_ONBOARDING_PET_TYPE
+    || !PET_ONBOARDING_PET_TYPES.includes(value.pet_type)
     || engagedElapsedMs === null
     || revision === null
     || shownStepIds === null
@@ -394,7 +395,7 @@ function normalizePetOnboardingState(value) {
     version: PET_ONBOARDING_VERSION,
     user_id: userId,
     relationship_id: relationshipId,
-    pet_type: PET_ONBOARDING_PET_TYPE,
+    pet_type: value.pet_type,
     status,
     finish_reason: finishReason,
     engaged_elapsed_ms: Math.min(engagedElapsedMs, PET_ONBOARDING_ENGAGEMENT_LIMIT_MS),
@@ -420,7 +421,7 @@ function createPetOnboardingState(context, now = new Date()) {
     version: PET_ONBOARDING_VERSION,
     user_id: normalizedContext.user_id,
     relationship_id: normalizedContext.relationship_id,
-    pet_type: PET_ONBOARDING_PET_TYPE,
+    pet_type: normalizedContext.pet_type,
     status: PET_ONBOARDING_STATUS.ACTIVE,
     finish_reason: null,
     engaged_elapsed_ms: 0,
@@ -532,6 +533,7 @@ function readPetOnboardingEntry({ states, context, now = new Date(), createIfEli
   const key = createPetOnboardingKey(
     normalizedContext.user_id,
     normalizedContext.relationship_id,
+    normalizedContext.pet_type,
   )
   const validStateMap = isPlainObject(states)
   const stateMap = validStateMap ? { ...states } : {}
@@ -708,7 +710,8 @@ function claimPetOnboardingPresentation(
     return invalidStateResult(stateValue)
   }
   if (
-    petType !== PET_ONBOARDING_PET_TYPE
+    !PET_ONBOARDING_PET_TYPES.includes(petType)
+    || petType !== state.pet_type
     || !STEP_IDS.includes(stepId)
     || !isUuidV4(token)
   ) {
@@ -765,7 +768,8 @@ function ackPetOnboardingPresentation(
     return invalidStateResult(stateValue)
   }
   if (
-    petType !== PET_ONBOARDING_PET_TYPE
+    !PET_ONBOARDING_PET_TYPES.includes(petType)
+    || petType !== state.pet_type
     || !STEP_IDS.includes(stepId)
     || !isUuidV4(token)
   ) {
@@ -813,7 +817,8 @@ function releasePetOnboardingPresentation(
     return invalidStateResult(stateValue)
   }
   if (
-    petType !== PET_ONBOARDING_PET_TYPE
+    !PET_ONBOARDING_PET_TYPES.includes(petType)
+    || petType !== state.pet_type
     || !STEP_IDS.includes(stepId)
     || !isUuidV4(token)
   ) {

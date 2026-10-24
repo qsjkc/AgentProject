@@ -1,5 +1,7 @@
 import { getRelationshipStageLabel } from './pet-relationship.js'
 
+const PET_TYPES = ['cat', 'dog', 'pig']
+
 export const PET_ONBOARDING_VERSION = 1
 export const PET_ONBOARDING_TIMEOUT_COOLDOWN_MS = 30_000
 
@@ -99,7 +101,7 @@ export function normalizePetOnboardingStateResponse(value) {
   if (
     userId === null
     || relationshipId === null
-    || candidate.pet_type !== 'pig'
+    || !PET_TYPES.includes(candidate.pet_type)
     || !STATUS_IDS.includes(candidate.status)
     || engagedElapsedMs === null
     || revision === null
@@ -121,7 +123,7 @@ export function normalizePetOnboardingStateResponse(value) {
     version: PET_ONBOARDING_VERSION,
     user_id: userId,
     relationship_id: relationshipId,
-    pet_type: 'pig',
+    pet_type: candidate.pet_type,
     status: candidate.status,
     engaged_elapsed_ms: engagedElapsedMs,
     shown_step_ids: shownStepIds,
@@ -236,7 +238,7 @@ export function isPetOnboardingContextCurrent({
     && normalizedExpectedUserId === normalizedCurrentUserId
     && normalizedExpectedRelationshipId !== null
     && normalizedExpectedRelationshipId === normalizedCurrentRelationshipId
-    && petType === 'pig'
+    && PET_TYPES.includes(petType)
     && Boolean(hasSession)
   )
 }
@@ -269,10 +271,11 @@ export function isPetOnboardingSafe({
   const nowMs = now instanceof Date ? now.getTime() : new Date(now).getTime()
   const snoozedUntilMs = Date.parse(state?.snoozed_until || '')
   return Boolean(
-    petType === 'pig'
+    PET_TYPES.includes(petType)
     && hasSession
     && expectedUserId !== null
-    && relationship?.pet_type === 'pig'
+    && relationship?.pet_type === petType
+    && state?.pet_type === petType
     && relationshipId !== null
     && relationshipUserId === expectedUserId
     && state
@@ -327,13 +330,17 @@ export function getPetOnboardingEngagementDelta({
 
 export function getPetOnboardingCopy(stepId, language, relationship) {
   const isChinese = language === 'zh-CN'
+  const petType = relationship?.pet_type || 'pig'
+  const petName = isChinese
+    ? ({ cat: '小猫', dog: '小狗', pig: '小猪' }[petType] || '宠物')
+    : ({ cat: 'Cat', dog: 'Dog', pig: 'Pig' }[petType] || 'your pet')
   if (stepId === PET_ONBOARDING_STEPS.MEET_PET) {
     return {
       id: PET_ONBOARDING_STEPS.MEET_PET,
       title: isChinese ? '先认识一下' : 'Say hello first',
       body: isChinese
-        ? '摸摸小猪，或拖拽它换个位置。它会记得这次互动。'
-        : 'Give Pig a pat, or drag it somewhere new. It will remember the interaction.',
+        ? `摸摸${petName}，或拖拽它换个位置。它会记得这次互动。`
+        : `Give ${petName} a pat, or drag it somewhere new. It will remember the interaction.`,
       chip: isChinese ? '摸摸 / 拖拽' : 'Pat / drag',
       action: '',
     }

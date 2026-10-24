@@ -428,13 +428,14 @@ function getFocusSessionController() {
         if (isE2e || getStore().get('mute') || !Notification.isSupported()) return
         try {
           const zh = normalizeLanguage(getStore().get('language')) === 'zh-CN'
+          const petName = { pig: '小猪', cat: '猫咪', dog: '小狗' }[snapshot.petType] || '伙伴'
           const notification = new Notification({
             title: zh ? '这一小段，我们完成啦' : 'We finished this little stretch',
-            body: zh ? '小猪陪你一起歇一会儿。喝口水，伸个懒腰吧。' : 'Take a breath with your pig. Some water and a stretch?',
+            body: zh ? `${petName}陪你一起歇一会儿。喝口水，伸个懒腰吧。` : `Take a breath with your ${snapshot.petType}. Some water and a stretch?`,
           })
           notification.once('click', () => {
             const current = getFocusSessionController().current()
-            if (current.server === snapshot.server && current.userId === snapshot.userId && current.generation === snapshot.generation) openMainPanel()
+            if (current.server === snapshot.server && current.userId === snapshot.userId && current.petType === snapshot.petType && current.generation === snapshot.generation) openMainPanel()
           })
           notification.show()
         } catch (error) {
@@ -1009,7 +1010,7 @@ function getCachedPetRelationshipForRenderer(event, petType, expectedContext = n
 
 function getPetOnboardingContext() {
   const petState = getPetState()
-  const relationship = getCachedPetRelationship('pig')
+  const relationship = getCachedPetRelationship(petState.petType)
   const sessionSubject = getCurrentSessionSubject()
   return normalizePetOnboardingContext({
     has_session: (
@@ -1073,7 +1074,7 @@ function broadcastPetOnboardingState() {
 
 function isPetOnboardingPetTypeCurrent(petType) {
   const context = getPetOnboardingContext()
-  return petType === 'pig' && context?.pet_type === petType
+  return PET_TYPES.includes(petType) && context?.pet_type === petType
 }
 
 function getPetOnboardingStateForRenderer(event, petType, expectedContext) {
@@ -1115,6 +1116,7 @@ function mutatePetOnboardingState(mutator, senderRole) {
     const key = createPetOnboardingKey(
       loaded.context.user_id,
       loaded.context.relationship_id,
+      loaded.context.pet_type,
     )
     getStore().set('petOnboardingStates', {
       ...loaded.states,
@@ -1271,6 +1273,7 @@ function recordPetOnboardingEngagement(event, petType, deltaMs, expectedContext)
   const contextKey = createPetOnboardingKey(
     loaded.context.user_id,
     loaded.context.relationship_id,
+    loaded.context.pet_type,
   )
   const sampleResult = calculatePetOnboardingEngagementSample({
     previousSample: petOnboardingEngagementSamples.get(contextKey),
@@ -1414,7 +1417,7 @@ function getPetMilestonePlaybackForRenderer(event, petType, expectedContext) {
   const currentContext = getCurrentStableAccountContext()
   if (
     !authorization.ok
-    || petType !== 'pig'
+    || !PET_TYPES.includes(petType)
     || petType !== currentContext.petType
   ) {
     return null
@@ -1448,7 +1451,7 @@ function setPetMilestonePlaybackForRenderer(
   const currentContext = getCurrentStableAccountContext()
   if (
     !authorization.ok
-    || petType !== 'pig'
+    || !PET_TYPES.includes(petType)
     || petType !== currentContext.petType
   ) {
     return {
@@ -1500,7 +1503,7 @@ function clearPetMilestonePlaybackForRenderer(
   const currentContext = getCurrentStableAccountContext()
   if (
     !authorization.ok
-    || petType !== 'pig'
+    || !PET_TYPES.includes(petType)
     || petType !== currentContext.petType
   ) {
     return {
@@ -2581,6 +2584,12 @@ function getE2eSnapshot() {
   const context = getCurrentStableAccountContext()
   const relationship = context.hasSession ? getCachedPetRelationship(context.petType) : null
   return {
+    windows: {
+      mainPanel: {
+        visible: Boolean(mainPanelWindow && !mainPanelWindow.isDestroyed() && mainPanelWindow.isVisible()),
+        minimized: Boolean(mainPanelWindow && !mainPanelWindow.isDestroyed() && mainPanelWindow.isMinimized()),
+      },
+    },
     account: context.hasSession
       ? { userId: context.userId, petType: context.petType }
       : null,
@@ -2659,7 +2668,7 @@ function applyE2eAccountFixture(fixture = {}, { reset = false } = {}) {
 function prepareE2ePetOnboarding(options = {}) {
   if (!isE2e || !['meet_pet', 'relationship'].includes(options?.scene)) return false
   const context = getPetOnboardingContext()
-  const key = context ? createPetOnboardingKey(context.user_id, context.relationship_id) : null
+  const key = context ? createPetOnboardingKey(context.user_id, context.relationship_id, context.pet_type) : null
   const base = context ? createPetOnboardingState(context, new Date()) : null
   if (!key || !base) return false
   const visibleEngagementMs = Number.isFinite(Number(options.visibleEngagementMs))

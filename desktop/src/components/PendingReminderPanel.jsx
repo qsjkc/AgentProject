@@ -23,14 +23,16 @@ import { commitAccountOperation } from '../shared/pet-account-context'
 import { createReminderPanelOperations } from '../shared/reminder-panel-operations'
 import { getReminderRecurrenceLabel } from '../shared/reminder-recurrence'
 import { UpcomingReminderPanel } from './UpcomingReminderPanel'
+import { getPetVisual } from '../shared/pets'
+import { t } from '../shared/i18n'
 
 const REFRESH_INTERVAL_MS = 30000
 
-function getCopy(language) {
+function getCopy(language, petType) {
   if (language === 'zh-CN') {
     return {
       title: '待处理提醒',
-      hint: '小猪提醒过的事项，完成后再增加亲密度。',
+      hint: `${t(language, getPetVisual(petType).labelKey)}提醒过的事项，完成后再增加亲密度。`,
       empty: '现在没有待处理事项。想记一件小事，可以在聊天里说“十分钟后提醒我喝水”。',
       delivered: '已提醒',
       emailPending: '邮件待发送',
@@ -132,7 +134,7 @@ export function PendingReminderPanel({
   if (!operationsRef.current) operationsRef.current = createReminderPanelOperations()
   const { loadGate, actionGate } = operationsRef.current
   currentContextRef.current = accountContext
-  const copy = getCopy(language)
+  const copy = getCopy(language, petType)
 
   const loadReminders = useCallback(async ({ silent = false } = {}) => {
     const requestContext = operationsRef.current.beginLoad(currentContextRef.current)

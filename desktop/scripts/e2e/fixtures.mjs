@@ -84,7 +84,7 @@ export function createRelationship(user, petType = 'pig', now = new Date()) {
     relationship_stage: 'new_friend',
     current_mood: 'calm',
     progress: { current: 0, required: 100, percent: 0 },
-    outfit: { unlocked_outfit_ids: [], equipped_outfits: {} },
+    outfit: { unlocked_outfit_ids: [`${petType}_basic_scarf`], equipped_outfits: {} },
     last_active_at: now.toISOString(),
     last_greeting_at: null,
     last_level_up_at: null,

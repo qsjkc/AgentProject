@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import './window-bounds.test.mjs'
 import './focus-session.test.mjs'
+import './pet-species-parity.test.mjs'
 import './voice-auth.test.mjs'
 import './voice-rtc-loading.test.mjs'
 import './voice-session-cleanup.test.mjs'
@@ -1025,7 +1026,7 @@ const secondCompanionCopy = getPetCompanionCopy(
   copyState.recentCopyIds,
 )
 assert.notEqual(secondCompanionCopy.id, firstCompanionCopy.id)
-assert.equal(getPetCompanionCopy('cat', 'zh-CN', firstCompanionMoment.event), null)
+assert.equal(getPetCompanionCopy('rabbit', 'zh-CN', firstCompanionMoment.event), null)
 
 const normalizedDailySummary = normalizePetDailySummary({
   pet_type: 'pig',
@@ -1240,7 +1241,7 @@ const relationshipMilestone = normalizePetRelationshipMilestone({
 })
 assert.equal(relationshipMilestone.id, 23)
 assert.equal(relationshipMilestone.reward_outfit_id, 'pig_bell')
-assert.equal(normalizePetRelationshipMilestone({ ...relationshipMilestone, pet_type: 'cat' }), null)
+assert.equal(normalizePetRelationshipMilestone({ ...relationshipMilestone, pet_type: 'rabbit' }), null)
 
 const milestoneClaimState = createPetMilestonePlaybackState({
   petType: 'pig',
@@ -1582,7 +1583,8 @@ assert.deepEqual(
 )
 assert.equal(pigCareActions[0].label, '摸摸')
 assert.match(pigCareActions[1].message, /小饼干/)
-assert.equal(getPetCareActions('zh-CN', 'cat').length, 0)
+assert.equal(getPetCareActions('zh-CN', 'cat').length, 3)
+assert.equal(getPetCareActions('zh-CN', 'rabbit').length, 0)
 assert.equal(getPetCareToolbarLabel('en'), 'Care for pig')
 assert.match(getPetRelationshipEventCopy('pig', 'zh-CN', 'wake'), /醒啦/)
 assert.match(
@@ -4066,3 +4068,6 @@ console.log('desktop tests passed')
 import './reminder-wakeup.test.mjs'
 import './reminder-server-boundary.test.mjs'
 import './pet-animation-playback.test.mjs'
+import './pet-sprite-animation.test.mjs'
+import './pet-animation-assets.test.mjs'
+import './pet-dressed-animation.test.mjs'

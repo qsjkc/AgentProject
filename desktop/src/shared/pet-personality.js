@@ -200,13 +200,107 @@ const pigCompanionCopy = {
   },
 }
 
+const PET_TYPES = ['cat', 'dog', 'pig']
+
+function createCompanionCopy(petType, locale, greetings, moments, returns) {
+  const times = ['morning', 'midday', 'afternoon', 'evening', 'late_night']
+  const byTime = (texts, kind) => Object.fromEntries(times.map((time, index) => [time, [
+    { id: `${petType}-${kind}-${time}-${locale}`, text: texts[index] },
+  ]]))
+  return {
+    daily_greeting: byTime(greetings, 'daily'),
+    proactive_moment: byTime(moments, 'moment'),
+    welcome_back: { default: returns.map((text, index) => ({
+      id: `${petType}-return-${index + 1}-${locale}`, text,
+      ...(index > 0 ? { minLevel: 3 } : {}),
+    })) },
+  }
+}
+
+const companionCopyByPet = {
+  pig: pigCompanionCopy,
+  cat: {
+    'zh-CN': createCompanionCopy('cat', 'zh-CN', [
+      '早。桌边这块位置归我，你慢慢开始。',
+      '中午了。眼睛离开屏幕一会儿，我替你看着。',
+      '下午好。我已经窝好了，有事叫我。',
+      '晚上了，事情可以一件件收尾。我陪着。',
+      '夜深了。我会轻一点，你也别太勉强。',
+    ], [
+      '我伸个懒腰。你也活动一下，别僵着。',
+      '该吃饭就去吃饭，我不会把你的位置占满。',
+      '先眨眨眼。我巡视一圈，马上回来。',
+      '今天已经很努力了，留点时间给自己吧。',
+      '哈欠会传染。困了就休息，我明天还在。',
+    ], ['回来了？位置给你留着，先坐稳。', '老搭档回来了。嗯，我是有一点想你。']),
+    en: createCompanionCopy('cat', 'en', [
+      'Morning. This corner is mine. Take your time getting started.',
+      'It is noon. Rest your eyes. I will watch the screen for you.',
+      'Good afternoon. I have settled in. Call if you need me.',
+      'Evening. We can wrap things up one at a time. I am here.',
+      'It is late. I will be quiet. Go easy on yourself too.',
+    ], [
+      'I am stretching. You could loosen up too.',
+      'Go have lunch. I promise to leave you some room.',
+      'Blink for a moment. I will make a quick patrol.',
+      'You worked hard today. Save a little time for yourself.',
+      'Yawns are contagious. Rest if you are tired. I will be here tomorrow.',
+    ], ['Back? I saved your spot. Settle in.', 'My old partner is back. Yes, I missed you a little.']),
+  },
+  dog: {
+    'zh-CN': createCompanionCopy('dog', 'zh-CN', [
+      '早呀！我已经准备好陪你开始新的一天啦！',
+      '中午好！先让眼睛和肩膀休息，我陪你歇一会儿！',
+      '下午也一起加油！先从一件小事开始吧。',
+      '晚上好！忙了一天，接下来我们慢慢收尾！',
+      '夜深啦，我会安静守着你。累了就歇一歇。',
+    ], [
+      '一起伸个懒腰吧！不用着急，我们慢慢来。',
+      '午饭时间到！吃饱了才有力气继续陪你。',
+      '我跑两步醒醒神！你也让眼睛歇一下吧。',
+      '今天辛苦啦！做完这一小段，我们就休息。',
+      '我也打哈欠啦。明天还会陪着你，放心休息吧。',
+    ], ['你回来啦！我一直给你留着位置呢！', '搭档回来啦！尾巴都开心得停不下来了！']),
+    en: createCompanionCopy('dog', 'en', [
+      'Morning! I am ready to start a new day with you!',
+      'Hello, noon! Rest your eyes and shoulders. I will take a break with you!',
+      'Let us do this afternoon together! One small thing at a time.',
+      'Good evening! A busy day. Let us wrap it up gently!',
+      'It is late. I will stay quietly beside you. Rest if you need to.',
+    ], [
+      'Let us stretch! No rush. We can take our time.',
+      'Lunch time! We need fuel for the rest of our day.',
+      'I will jog a little! Give your eyes a break too.',
+      'You did well today! Finish this little stretch, then rest.',
+      'I am yawning too. I will be here tomorrow. You can rest.',
+    ], ['You are back! I saved your place!', 'My partner is back! My tail cannot stop wagging!']),
+  },
+}
+
+const milestoneCopyByPet = {
+  pig: pigRelationshipMilestoneCopy,
+  cat: {
+    2: { 'zh-CN': 'Lv.2，睡帽收下了。能让我安心打盹的人可不多。', en: 'Lv.2. A sleep cap. I do not nap this comfortably around everyone.' },
+    3: { 'zh-CN': 'Lv.3，铃铛也有了。以后重要的事，我会替你惦记。', en: 'Lv.3. A bell. I will keep an eye on the things that matter to you.' },
+    4: { 'zh-CN': 'Lv.4，这块搭档工作牌我认了。我们确实挺默契。', en: 'Lv.4. I accept this partner badge. We do make a good team.' },
+    5: { 'zh-CN': 'Lv.5，星星小帽很合适。你已经是我认定的自己人了。', en: 'Lv.5. The star hat suits me. You are officially one of my people.' },
+  },
+  dog: {
+    2: { 'zh-CN': 'Lv.2 啦！睡帽戴好，有你在我就安心！', en: 'Lv.2! Sleep cap on. I feel safe with you around!' },
+    3: { 'zh-CN': 'Lv.3 啦！铃铛也准备好了，重要的事我们一起记住！', en: 'Lv.3! Bell ready. We will remember the important things together!' },
+    4: { 'zh-CN': 'Lv.4！搭档工作牌戴好啦，下一段路也一起走！', en: 'Lv.4! Partner badge on. Let us keep going together!' },
+    5: { 'zh-CN': 'Lv.5 啦！戴上星星小帽，我最好的搭档就是你！', en: 'Lv.5! Star hat on. You are my very best partner!' },
+  },
+}
+
 function formatCount(count, noun) {
   return `${count} ${noun}${count === 1 ? '' : 's'}`
 }
 
-function getPigDailyMemoryCopy(language, event, summary, recentCopyIds) {
+function getPetDailyMemoryCopy(petType, language, event, summary, recentCopyIds) {
   if (
     !summary
+    || (summary.pet_type && summary.pet_type !== petType)
     || !event?.type
     || (
       summary.interaction_count <= 0
@@ -222,7 +316,7 @@ function getPigDailyMemoryCopy(language, event, summary, recentCopyIds) {
   const candidates = []
   if (summary.reminders_completed_count > 0) {
     candidates.push({
-      id: `pig-memory-reminders-${locale}-${dateKey}`,
+      id: `${petType}-memory-reminders-${locale}-${dateKey}`,
       text: locale === 'zh-CN'
         ? `今天已经一起完成 ${summary.reminders_completed_count} 个提醒啦，我都记得。`
         : `We finished ${formatCount(summary.reminders_completed_count, 'reminder')} today. I remember.`,
@@ -230,7 +324,7 @@ function getPigDailyMemoryCopy(language, event, summary, recentCopyIds) {
   }
   if (summary.care_count > 0) {
     candidates.push({
-      id: `pig-memory-care-${locale}-${dateKey}`,
+      id: `${petType}-memory-care-${locale}-${dateKey}`,
       text: locale === 'zh-CN'
         ? `今天你照顾了我 ${summary.care_count} 次，我有认真记着。`
         : `You cared for me ${summary.care_count} time${summary.care_count === 1 ? '' : 's'} today. I remember.`,
@@ -238,21 +332,26 @@ function getPigDailyMemoryCopy(language, event, summary, recentCopyIds) {
   }
   if (summary.meaningful_chat_count > 0) {
     candidates.push({
-      id: `pig-memory-chat-${locale}-${dateKey}`,
+      id: `${petType}-memory-chat-${locale}-${dateKey}`,
       text: locale === 'zh-CN'
         ? `今天我们认真聊了 ${summary.meaningful_chat_count} 次，我还记得。`
         : `We had ${formatCount(summary.meaningful_chat_count, 'real chat')} today. I remember.`,
     })
   }
   candidates.push({
-    id: `pig-memory-together-${locale}-${dateKey}`,
+    id: `${petType}-memory-together-${locale}-${dateKey}`,
     text: locale === 'zh-CN'
       ? `今天已经有 ${summary.interaction_count} 次认真相处啦。`
       : `We have shared ${formatCount(summary.interaction_count, 'meaningful moment')} today.`,
   })
 
   const recent = new Set(recentCopyIds)
-  return candidates.find((item) => !recent.has(item.id)) || null
+  const selected = candidates.find((item) => !recent.has(item.id)) || null
+  if (!selected || petType === 'pig') return selected
+  const ending = locale === 'zh-CN'
+    ? petType === 'cat' ? '别看我安静，我都放在心上。' : '能和你一起，我的尾巴又开心起来啦！'
+    : petType === 'cat' ? ' I may be quiet, but I notice.' : ' Sharing it with you makes my tail wag!'
+  return { ...selected, text: `${selected.text}${ending}` }
 }
 
 export function getPetReminderCopy(petType) {
@@ -275,11 +374,9 @@ export function getPetRelationshipEventCopy(
 }
 
 export function getPetRelationshipMilestoneCopy(petType, language, milestone) {
-  if (petType !== 'pig') {
-    return getPetRelationshipEventCopy(petType, language, 'level_up', milestone)
-  }
+  if (!PET_TYPES.includes(petType)) return ''
   const locale = language === 'zh-CN' ? 'zh-CN' : 'en'
-  return pigRelationshipMilestoneCopy[Number(milestone?.level)]?.[locale]
+  return milestoneCopyByPet[petType][Number(milestone?.level)]?.[locale]
     || getPetRelationshipEventCopy(petType, language, 'level_up', milestone)
 }
 
@@ -292,20 +389,22 @@ export function getPetCompanionCopy(
   dailySummary = null,
   weeklySummary = null,
 ) {
-  if (petType !== 'pig' || !event?.type) {
+  if (!PET_TYPES.includes(petType) || !event?.type || (relationship?.pet_type && relationship.pet_type !== petType)) {
     return null
   }
 
   const locale = language === 'zh-CN' ? 'zh-CN' : 'en'
-  const weeklyCopy = getPetWeeklyCompanionCopy(locale, weeklySummary)
+  const weeklyCopy = weeklySummary?.pet_type === petType
+    ? getPetWeeklyCompanionCopy(locale, weeklySummary)
+    : null
   if (weeklyCopy && !recentCopyIds.includes(weeklyCopy.id)) {
     return weeklyCopy
   }
-  const memoryCopy = getPigDailyMemoryCopy(locale, event, dailySummary, recentCopyIds)
+  const memoryCopy = getPetDailyMemoryCopy(petType, locale, event, dailySummary, recentCopyIds)
   if (memoryCopy) {
     return memoryCopy
   }
-  const eventCopy = pigCompanionCopy[locale]?.[event.type]
+  const eventCopy = companionCopyByPet[petType][locale]?.[event.type]
   const pool = eventCopy?.[event.timeContext] || eventCopy?.default || []
   const level = Math.max(1, Number(relationship?.level) || 1)
   const eligible = pool.filter((item) => !item.minLevel || level >= item.minLevel)

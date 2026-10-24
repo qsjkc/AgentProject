@@ -178,6 +178,13 @@ jobs:
           python -m venv ../backend/venv
           ../backend/venv/Scripts/python.exe -m pip install -r ../backend/requirements.txt
       - run: npm ci
+      - name: Build web registration for real backend acceptance
+        working-directory: frontend
+        env:
+          VITE_API_BASE_URL: /api/v1
+        run: |
+          npm ci
+          npm run build
       - run: npm run test:e2e:runner
       - run: npm run build:renderer
       - run: npm run test:e2e
