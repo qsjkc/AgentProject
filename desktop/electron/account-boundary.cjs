@@ -379,6 +379,9 @@ function createOperationCapabilityRegistry({
         return null
       }
       if (!semanticMatches(entry.snapshot, requiredScope, expectedSemantic)) return null
+      // The renderer may keep using this source for every lower-scope capture.
+      // Count successful renewal as use without changing its scope, TTL or pin.
+      if (!touch(entry)) return null
       return issueInternal({
         sender,
         senderRole,
