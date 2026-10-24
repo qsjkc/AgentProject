@@ -284,6 +284,15 @@ export async function petParityScenario(context) {
 export async function dressedPetScenario(context) {
   assertEqual(new URL(context.stub.apiBaseUrl).hostname, '127.0.0.1', 'Wardrobe acceptance must use the isolated stub')
   await ensureBaseBridge(context)
+  const systemReducedMotion = await context.pages.pet.evaluate("matchMedia('(prefers-reduced-motion: reduce)').matches")
+  try {
+    return { ...await verifyDressedPets(context), systemReducedMotion }
+  } finally {
+    await context.pages.pet.send('Emulation.setEmulatedMedia', { features: [] })
+  }
+}
+
+async function verifyDressedPets(context) {
   context.stub.fixture = createStubFixture()
   // An established account exercises every unlocked slot. New-account unlocks
   // and rewards are covered separately by the real backend acceptance.
@@ -318,6 +327,25 @@ export async function dressedPetScenario(context) {
     await callE2e(context.pages.pet, 'showWindow', 'pet')
     const selector = `svg.pet-image[data-pet-type="${petType}"][data-outfit-key="${key}"]`
     await context.pages.pet.waitForSelector(selector)
+    // Exercise both supported policies explicitly. A CI host may request
+    // reduced motion by default, in which case a static pet is correct.
+    await context.pages.pet.send('Emulation.setEmulatedMedia', {
+      features: [{ name: 'prefers-reduced-motion', value: 'reduce' }],
+    })
+    await waitFor(() => context.pages.pet.evaluate("matchMedia('(prefers-reduced-motion: reduce)').matches && document.querySelector('.pet-image')?.dataset.animationFrame === '0'"),
+      { description: `${petType} dressed sprite respects reduced motion` })
+    const staticChanges = await context.pages.pet.evaluate(`new Promise(resolve => {
+      let changes = 0
+      const observer = new MutationObserver(() => { changes += 1 })
+      observer.observe(document.querySelector(${JSON.stringify(selector)}), { attributes: true, attributeFilter: ['data-animation-frame'] })
+      setTimeout(() => { observer.disconnect(); resolve(changes) }, 750)
+    })`)
+    assertEqual(staticChanges, 0, `${petType} dressed sprite advances despite reduced motion`)
+    await context.pages.pet.send('Emulation.setEmulatedMedia', {
+      features: [{ name: 'prefers-reduced-motion', value: 'no-preference' }],
+    })
+    await waitFor(() => context.pages.pet.evaluate("!matchMedia('(prefers-reduced-motion: reduce)').matches && document.visibilityState === 'visible'"),
+      { description: `${petType} visible with normal motion enabled` })
     const frameSamples = new Set()
     const sourceViews = new Set()
     await waitFor(async () => {
@@ -330,7 +358,14 @@ export async function dressedPetScenario(context) {
         sourceViews.add(sample.source)
       }
       return sourceViews.size >= 3
-    }, { description: `${petType} dressed sprite is actually animating`, intervalMs: 80 })
+    }, { description: `${petType} dressed sprite is actually animating`, intervalMs: 80 }).catch(async error => {
+      error.details = { ...error.details, frameSamples: [...frameSamples], sourceViews: [...sourceViews],
+        policy: await context.pages.pet.evaluate(`({ visibility: document.visibilityState,
+          reducedMotion: matchMedia('(prefers-reduced-motion: reduce)').matches,
+          frame: document.querySelector('.pet-image')?.dataset.animationFrame,
+          outfitKey: document.querySelector('.pet-image')?.dataset.outfitKey })`) }
+      throw error
+    })
     const imageSize = await context.pages.pet.evaluate(`(async () => {
       const element = document.querySelector(${JSON.stringify(selector)})
       const image = new Image()
@@ -342,7 +377,7 @@ export async function dressedPetScenario(context) {
     assert(imageSize.width > 600 && imageSize.height > 600, 'Dressed animation image failed to load')
     assertEqual(imageSize.overlays, 0, 'Accessory-only floating layers remain')
     await context.pages.pet.screenshot(`${context.artifactPath}/${petType}-dressed.png`)
-    results[petType] = { key, decodedImage: imageSize, observedAnimationFrames: [...frameSamples], distinctPaintedSourceFrames: sourceViews.size }
+    results[petType] = { key, decodedImage: imageSize, reducedMotionStatic: true, observedAnimationFrames: [...frameSamples], distinctPaintedSourceFrames: sourceViews.size }
     await callE2e(context.pages.main, 'showWindow', 'main-panel')
   }
   for (const petType of ['pig', 'cat', 'dog']) {
