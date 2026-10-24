@@ -26,16 +26,14 @@ jobs:
     if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     outputs:
-      deploy_ref: ${{ steps.vars.outputs.deploy_ref }}
-      app_dir: ${{ steps.vars.outputs.app_dir }}
-      server_port: ${{ steps.vars.outputs.server_port }}
       docker_enabled: ${{ steps.vars.outputs.docker_enabled }}
       server_enabled: ${{ steps.vars.outputs.server_enabled }}
 
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: main
+          # Keep public source SHAs out of job outputs, which secret filtering can suppress.
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
 
       - name: Resolve deployment variables
         id: vars
@@ -47,7 +45,6 @@ jobs:
           WORKFLOW_BRANCH: ${{ github.event.workflow_run.head_branch }}
           WORKFLOW_EVENT: ${{ github.event.workflow_run.event }}
           GH_TOKEN: ${{ github.token }}
-          SERVER_APP_DIR_SECRET: ${{ secrets.SERVER_APP_DIR }}
           SERVER_PORT_SECRET: ${{ secrets.SERVER_PORT }}
           DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
           DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
@@ -80,10 +77,8 @@ jobs:
             echo 'Automatic deployment requires successful CI for the current main SHA' >&2
             exit 1
           fi
-          DEPLOY_REF="$MAIN_SHA"
-          printf 'Deploying verified main commit %s\n' "$DEPLOY_REF"
+          printf 'Deploying verified main commit %s\n' "$MAIN_SHA"
 
-          APP_DIR="${SERVER_APP_DIR_SECRET:-/root/PersonalSpace/AgentProject}"
           SERVER_PORT_RAW="${SERVER_PORT_SECRET:-22}"
           SERVER_PORT="$(printf '%s' "$SERVER_PORT_RAW" | tr -d '\r\n[:space:]')"
           SERVER_PORT="${SERVER_PORT#:}"
@@ -109,9 +104,6 @@ jobs:
             SERVER_ENABLED=false
           fi
 
-          echo "deploy_ref=$DEPLOY_REF" >> "$GITHUB_OUTPUT"
-          echo "app_dir=$APP_DIR" >> "$GITHUB_OUTPUT"
-          echo "server_port=$SERVER_PORT" >> "$GITHUB_OUTPUT"
           echo "docker_enabled=$DOCKER_ENABLED" >> "$GITHUB_OUTPUT"
           echo "server_enabled=$SERVER_ENABLED" >> "$GITHUB_OUTPUT"
 
@@ -128,7 +120,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ needs.preflight.outputs.deploy_ref }}
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -150,7 +142,7 @@ jobs:
       - name: Bind installer to verified main commit
         shell: bash
         env:
-          EXPECTED_SOURCE_SHA: ${{ needs.preflight.outputs.deploy_ref }}
+          EXPECTED_SOURCE_SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE_SHA"
@@ -177,7 +169,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ needs.preflight.outputs.deploy_ref }}
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
 
       - name: Resolve image metadata
         id: image-meta
@@ -241,13 +233,13 @@ jobs:
       SERVER_USERNAME_RAW: ${{ secrets.SERVER_USERNAME }}
       SERVER_APP_DIR_RAW: ${{ secrets.SERVER_APP_DIR }}
       SERVER_PORT_RAW: ${{ secrets.SERVER_PORT }}
-      DEPLOY_SOURCE_SHA: ${{ needs.preflight.outputs.deploy_ref }}
+      DEPLOY_SOURCE_SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
       GH_TOKEN: ${{ github.token }}
 
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ needs.preflight.outputs.deploy_ref }}
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
 
       - uses: actions/download-artifact@v4
         with:
