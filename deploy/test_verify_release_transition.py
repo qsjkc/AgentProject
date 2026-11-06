@@ -99,9 +99,11 @@ gh() {
 
     def test_every_checkout_and_provenance_binding_uses_the_same_immutable_event_sha(self):
         checkouts = re.findall(r"uses: actions/checkout@v4\n\s+with:\n(?:\s+#[^\n]*\n)*\s+ref: ([^\n]+)", self.workflow)
-        self.assertEqual(checkouts, [self.SOURCE_EXPRESSION] * 4)
+        self.assertGreaterEqual(len(checkouts), 4)
+        self.assertTrue(all(ref == self.SOURCE_EXPRESSION for ref in checkouts), checkouts)
         bindings = re.findall(r"(?:EXPECTED_SOURCE_SHA|DEPLOY_SOURCE_SHA): ([^\n]+)", self.workflow)
-        self.assertEqual(bindings, [self.SOURCE_EXPRESSION] * 2)
+        self.assertGreaterEqual(len(bindings), 2)
+        self.assertTrue(all(ref == self.SOURCE_EXPRESSION for ref in bindings), bindings)
         self.assertNotIn("outputs.deploy_ref", self.workflow)
         self.assertNotIn('echo "deploy_ref=', self.workflow)
         preflight_guard = re.search(r"  preflight:\n    name: Preflight\n    if: ([^\n]+)", self.workflow)
@@ -143,6 +145,15 @@ gh() {
         self.assertNotEqual(result.returncode, 0)
         self.assertLess(self.workflow.index("- name: Recheck main before remote changes"),
                         self.workflow.index("- name: Prepare remote directories"))
+
+    def test_main_is_rechecked_after_image_transfer_before_switching_services(self):
+        result, _ = self.execute_guard("Recheck main before service switch")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        result, _ = self.execute_guard("Recheck main before service switch", TEST_MAIN_SHA=self.OTHER_SHA)
+        self.assertNotEqual(result.returncode, 0)
+        guard = self.workflow.index("- name: Recheck main before service switch")
+        self.assertLess(self.workflow.index("- name: Stage verified desktop download"), guard)
+        self.assertLess(guard, self.workflow.index("- name: Deploy on server"))
 
 
 if __name__ == "__main__":

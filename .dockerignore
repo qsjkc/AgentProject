@@ -1,6 +1,13 @@
 .git
 .github
 .codex
+.agents
+.tmp
+.playwright-mcp
+.env
+**/.env
+**/.env.*
+.env.*
 .vscode
 node_modules
 **/node_modules
@@ -19,3 +26,6 @@ Mry
 agentproject_4parts_ascii
 *.doc
 *.docx
+*.exe
+*.zip
+server-images

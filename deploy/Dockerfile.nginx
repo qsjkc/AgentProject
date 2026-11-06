@@ -1,17 +1,19 @@
-FROM docker.m.daocloud.io/library/node:20.11-alpine AS frontend-builder
+ARG NODE_BASE_IMAGE=docker.m.daocloud.io/library/node:20.11-alpine
+ARG NGINX_BASE_IMAGE=docker.m.daocloud.io/library/nginx:1.26-alpine
+FROM ${NODE_BASE_IMAGE} AS frontend-builder
 
 WORKDIR /app
 
-RUN sed -i 's|https://dl-cdn.alpinelinux.org/alpine|https://mirrors.tuna.tsinghua.edu.cn/alpine|g' /etc/apk/repositories \
-    && npm config set registry https://registry.npmmirror.com
+ARG NPM_REGISTRY=https://registry.npmmirror.com
+RUN npm config set registry "$NPM_REGISTRY"
 
 COPY frontend/package*.json ./frontend/
 RUN cd frontend && npm ci
 
 COPY frontend ./frontend
-RUN cd frontend && rm -rf node_modules && npm ci && npm run build
+RUN cd frontend && npm run build
 
-FROM docker.m.daocloud.io/library/nginx:1.26-alpine
+FROM ${NGINX_BASE_IMAGE}
 
 COPY deploy/nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=frontend-builder /app/frontend/dist /usr/share/nginx/html
