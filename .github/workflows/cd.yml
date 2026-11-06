@@ -604,7 +604,8 @@ jobs:
           cd ..
 
           for attempt in 1 2 3 4 5 6; do
-            if docker compose exec -T backend python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/health/ready')"; then
+            # This command must not consume the remaining remote bash script.
+            if docker compose exec -T --interactive=false backend python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/health/ready')" </dev/null; then
               break
             fi
             if [ "$attempt" -eq 6 ]; then
