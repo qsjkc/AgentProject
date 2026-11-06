@@ -5,7 +5,7 @@
 本文档描述仓库中的 GitHub Actions 自动化流程。历史远端结果见 `P1L-部署验收记录.md`；本次修改是否通过以对应提交的 Actions 运行记录为准。覆盖：
 
 - `CI`：后端测试、PostgreSQL 迁移恢复检查、前端检查、桌面 renderer 与 Windows Electron 检查
-- `CD`：桌面安装包构建、可选 Docker 镜像推送、可选服务器部署
+- `CD`：桌面安装包和服务器镜像构建、可选 Docker Hub 推送、可选服务器部署
 
 当前实现以仓库中的以下文件为准：
 
@@ -20,7 +20,7 @@
 | Workflow | 文件 | 触发条件 | 作用 |
 |---|---|---|---|
 | `CI` | `.github/workflows/ci.yml` | `push` 到 `main/develop`、对 `main` 的 `pull_request`、手动触发 | 做基础质量门禁 |
-| `CD` | `.github/workflows/cd.yml` | `CI` 在 `main` 成功完成后自动触发，或手动触发 | 构建安装包、可选推镜像、可选部署服务器 |
+| `CD` | `.github/workflows/cd.yml` | `CI` 在 `main` 成功完成后自动触发，或手动触发 | 在 runner 构建安装包和镜像，验证后部署服务器 |
 
 ## CI 流程
 
@@ -88,7 +88,13 @@ npm run build:renderer
 - 此 Linux job 检查 renderer 构建；Windows job 检查 Electron 行为。
 - NSIS 安装包构建仍放到 `CD`。
 
-### 5. Windows Electron E2E
+### 5. Server Image Build and Smoke
+
+- Ubuntu runner 使用 `deploy/build_server_images.sh` 构建三个生产镜像并校验归档和来源清单。
+- `deploy/smoke_server_images.sh` 在临时 Docker 网络与无宿主挂载的容器中检查服务，结束后清理本次容器和网络。
+- 不连接生产数据库、不读取开发 `.env`，镜像清单上传为 `server-image-verification`。
+
+### 6. Windows Electron E2E
 
 - Runner：`windows-latest`；Node.js：`22`；工作目录：`desktop/`。
 - 依次运行 `npm ci`、`npm run test:e2e:runner`、`npm run build:renderer`、`npm run test:e2e`、`npm run pack`、`npm run test:packaged`。
@@ -121,11 +127,10 @@ gh run watch <run-id> --exit-status
 
 输出内容：
 
-- `deploy_ref`
-- `app_dir`
-- `server_port`
 - `docker_enabled`
 - `server_enabled`
+
+提交来源直接使用不可变事件 SHA，不经 job outputs 传递，避免 GitHub 秘密过滤误丢弃包含短字符串的公共提交号。
 
 说明：
 
@@ -168,7 +173,13 @@ npm run build
 - `${DOCKER_USERNAME}/agentproject-backend:latest`
 - `${DOCKER_USERNAME}/agentproject-nginx:latest`
 
-### 4. Deploy Server
+### 4. Server Images
+
+配置服务器部署后，Ubuntu runner 构建 backend、nginx 和 agent-server 三个 `linux/amd64` 镜像，使用完整提交 SHA 标签和 OCI revision 标签。镜像通过 `docker save` 归档，清单记录源提交、归档大小和 SHA-256，以及每个镜像的 ID、标签、平台与 revision。
+
+同一次 CD 的镜像 artifact 供部署 job 下载，不依赖 Docker Hub 账号或生产机访问镜像仓库。PR 和 main CI 也执行真实镜像构建与验证，提前发现 Dockerfile 或依赖安装问题。构建或校验失败即停止，不在生产服务器回退构建。
+
+### 5. Deploy Server
 
 若配置了：
 
@@ -186,21 +197,22 @@ npm run build
 
 执行顺序：
 
-1. 等待同一次 CD 的 `desktop-installer` 成功，下载其安装包 artifact
+1. 等待同一次 CD 的 `desktop-installer` 和 `server-images` 成功，下载安装包及镜像 artifacts，验证源提交与完整性
 2. 写入 `~/.ssh/id_ed25519`
 3. 解析部署目标
 4. 创建远端目录
 5. 检查线上桌面版本与 Alembic revision，阻止应用降级或目标缺失线上迁移
 6. 验证 artifact 的唯一 EXE、版本、字节数、SHA-256 和源提交，再上传应用源码及暂存安装包
 7. 服务端再核对安装包 SHA-256 与大小后原子改名；已存在的同名包必须具有相同哈希，避免覆盖已有版本。保留原 `.env` 和 `data/`，仅更新两个 `DESKTOP_RELEASE_*` 键，并保存原发布键元数据；原有本地 Agent 地址修正逻辑继续保留
-8. 在服务器执行主服务及 `agent-server/` 的启动：
+8. 服务器验证镜像归档后加载，再核对实际 image ID、平台和 revision。使用镜像 compose override 启动主服务及 `agent-server/`：
 
 ```bash
-docker compose up -d --build --remove-orphans
-docker compose ps
+# 在项目根目录执行；<main-sha> 替换为本次完整提交 SHA
+docker compose -f docker-compose.yml -f .server-images-<main-sha>/main.compose.json up -d --no-build --pull never --remove-orphans
+# Agent 的 override 为同一发布目录下的 agent.compose.json
 ```
 
-9. 检查后端与 Agent 就绪，再从 runner 检查公网 HTTPS readiness、版本/文件名/可下载状态和安装包 HEAD `Content-Length`：
+9. 核对运行容器确实使用清单中的镜像，检查后端与 Agent 就绪，再从 runner 检查公网 HTTPS readiness、版本/文件名/可下载状态和安装包 HEAD `Content-Length`：
 
 ```bash
 python deploy/verify_desktop_artifact.py --directory desktop-release --package desktop/package.json \
@@ -209,6 +221,10 @@ python deploy/verify_desktop_artifact.py --directory desktop-release --package d
 ```
 
 公网 origin 优先使用服务端 `WEB_APP_URL`，而非把 SSH 的 IP 当作 TLS 域名。全部检查成功后，服务器才将本次清单写为 `.deployed-release.json`；`server-release-verification` artifact 保留安装包清单、部署前版本检查与公网检查结果。公网 HEAD 只核对可访问性与体积，不能替代公网完整下载 SHA-256 或 Windows 安装验收。
+
+镜像归档在加载与校验成功后删除，清单、compose overrides 和 `running-images.json` 留在 `.server-images-<main-sha>/`。旧镜像保留，不做全局 prune。部署还会将已验证镜像写入两个项目的默认 `docker-compose.override.yml`，保证日后普通 `docker compose up -d` 仍选中本次镜像。文件带来源标识和 `pull_policy: never`；未知或人工扩展的同名配置会阻止覆盖，旧配置快照只保存一次，重试不丢失原状态。
+
+生产重新创建容器时仍推荐显式指定对应 override 和 `--no-build --pull never`。不要对发布镜像执行 `--build`；本地构建使用原开发 compose 文件。
 
 ## 服务器部署变量解析规则
 
@@ -292,7 +308,7 @@ CD 保留服务器已有 `.env`，不再使用 `APP_ENV_FILE` Secret 覆盖生�
 - `frontend/.vite`
 - `backend/venv`
 
-### 3. Nginx 构建阶段强制重新安装前端依赖
+### 3. Nginx 构建隔离依赖并复用缓存
 
 `deploy/Dockerfile.nginx` 当前做法：
 
@@ -301,10 +317,10 @@ COPY frontend/package*.json ./frontend/
 RUN cd frontend && npm ci
 
 COPY frontend ./frontend
-RUN cd frontend && rm -rf node_modules && npm ci && npm run build
+RUN cd frontend && npm run build
 ```
 
-这一步是为了避免 Windows 下的 `node_modules/.bin/tsc` 污染 Linux 容器，导致：
+`.dockerignore` 排除宿主机的依赖目录；先复制锁文件安装，再复制源码构建，避免重复执行 `npm ci`，也避免 Windows 下的 `node_modules/.bin/tsc` 污染 Linux 容器，导致：
 
 ```text
 sh: tsc: Permission denied
@@ -370,7 +386,7 @@ docker compose logs --tail=100 nginx
 
 ## 当前结论
 
-历史部署记录见 `P1L-部署验收记录.md`；新加入的 main SHA 门禁、安装包传递及公网检查须以本次 Actions 运行记录作为部署证据。后续可继续增强：
+历史部署记录见项目根目录对应发布验收文件；main SHA 门禁、镜像及安装包来源、运行镜像和公网检查须以本次 Actions 运行记录作为部署证据。生产部署已经采用 runner 构建、服务器验证加载的流程。后续可继续增强：
 
-1. 将当前“上传源码到服务器再构建”逐步演进为“镜像优先部署”（镜像已具备版本号和 SHA tag）
+1. 根据发布耗时评估镜像构建缓存与同一成功 CI 制品复用，保留完整 SHA 和哈希验证
 2. 若服务器网络环境稳定，再考虑恢复更严格的 host key 校验策略

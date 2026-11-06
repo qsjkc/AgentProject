@@ -181,10 +181,10 @@ docker compose up -d --build --remove-orphans
 1. PR 合入 `main`，等待该精确 SHA 的 `CI` 成功后触发 `CD`
 2. `CD` 锁定当前 `main` SHA；旧提交的 CI、非 main 手动部署或没有成功 CI 的手动部署会停止
 3. `desktop-installer` 在 Windows runner 构建唯一安装包与 `desktop-release.json`（版本、文件名、字节数、SHA-256、源提交）
-4. `deploy-server` 等待安装包成功后下载并验证同一次运行的 artifact；在首次远端变更前再核对 main 没有移动
+4. `server-images` 在 Ubuntu runner 构建三项服务镜像，以完整提交 SHA 标记并生成包含 image ID、平台、revision、归档哈希的清单；`deploy-server` 等待安装包与镜像成功后下载并验证同一次运行的 artifacts，在首次远端变更前再核对 main 没有移动
 5. 通过原生 `ssh/scp` 核对线上版本及 Alembic revision，上传源码及暂存安装包，校验哈希后原子改名
 6. 保留服务器 `.env` 和业务数据，保存原发布键，仅更新 `DESKTOP_RELEASE_VERSION`、`DESKTOP_RELEASE_FILE`；原有 Agent 公网地址修正逻辑继续保留
-7. 主服务及 `agent-server/` 执行 `docker compose up -d --build --remove-orphans`
+7. 服务器校验并加载镜像归档，核对实际镜像与清单一致，保存默认镜像 override，以显式 override 执行 `up -d --no-build --pull never --remove-orphans`，核对运行容器的 image ID。普通重启也会读取默认 override，未知自定义 override 不会被覆盖。生产部署不安装构建依赖、不编译源码；失败不会回退到服务器构建
 8. 后端、Agent 就绪后验证公网 HTTPS readiness、版本元数据及安装包 HEAD/长度；成功后写 `.deployed-release.json`，上传 `server-release-verification` 验证 artifact
 
 说明：
@@ -222,13 +222,16 @@ npm run build
 sh: tsc: Permission denied
 ```
 
-当前修复方式有两层：
+正常 CD 已在 Actions runner 构建，生产仅加载验证过的镜像。手工本地构建仍通过以下两层避免依赖污染：
 
 1. `.dockerignore` 排除 `node_modules`
-2. `deploy/Dockerfile.nginx` 在 build 前强制：
+2. `deploy/Dockerfile.nginx` 先复制锁文件并安装 Linux 依赖，再复制已排除宿主依赖的源码并构建：
 
 ```dockerfile
-rm -rf node_modules && npm ci && npm run build
+COPY frontend/package*.json ./frontend/
+RUN cd frontend && npm ci
+COPY frontend ./frontend
+RUN cd frontend && npm run build
 ```
 
 ## 部署后检查

@@ -12,6 +12,33 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  server-image-check:
+    name: Server Image Build and Smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and verify immutable server images
+        shell: bash
+        run: bash deploy/build_server_images.sh "$(git rev-parse HEAD)" "$RUNNER_TEMP/server-images"
+      - name: Load and inspect the verified image archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker image load --input "$RUNNER_TEMP/server-images/server-images.tar.gz"
+          python3 deploy/server_images.py inspect --directory "$RUNNER_TEMP/server-images" --source-commit "$(git rev-parse HEAD)"
+      - name: Smoke isolated server images
+        shell: bash
+        run: bash deploy/smoke_server_images.sh "$(git rev-parse HEAD)"
+      - name: Upload server image provenance
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: server-image-verification
+          path: ${{ runner.temp }}/server-images/server-images.json
+          if-no-files-found: warn
+          retention-days: 7
+
   backend-tests:
     name: Backend Tests
     runs-on: ubuntu-latest

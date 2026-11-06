@@ -22,10 +22,12 @@ main
 
 ```bash
 git status
-git add .
+git add <本次修改的文件>
 git commit -m "your message"
-git push origin main
+git push -u origin <工作分支>
 ```
+
+向 `main` 创建 PR，等待对应提交的 CI 通过后合并；保留本地预览、验收报告与运行数据，不批量提交无关文件。
 
 ### 2. GitHub 自动执行 CI
 
@@ -46,8 +48,9 @@ git push origin main
 当 `CI` 在 `main` 分支成功后：
 
 - 构建 Windows 安装包
-- 可选推送 Docker 镜像
-- 可选部署到服务器
+- 在 Ubuntu runner 构建带完整提交 SHA 的三项服务镜像，生成并校验镜像归档
+- 可选推送 Docker Hub 镜像；服务器部署使用同次运行的 artifact，无需 Docker Hub 凭据
+- 服务器校验镜像后加载并以 `--no-build --pull never` 启动，完成运行镜像、就绪和公网版本检查
 
 ## 手动触发 CD
 
@@ -56,7 +59,7 @@ git push origin main
 1. 打开 GitHub 仓库 `Actions`
 2. 选择 `CD`
 3. 点击 `Run workflow`
-4. `ref` 选 `main` 或指定提交
+4. `ref` 只能选 `main`，且当前 main 必须已有成功 CI；有自动部署进行时不要重复触发
 
 ## 需要的 Secrets
 
@@ -68,7 +71,7 @@ git push origin main
 | `SERVER_PORT` | SSH 端口，默认 `22` |
 | `SERVER_USERNAME` | SSH 登录用户 |
 | `SERVER_SSH_KEY` | SSH 私钥全文 |
-| `SERVER_PASSWORD` | 可选，不用私钥时才需要 |
+| `SERVER_PASSWORD` | 不支持密码单独登录；部署必须配置 SSH 私钥 |
 | `SERVER_APP_DIR` | 部署目录，默认 `/root/PersonalSpace/AgentProject` |
 
 ### Docker 镜像发布

@@ -11,6 +11,7 @@ import { PetOutfitPanel } from './components/PetOutfitPanel'
 import { PetWeeklySummaryPanel } from './components/PetWeeklySummaryPanel'
 import { FocusSessionPanel } from './components/FocusSessionPanel'
 import { ChatMessageStream } from './components/ChatMessageStream'
+import { DesktopReleasePanel } from './components/DesktopReleasePanel'
 import {
   checkApiConnection,
   beginLoginAttempt,
@@ -2961,6 +2962,7 @@ function MainPanelApp() {
                     void handleResetPetPosition()
                   }}>{t(language, 'resetPetPosition')}</button>
                   <button type="button" className="main-header-action" onClick={handleServerSetup}>{t(language, 'changeServer')}</button>
+                  <DesktopReleasePanel key={`${apiBaseUrl}:${user?.id}`} language={language} apiBaseUrl={apiBaseUrl} />
                 </div>
               </details>
             </div>

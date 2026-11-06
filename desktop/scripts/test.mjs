@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import './desktop-release.test.mjs'
 import './window-bounds.test.mjs'
 import './focus-session.test.mjs'
 import './focus-history.test.mjs'

@@ -159,6 +159,35 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  server-images:
+    name: Build Verified Server Images
+    needs: preflight
+    if: needs.preflight.outputs.server_enabled == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      DEPLOY_SOURCE_SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Build source-bound server image archive
+        run: bash deploy/build_server_images.sh "$DEPLOY_SOURCE_SHA" "$RUNNER_TEMP/server-images"
+
+      - name: Smoke test the exact server images
+        run: bash deploy/smoke_server_images.sh "$DEPLOY_SOURCE_SHA"
+
+      - name: Upload verified server image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: agentproject-server-images
+          path: ${{ runner.temp }}/server-images/
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 7
+
   docker-publish:
     name: Publish Docker Images
     needs: preflight
@@ -224,10 +253,10 @@ jobs:
 
   deploy-server:
     name: Deploy Server
-    needs: [preflight, desktop-installer]
+    needs: [preflight, desktop-installer, server-images]
     if: needs.preflight.outputs.server_enabled == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     env:
       SERVER_HOST_RAW: ${{ secrets.SERVER_HOST }}
       SERVER_USERNAME_RAW: ${{ secrets.SERVER_USERNAME }}
@@ -245,6 +274,14 @@ jobs:
         with:
           name: agentproject-desktop-win
           path: desktop-release
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: agentproject-server-images
+          path: server-images
+
+      - name: Verify downloaded server image archive
+        run: python3 deploy/server_images.py verify --directory server-images --source-commit "$DEPLOY_SOURCE_SHA"
 
       - name: Verify downloaded installer and source
         shell: bash
@@ -373,6 +410,27 @@ jobs:
             < deploy/verify_release_transition.py > running-release.json
           python3 deploy/verify_release_transition.py running-release.json
 
+      - name: Check server platform and disk capacity
+        shell: bash
+        run: |
+          set -euo pipefail
+          ARCHIVE_BYTES="$(stat -c %s server-images/server-images.tar.gz)"
+          ssh deploy-target "cd '$DEPLOY_APP_DIR' && ARCHIVE_BYTES='$ARCHIVE_BYTES' bash -s" <<'REMOTE_CAPACITY'
+          set -euo pipefail
+          command -v python3 >/dev/null
+          test "$(docker info --format '{{.OSType}}/{{.Architecture}}')" = 'linux/x86_64'
+          DOCKER_ROOT="$(docker info --format '{{.DockerRootDir}}')"
+          # Reserve space for the uploaded archive and unpacked layers without pruning old images.
+          REQUIRED_KIB=$(( (ARCHIVE_BYTES * 5 + 2147483648) / 1024 ))
+          for directory in . "$DOCKER_ROOT"; do
+            AVAILABLE_KIB="$(df -Pk "$directory" | awk 'NR==2 {print $4}')"
+            if [ "$AVAILABLE_KIB" -lt "$REQUIRED_KIB" ]; then
+              echo 'Insufficient disk space for a verified image load; existing releases were retained' >&2
+              exit 1
+            fi
+          done
+          REMOTE_CAPACITY
+
       - name: Upload application source
         shell: bash
         run: |
@@ -398,6 +456,23 @@ jobs:
              && rm -f app-source.tgz"
           rm -f app-source.tgz
 
+      - name: Stage and load verified server images
+        shell: bash
+        run: |
+          set -euo pipefail
+          ssh deploy-target "mkdir -p '$DEPLOY_APP_DIR/.server-images-$DEPLOY_SOURCE_SHA'"
+          scp server-images/server-images.tar.gz server-images/server-images.json \
+            "deploy-target:$DEPLOY_APP_DIR/.server-images-$DEPLOY_SOURCE_SHA/"
+          ssh deploy-target "cd '$DEPLOY_APP_DIR' && DEPLOY_SOURCE_SHA='$DEPLOY_SOURCE_SHA' bash -s" <<'REMOTE_IMAGES'
+          set -euo pipefail
+          RELEASE_DIR=".server-images-$DEPLOY_SOURCE_SHA"
+          python3 deploy/server_images.py verify --directory "$RELEASE_DIR" --source-commit "$DEPLOY_SOURCE_SHA"
+          docker image load --input "$RELEASE_DIR/server-images.tar.gz"
+          python3 deploy/server_images.py compose --directory "$RELEASE_DIR" --source-commit "$DEPLOY_SOURCE_SHA"
+          # Retain the small manifest/overrides and old images, not the uploaded tarball.
+          rm -f -- "$RELEASE_DIR/server-images.tar.gz"
+          REMOTE_IMAGES
+
       - name: Stage verified desktop download
         shell: bash
         run: |
@@ -406,6 +481,16 @@ jobs:
             "deploy-target:$DEPLOY_APP_DIR/data/downloads/.$DESKTOP_ARTIFACT_FILENAME.$DEPLOY_SOURCE_SHA.upload"
           scp desktop-release/desktop-release.json \
             "deploy-target:$DEPLOY_APP_DIR/.desktop-release-$DEPLOY_SOURCE_SHA.json"
+
+      - name: Recheck main before service switch
+        shell: bash
+        run: |
+          set -euo pipefail
+          MAIN_SHA="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')"
+          if [[ "$MAIN_SHA" != "$DEPLOY_SOURCE_SHA" ]]; then
+            echo 'main changed during artifact transfer; refusing a stale service switch' >&2
+            exit 1
+          fi
 
       - name: Deploy on server
         shell: bash
@@ -505,10 +590,17 @@ jobs:
           upsert_env DESKTOP_RELEASE_VERSION "$DESKTOP_RELEASE_VERSION"
           upsert_env DESKTOP_RELEASE_FILE "$DESKTOP_RELEASE_FILE"
           command -v docker >/dev/null
-          export DOCKER_BUILDKIT=1 COMPOSE_PROGRESS=plain
-          docker compose up -d --build --remove-orphans
+          export COMPOSE_PROGRESS=plain
+          IMAGE_RELEASE_DIR="$PWD/.server-images-$DEPLOY_SOURCE_SHA"
+          # Recheck immutable image IDs immediately before switching containers.
+          python3 deploy/server_images.py inspect --directory "$IMAGE_RELEASE_DIR" --source-commit "$DEPLOY_SOURCE_SHA"
+          python3 deploy/server_images.py activate --directory "$IMAGE_RELEASE_DIR" \
+            --source-commit "$DEPLOY_SOURCE_SHA" --project-directory "$PWD"
+          docker compose -f docker-compose.yml -f "$IMAGE_RELEASE_DIR/main.compose.json" \
+            up -d --no-build --pull never --remove-orphans
           cd agent-server
-          docker compose up -d --build --remove-orphans
+          docker compose -f docker-compose.yml -f "$IMAGE_RELEASE_DIR/agent.compose.json" \
+            up -d --no-build --pull never --remove-orphans
           cd ..
 
           for attempt in 1 2 3 4 5 6; do
@@ -534,7 +626,16 @@ jobs:
           done
 
           docker compose ps
+          python3 deploy/server_images.py inspect --directory "$IMAGE_RELEASE_DIR" \
+            --source-commit "$DEPLOY_SOURCE_SHA" --running > "$IMAGE_RELEASE_DIR/running-images.json"
           REMOTE_DEPLOY
+
+      - name: Download running image provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          scp "deploy-target:$DEPLOY_APP_DIR/.server-images-$DEPLOY_SOURCE_SHA/running-images.json" running-images.json
+          cat running-images.json
 
       - name: Verify public release and download
         shell: bash
@@ -565,4 +666,6 @@ jobs:
             desktop-release/desktop-release.json
             public-release-verification.json
             running-release.json
+            running-images.json
+            server-images/server-images.json
           if-no-files-found: warn

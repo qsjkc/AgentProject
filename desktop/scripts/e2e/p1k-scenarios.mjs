@@ -192,6 +192,21 @@ async function prepareRelationshipGuide(context) {
   await callE2e(context.pages.pet, 'prepareOnboarding', { scene: 'relationship' })
 }
 
+function withProactiveCompanionDisabled(scenario) {
+  return async (context) => {
+    const previous = await context.pages.main.evaluate('window.desktopBridge.getCompanionSettings()')
+    try {
+      // Intent scenarios need an isolated relationship guide. Disable greetings
+      // before reset/reload: a real daily greeting can legitimately occupy the
+      // bubble for five seconds and race the guide's selector deadline in CI.
+      await context.pages.main.evaluate('window.desktopBridge.updateCompanionSettings({ mode: "off" })')
+      return await scenario(context)
+    } finally {
+      await context.pages.main.evaluate(`window.desktopBridge.updateCompanionSettings(${JSON.stringify(previous)})`)
+    }
+  }
+}
+
 export async function targetsScenario(context) {
   const entries = [...context.targets.keys()].sort()
   assertEqual(entries.length, 3, 'Expected exactly three Detachym renderer targets')
@@ -1247,11 +1262,11 @@ export const SCENARIOS = Object.freeze({
   targets: targetsScenario,
   'p1k-happy': happyPathScenario,
   'capability-ttl': capabilityTtlScenario,
-  'main-reload-intent': mainReloadDuringIntentScenario,
-  'account-switch-race': accountSwitchRaceScenario,
+  'main-reload-intent': withProactiveCompanionDisabled(mainReloadDuringIntentScenario),
+  'account-switch-race': withProactiveCompanionDisabled(accountSwitchRaceScenario),
   'target-recreate': targetRecreateScenario,
-  'intent-ack-false': intentAckFalseScenario,
-  'intent-ack-timeout': intentAckTimeoutScenario,
+  'intent-ack-false': withProactiveCompanionDisabled(intentAckFalseScenario),
+  'intent-ack-timeout': withProactiveCompanionDisabled(intentAckTimeoutScenario),
   'quick-broadcast-before-chat': quickBroadcastBeforeChatScenario,
   'focus-together': focusTogetherScenario,
   'new-conversation': newConversationScenario,
