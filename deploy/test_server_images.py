@@ -636,24 +636,37 @@ class RemoteImageDeploymentTests(unittest.TestCase):
         self.assertIsNotNone(match, marker)
         return textwrap.dedent(match.group(1))
 
-    def execute(self, marker, failure=""):
+    def execute(self, marker, failure="", *, readiness_failures=0, interactive_readiness=False):
         if not self.bash:
             self.skipTest("Bash is required to execute remote deployment guards")
         # Every filesystem operation is restricted to this test's disposable tree.
         # Docker, Python deployment commands and network requests are intercepted.
         mocks = r'''
+READINESS_ATTEMPTS=0
 python3() {
   printf 'python3:%s\n' "$2" >> "$TEST_LOG"
   if [[ "$TEST_FAIL" == "$2" ]]; then return 41; fi
-  printf '{}\n'
+  if [[ "$*" == *--running* ]]; then
+    printf '{"status":"passed","containers":["backend","nginx","agent-server"]}\n'
+  else
+    printf '{}\n'
+  fi
 }
 docker() {
   printf 'docker:%s\n' "$*" >> "$TEST_LOG"
   if [[ "$TEST_FAIL" == load && "$1 $2" == 'image load' ]]; then return 42; fi
+  if [[ "$1 $2" == 'compose exec' && "$*" == */health/ready* ]]; then
+    # Compose exec is interactive by default even with -T. A child launched
+    # from bash -s can consume the unparsed remainder of the deployment script.
+    if [[ "$*" != *--interactive=false* ]]; then cat >/dev/null; fi
+    READINESS_ATTEMPTS=$((READINESS_ATTEMPTS + 1))
+    if [[ "$READINESS_ATTEMPTS" -le "$TEST_READINESS_FAILURES" ]]; then return 43; fi
+  fi
   return 0
 }
 curl() { printf 'curl\n' >> "$TEST_LOG"; }
 rm() { printf 'rm\n' >> "$TEST_LOG"; command rm "$@"; }
+sleep() { :; }
 '''
         with tempfile.TemporaryDirectory() as name:
             root = Path(name)
@@ -677,17 +690,34 @@ rm() { printf 'rm\n' >> "$TEST_LOG"; command rm "$@"; }
             log = root / "commands.log"
             env = {**os.environ, "DEPLOY_SOURCE_SHA": self.SOURCE_SHA,
                    "TEST_LOG": log.as_posix(), "TEST_FAIL": failure,
+                   "TEST_READINESS_FAILURES": str(readiness_failures),
                    "DESKTOP_RELEASE_VERSION": "1.1.0-rc.5", "DESKTOP_RELEASE_FILE": filename,
                    "DESKTOP_RELEASE_BYTES": str(len(installer)),
                    "DESKTOP_RELEASE_SHA256": hashlib.sha256(installer).hexdigest(),
                    "PUBLIC_DEPLOY_HOST": "example.test"}
+            script = self.remote_script(marker)
+            if interactive_readiness:
+                # Negative control: reproduce the deployed bug without changing
+                # the checked-in workflow or any production command.
+                script = script.replace("--interactive=false ", "").replace(" </dev/null; then", "; then")
             result = subprocess.run([self.bash, "--noprofile", "--norc"],
-                                    input=mocks + self.remote_script(marker), text=True,
+                                    input=mocks + script, text=True,
                                     capture_output=True, cwd=root, env=env, timeout=20)
             calls = log.read_text().splitlines() if log.exists() else []
             archive_exists = archive.exists()
             runtime_env = (root / ".env").read_text()
+            provenance = release / "running-images.json"
+            result.provenance = json.loads(provenance.read_text()) if provenance.exists() else None
         return result, calls, archive_exists, runtime_env
+
+    def assert_deployment_finished(self, result, calls):
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("curl", calls, "Agent health check was skipped")
+        self.assertIn("docker:compose ps", calls, "Container status check was skipped")
+        self.assertIsNotNone(result.provenance, "Running image provenance was not written")
+        self.assertEqual(result.provenance["status"], "passed")
+        self.assertLess(calls.index("curl"), calls.index("docker:compose ps"))
+        self.assertEqual(calls[-1], "python3:inspect")
 
     def test_archive_verification_failure_never_loads_images(self):
         result, calls, exists, _ = self.execute("REMOTE_IMAGES", "verify")
@@ -727,7 +757,7 @@ rm() { printf 'rm\n' >> "$TEST_LOG"; command rm "$@"; }
 
     def test_successful_deployment_uses_loaded_images_without_build_or_pull(self):
         result, calls, _, runtime_env = self.execute("REMOTE_DEPLOY")
-        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assert_deployment_finished(result, calls)
         starts = [call for call in calls if call.startswith("docker:compose ") and " up " in call]
         self.assertEqual(len(starts), 2)
         for call in starts:
@@ -740,6 +770,43 @@ rm() { printf 'rm\n' >> "$TEST_LOG"; command rm "$@"; }
         self.assertEqual(calls[-1], "python3:inspect")
         self.assertIn("UNRELATED_SETTING=keep-me", runtime_env)
         self.assertIn("BACKEND_INTERNAL_API_KEY=synthetic-backend-key", runtime_env)
+
+    def test_readiness_retries_preserve_agent_health_and_running_provenance(self):
+        result, calls, _, _ = self.execute("REMOTE_DEPLOY", readiness_failures=2)
+        self.assert_deployment_finished(result, calls)
+        readiness = [index for index, call in enumerate(calls)
+                     if call.startswith("docker:compose exec ") and "/health/ready" in call]
+        self.assertEqual(len(readiness), 3)
+        self.assertLess(readiness[-1], calls.index("curl"))
+
+    def test_interactive_readiness_negative_control_cannot_pass_completion_assertions(self):
+        result, calls, _, _ = self.execute("REMOTE_DEPLOY", readiness_failures=1, interactive_readiness=True)
+        # The original failure reported shell success while silently dropping
+        # Agent health and provenance. The completion assertion must detect it.
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("curl", calls)
+        self.assertIsNone(result.provenance)
+        with self.assertRaisesRegex(AssertionError, "Agent health check was skipped"):
+            self.assert_deployment_finished(result, calls)
+
+    def test_exhausted_readiness_retries_do_not_claim_successful_deployment(self):
+        result, calls, _, _ = self.execute("REMOTE_DEPLOY", readiness_failures=6)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Post-deploy readiness checks failed", result.stderr)
+        self.assertNotIn("curl", calls)
+        self.assertIsNone(result.provenance)
+
+    def test_downgrade_inspection_keeps_its_intended_python_stdin(self):
+        match = re.search(
+            r"      - name: Refuse application or database downgrade\n.*?        run: \|\n((?:          [^\n]*\n|\n)+)",
+            self.workflow, re.S,
+        )
+        self.assertIsNotNone(match)
+        script = textwrap.dedent(match.group(1))
+        self.assertIn("docker compose exec -T backend python - --inspect-running", script)
+        self.assertIn("< deploy/verify_release_transition.py", script)
+        self.assertNotIn("--interactive=false", script)
+        self.assertNotIn("/dev/null", script)
 
 
 if __name__ == "__main__":
