@@ -25,6 +25,11 @@
 .main-settings-account { color: #514537; font-size: 12px; font-weight: 600; overflow-wrap: anywhere; }
 .main-settings-server { margin: 4px 0 8px; color: #8b7c6c; font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; }
 .main-settings-popover .main-header-action { justify-content: flex-start; background: #f5f1e9; }
+.desktop-release-panel { border-top: 1px solid #e6ddd0; margin-top: 5px; padding-top: 8px; color: #625b51; font-size: 12px; }
+.desktop-release-panel > summary { cursor: pointer; font-weight: 600; }
+.desktop-release-panel p { margin: 8px 0; line-height: 1.6; overflow-wrap: anywhere; }
+.desktop-release-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.desktop-release-panel .desktop-release-note { color: #81786c; font-size: 11px; }
 .main-header-status { margin-top: 8px; max-height: 3.4em; overflow: auto; color: #736455; font-size: 11px; line-height: 1.7; overflow-wrap: anywhere; }
 .main-chat-layout { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 14px; flex: 1; min-height: 0; }
 .main-panel-shell .panel { border-color: #e4e3da; border-radius: 19px; box-shadow: 0 5px 24px #49392105; }

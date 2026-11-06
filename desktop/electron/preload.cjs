@@ -293,6 +293,7 @@ const desktopBridge = {
   },
   toggleAutoLaunch: (enabled) => ipcRenderer.invoke('desktop:toggle-auto-launch', enabled),
   getAppVersion: () => ipcRenderer.invoke('desktop:get-app-version'),
+  openDesktopDownloadPage: (expectedServer) => ipcRenderer.invoke('desktop:open-download-page', expectedServer),
   showNotification: (payload, expectedContext) => (
     ipcRenderer.invoke('desktop:show-notification', payload, expectedContext)
   ),

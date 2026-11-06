@@ -50,6 +50,7 @@ const {
 } = require('./account-boundary.cjs')
 const { createMainPanelIntentCoordinator } = require('./main-panel-intent.cjs')
 const { createFocusSessionController } = require('./focus-session.cjs')
+const { getDesktopDownloadPage } = require('./desktop-release.cjs')
 const { createReminderWakeupController } = require('./reminder-wakeup.cjs')
 const { createLoginAttemptController } = require('./login-attempt.cjs')
 const {
@@ -70,6 +71,7 @@ const {
   nativeImage,
   powerMonitor,
   screen,
+  shell,
 } = require('electron')
 
 let store
@@ -2997,6 +2999,16 @@ function registerIpc() {
   })
 
   ipcMain.handle('desktop:get-app-version', async () => app.getVersion())
+  ipcMain.handle('desktop:open-download-page', async (event, expectedServer) => {
+    const target = getDesktopDownloadPage({
+      senderRole: getIpcSenderRole(event),
+      isMainFrame: event.senderFrame === event.sender.mainFrame,
+      currentServer: getStore().get('apiBaseUrl'),
+      expectedServer,
+    })
+    await shell.openExternal(target)
+    return true
+  })
   ipcMain.handle('desktop:get-api-base-url', async () => getStore().get('apiBaseUrl'))
   ipcMain.handle('desktop:begin-login-attempt', (event, server, rendererInstanceNonce) => loginAttempts.begin({
     sender: event.sender, senderRole: getIpcSenderRole(event), rendererInstanceNonce, server,
