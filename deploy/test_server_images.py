@@ -73,6 +73,47 @@ class ServerImageManifestTests(unittest.TestCase):
         return {**manifest, "bytes": self.archive.stat().st_size,
                 "sha256": hashlib.sha256(self.archive.read_bytes()).hexdigest()}
 
+    def containerd_archive(self):
+        """Model Docker 29's platform manifest ID, distinct from its config ID."""
+        self.oci_blobs = {}
+        self.oci_manifests = {}
+        self.entries = []
+        descriptors = []
+        for service in self.SERVICES:
+            config = self.configs[service]
+            config_digest = hashlib.sha256(config).hexdigest()
+            config_path = "blobs/sha256/" + config_digest
+            self.oci_blobs[config_path] = config
+            payload = {
+                "schemaVersion": 2,
+                "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                "config": {"mediaType": "application/vnd.oci.image.config.v1+json",
+                           "digest": "sha256:" + config_digest, "size": len(config)},
+                "layers": [],
+            }
+            content = json.dumps(payload, sort_keys=True).encode()
+            digest = hashlib.sha256(content).hexdigest()
+            self.oci_manifests[service] = payload
+            self.oci_blobs["blobs/sha256/" + digest] = content
+            self.inspected[self.tags[service]]["Id"] = "sha256:" + digest
+            self.entries.append({"Config": config_path, "RepoTags": [self.tags[service]], "Layers": []})
+            descriptors.append({"mediaType": payload["mediaType"], "digest": "sha256:" + digest,
+                                "size": len(content), "platform": {"os": "linux", "architecture": "amd64"},
+                                "annotations": {"io.containerd.image.name": self.tags[service]}})
+        self.oci_blobs["index.json"] = json.dumps({
+            "schemaVersion": 2, "mediaType": "application/vnd.oci.image.index.v1+json",
+            "manifests": descriptors,
+        }).encode()
+        self.oci_blobs["oci-layout"] = b'{"imageLayoutVersion":"1.0.0"}'
+        self.write_archive(configs=self.oci_blobs)
+
+    def replace_containerd_manifest(self, service, payload):
+        content = json.dumps(payload, sort_keys=True).encode()
+        digest = hashlib.sha256(content).hexdigest()
+        self.oci_blobs["blobs/sha256/" + digest] = content
+        self.inspected[self.tags[service]]["Id"] = "sha256:" + digest
+        self.write_archive(configs=self.oci_blobs)
+
     def inspector(self):
         return Mock(side_effect=lambda tag: copy.deepcopy(self.inspected[tag]))
 
@@ -271,6 +312,78 @@ class ServerImageManifestTests(unittest.TestCase):
                 self.directory, self.refresh_archive_checksum(manifest), self.SOURCE_SHA
             )
 
+    def test_containerd_manifest_and_classic_config_ids_both_identify_the_verified_image(self):
+        self.containerd_archive()
+        manifest = self.manifest()
+        server_images.verify_manifest(self.directory, manifest, self.SOURCE_SHA)
+        for entry in manifest["images"]:
+            config_id = "sha256:" + hashlib.sha256(self.configs[entry["service"]]).hexdigest()
+            self.assertEqual(entry["configId"], config_id)
+            self.assertEqual(entry["id"], self.inspected[entry["tag"]]["Id"])
+            self.assertNotEqual(entry["id"], config_id)
+        server_images.verify_loaded_images(manifest, inspect_image=self.inspector())
+        for entry in manifest["images"]:
+            self.inspected[entry["tag"]]["Id"] = entry["configId"]
+        server_images.verify_loaded_images(manifest, inspect_image=self.inspector())
+
+    def test_containerd_manifest_cannot_point_to_another_or_unknown_config(self):
+        self.containerd_archive()
+        for digest in ("sha256:" + "f" * 64,
+                       "sha256:" + hashlib.sha256(self.configs["nginx"]).hexdigest()):
+            payload = copy.deepcopy(self.oci_manifests["backend"])
+            payload["config"]["digest"] = digest
+            self.replace_containerd_manifest("backend", payload)
+            with self.subTest(digest=digest), self.assertRaises(ValueError):
+                self.manifest()
+
+    def test_containerd_builder_manifest_blob_must_exist_and_hash_to_its_id(self):
+        self.containerd_archive()
+        manifest = self.manifest()
+        path = "blobs/sha256/" + self.inspected[self.tags["backend"]]["Id"].split(":")[1]
+        original = copy.deepcopy(self.oci_blobs)
+        for blobs in ({key: value for key, value in original.items() if key != path},
+                      {**original, path: original[path] + b" "}):
+            self.write_archive(configs=blobs)
+            with self.subTest(manifest_exists=path in blobs), self.assertRaises(ValueError):
+                server_images.verify_manifest(
+                    self.directory, self.refresh_archive_checksum(manifest), self.SOURCE_SHA
+                )
+
+    def test_containerd_config_blob_must_exist_and_hash_to_its_config_id(self):
+        self.containerd_archive()
+        manifest = self.manifest()
+        path = self.entries[0]["Config"]
+        original = copy.deepcopy(self.oci_blobs)
+        for blobs in ({key: value for key, value in original.items() if key != path},
+                      {**original, path: b"{}"}):
+            self.write_archive(configs=blobs)
+            with self.subTest(config_exists=path in blobs), self.assertRaises(ValueError):
+                server_images.verify_manifest(
+                    self.directory, self.refresh_archive_checksum(manifest), self.SOURCE_SHA
+                )
+
+    def test_containerd_index_or_attestation_cannot_substitute_for_the_platform_manifest(self):
+        self.containerd_archive()
+        platform_id = self.inspected[self.tags["backend"]]["Id"]
+        payloads = [
+            {"schemaVersion": 2, "mediaType": "application/vnd.oci.image.index.v1+json",
+             "manifests": [{"digest": platform_id,
+                            "mediaType": "application/vnd.oci.image.manifest.v1+json"}]},
+            {"schemaVersion": 2, "mediaType": "application/vnd.in-toto+json",
+             "config": self.oci_manifests["backend"]["config"], "layers": []},
+        ]
+        for payload in payloads:
+            self.replace_containerd_manifest("backend", payload)
+            with self.subTest(media_type=payload["mediaType"]), self.assertRaises(ValueError):
+                self.manifest()
+
+    def test_containerd_manifest_config_binding_cannot_be_changed_in_release_metadata(self):
+        self.containerd_archive()
+        manifest = self.manifest()
+        manifest["images"][0]["configId"] = manifest["images"][1]["configId"]
+        with self.assertRaises(ValueError):
+            server_images.verify_manifest(self.directory, manifest, self.SOURCE_SHA)
+
     def test_archive_configuration_platform_and_revision_are_verified_independently(self):
         original = json.loads(self.configs["backend"])
         mutations = [
@@ -330,6 +443,8 @@ class ServerImageManifestTests(unittest.TestCase):
             config = json.loads(self.configs[entry["service"]])
             config["config"]["Labels"]["org.opencontainers.image.revision"] = self.OTHER_SHA
             entry["id"] = "sha256:" + hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest()
+            if "configId" in entry:
+                entry["configId"] = entry["id"]
             entry["revision"] = self.OTHER_SHA
             entry["tag"] = f"agentproject-{entry['service']}:sha-{self.OTHER_SHA}"
             inspected[entry["tag"]] = {
@@ -484,6 +599,24 @@ class ServerImageManifestTests(unittest.TestCase):
                 "server_images.subprocess.check_output", side_effect=output
             ), self.assertRaises(ValueError):
                 server_images.verify_running_images(manifest)
+
+    def test_running_container_uses_the_exact_id_resolved_by_the_local_image_store(self):
+        self.containerd_archive()
+        manifest = self.manifest()
+        for local_kind, other_kind in (("id", "configId"), ("configId", "id")):
+            for entry in manifest["images"]:
+                self.inspected[entry["tag"]]["Id"] = entry[local_kind]
+            containers, output = self.container_inspector()
+            with self.subTest(local_kind=local_kind), patch(
+                "server_images.subprocess.check_output", side_effect=output
+            ):
+                result = server_images.verify_running_images(manifest)
+                for container in result["containers"]:
+                    self.assertEqual(container["imageId"], self.inspected[self.tags[container["service"]]]["Id"])
+                # Both IDs belong to this release, but only one is the local image identity.
+                containers["agentproject-backend"]["Image"] = manifest["images"][0][other_kind]
+                with self.assertRaises(ValueError):
+                    server_images.verify_running_images(manifest)
 
 
 class RemoteImageDeploymentTests(unittest.TestCase):

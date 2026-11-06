@@ -27,7 +27,7 @@ POSTGRES_ID="$(docker run -d --network "$RUN_NAME" --network-alias postgres \
   -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=smoke-only-password postgres:14-alpine)"
 CONTAINERS+=("$POSTGRES_ID")
 for attempt in $(seq 1 30); do
-  if docker exec "$POSTGRES_ID" pg_isready -U postgres -d agent_project; then break; fi
+  if docker exec "$POSTGRES_ID" pg_isready -h 127.0.0.1 -U postgres -d agent_project; then break; fi
   [[ "$attempt" -lt 30 ]]
   sleep 2
 done

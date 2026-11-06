@@ -79,50 +79,90 @@ def validate_manifest(manifest, source_commit):
             raise ValueError("Image tag or revision does not match the source commit")
         if not isinstance(entry.get("id"), str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", entry["id"]):
             raise ValueError("Invalid Docker image ID")
+        config_id = entry.get("configId", entry["id"])
+        if not isinstance(config_id, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", config_id):
+            raise ValueError("Invalid Docker image config ID")
         if entry.get("os") != "linux" or entry.get("architecture") != "amd64":
             raise ValueError("Only linux/amd64 release images are accepted")
     return manifest
 
 
-def verify_archive(path, images):
-    """Check saved tags and image config digests/platforms before docker load."""
-    configs = {}
-    wanted = {}
-    for entry in images:
-        digest = entry["id"].split(":", 1)[1]
-        wanted[f"{digest}.json"] = entry
-        wanted[f"blobs/sha256/{digest}"] = entry
+def verify_archive(path, images, *, discover_config=False):
+    """Verify classic config IDs and containerd OCI manifest IDs independently.
+
+    Docker's containerd store reports the OCI manifest digest as image Id; the
+    classic store reports its config digest. Only a verified manifest -> config
+    link permits both exact IDs. Indexes/attestations are intentionally refused.
+    """
+    metadata = {}
     archive_manifest = None
     seen_members = set()
     with tarfile.open(path, "r|gz") as archive:
         for member in archive:
-            if member.name != "manifest.json" and member.name not in wanted:
+            is_metadata = re.fullmatch(r"(?:[0-9a-f]{64}\.json|blobs/sha256/[0-9a-f]{64})", member.name)
+            if member.name != "manifest.json" and not is_metadata:
                 continue
-            if member.name in seen_members or not member.isfile() or member.size > 2 * 1024 * 1024:
+            if member.name in seen_members or not member.isfile():
                 raise ValueError("Invalid or duplicated archive metadata")
             seen_members.add(member.name)
+            # The blob namespace also contains large binary layers. Keep only
+            # bounded JSON metadata in memory, never extract an archive member.
+            if member.size > 2 * 1024 * 1024:
+                if member.name == "manifest.json":
+                    raise ValueError("Oversized archive manifest")
+                continue
             content = archive.extractfile(member).read()
             if member.name == "manifest.json":
                 archive_manifest = json.loads(content)
             else:
-                entry = wanted[member.name]
-                if "sha256:" + hashlib.sha256(content).hexdigest() != entry["id"]:
-                    raise ValueError("Archived image config does not match its image ID")
-                config = json.loads(content)
-                if config.get("os") != entry["os"] or config.get("architecture") != entry["architecture"]:
-                    raise ValueError("Archived image platform does not match the manifest")
-                if config_revision(config.get("config")) != entry["revision"]:
-                    raise ValueError("Archived image revision does not match the source commit")
-                configs[member.name] = entry
+                try:
+                    payload = json.loads(content)
+                except (ValueError, UnicodeError):
+                    continue
+                if isinstance(payload, dict):
+                    if len(metadata) >= 128:
+                        raise ValueError("Too many archive metadata objects")
+                    metadata[member.name] = ("sha256:" + hashlib.sha256(content).hexdigest(), payload)
     if not isinstance(archive_manifest, list) or len(archive_manifest) != len(images):
         raise ValueError("Archive must contain exactly three application images")
     saved_tags = set()
+    expected = {entry["tag"]: entry for entry in images}
     for saved in archive_manifest:
         if not isinstance(saved, dict) or not isinstance(saved.get("Config"), str):
             raise ValueError("Invalid saved image metadata")
-        entry = configs.get(saved["Config"])
-        if entry is None or saved.get("RepoTags") != [entry["tag"]] or entry["tag"] in saved_tags:
+        tags = saved.get("RepoTags")
+        if not isinstance(tags, list) or len(tags) != 1 or not isinstance(tags[0], str):
+            raise ValueError("Archive contains unexpected image tags")
+        entry = expected.get(tags[0])
+        if entry is None or entry["tag"] in saved_tags:
             raise ValueError("Archive contains unexpected, missing, or duplicate image tags")
+        config_data = metadata.get(saved["Config"])
+        if config_data is None:
+            raise ValueError("Archived image config is missing")
+        config_id, config = config_data
+        config_hex = config_id.split(":", 1)[1]
+        if saved["Config"] not in (f"{config_hex}.json", f"blobs/sha256/{config_hex}"):
+            raise ValueError("Archived image config does not match its content digest")
+        if config.get("os") != entry["os"] or config.get("architecture") != entry["architecture"]:
+            raise ValueError("Archived image platform does not match the manifest")
+        if config_revision(config.get("config")) != entry["revision"]:
+            raise ValueError("Archived image revision does not match the source commit")
+        if entry["id"] != config_id:
+            image_manifest = metadata.get("blobs/sha256/" + entry["id"].split(":", 1)[1])
+            if image_manifest is None or image_manifest[0] != entry["id"]:
+                raise ValueError("Archived OCI image manifest is missing or its digest differs")
+            payload = image_manifest[1]
+            if payload.get("mediaType") not in (
+                "application/vnd.oci.image.manifest.v1+json",
+                "application/vnd.docker.distribution.manifest.v2+json",
+            ) or payload.get("schemaVersion") != 2 or "manifests" in payload or not isinstance(payload.get("layers"), list):
+                raise ValueError("A single-platform OCI image manifest is required")
+            if not isinstance(payload.get("config"), dict) or payload["config"].get("digest") != config_id:
+                raise ValueError("OCI manifest does not reference the verified image config")
+        if discover_config:
+            entry["configId"] = config_id
+        elif entry.get("configId", entry["id"]) != config_id:
+            raise ValueError("Image config ID differs from the release manifest")
         saved_tags.add(entry["tag"])
     if saved_tags != {entry["tag"] for entry in images}:
         raise ValueError("Archive image set does not match the release")
@@ -142,7 +182,8 @@ def create_manifest(directory, source_commit, inspect_image=inspect_docker_image
                        "revision": config_revision(actual.get("Config"))})
     manifest = {"schemaVersion": 1, "sourceCommit": source_commit, "filename": ARCHIVE_NAME,
                 "bytes": archive.stat().st_size, "sha256": file_digest(archive), "images": images}
-    verify_manifest(directory, manifest, source_commit)
+    validate_manifest(manifest, source_commit)
+    verify_archive(archive, images, discover_config=True)
     (directory / MANIFEST_NAME).write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     return manifest
 
@@ -160,14 +201,16 @@ def verify_manifest(directory, manifest, source_commit):
 
 def verify_loaded_images(manifest, inspect_image=inspect_docker_image):
     validate_manifest(manifest, manifest.get("sourceCommit"))
+    loaded = []
     for entry in manifest["images"]:
         actual = inspect_image(entry["tag"])
         revision = config_revision(actual.get("Config"))
-        if (actual.get("Id"), actual.get("Os"), actual.get("Architecture"), revision) != (
-            entry["id"], entry["os"], entry["architecture"], entry["revision"]
-        ):
+        if actual.get("Id") not in {entry["id"], entry.get("configId", entry["id"])} or (
+            actual.get("Os"), actual.get("Architecture"), revision
+        ) != (entry["os"], entry["architecture"], entry["revision"]):
             raise ValueError(f"Loaded image differs from verified release: {entry['service']}")
-    return {"status": "passed", "sourceCommit": manifest["sourceCommit"], "images": manifest["images"]}
+        loaded.append({**entry, "loadedId": actual["Id"]})
+    return {"status": "passed", "sourceCommit": manifest["sourceCommit"], "images": loaded}
 
 
 def write_compose_overrides(directory, manifest, inspect_image=inspect_docker_image):
@@ -250,14 +293,16 @@ def install_default_overrides(project_directory, release_directory, manifest, in
 def verify_running_images(manifest):
     report = verify_loaded_images(manifest)
     containers = []
-    for entry in manifest["images"]:
+    for entry in report["images"]:
         name = f"agentproject-{entry['service']}"
         actual = json.loads(subprocess.check_output(["docker", "container", "inspect", name], text=True))[0]
         revision = config_revision(actual.get("Config"))
-        if actual.get("Image") != entry["id"] or revision != entry["revision"] or actual.get("State", {}).get("Running") is not True:
+        if actual.get("Image") != entry["loadedId"] or revision != entry["revision"] or actual.get("State", {}).get("Running") is not True:
             raise ValueError(f"Running container differs from verified release: {name}")
         containers.append({"service": entry["service"], "container": name,
-                           "imageId": actual["Image"], "sourceCommit": revision, "running": True})
+                           "imageId": actual["Image"], "buildImageId": entry["id"],
+                           "configId": entry.get("configId", entry["id"]),
+                           "sourceCommit": revision, "running": True})
     report["containers"] = containers
     return report
 
