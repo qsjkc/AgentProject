@@ -431,30 +431,24 @@ jobs:
           done
           REMOTE_CAPACITY
 
-      - name: Upload application source
+      - name: Upload committed runtime configuration
         shell: bash
         run: |
           set -euo pipefail
-          tar \
-            --exclude='frontend/node_modules' \
-            --exclude='frontend/dist' \
-            --exclude='frontend/.vite' \
-            --exclude='backend/venv' \
-            --exclude='backend/__pycache__' \
-            --exclude='backend/**/*.pyc' \
-            --exclude='agent-server/.venv' \
-            --exclude='agent-server/.pytest_cache' \
-            -czf app-source.tgz \
-            agent-server backend deploy frontend docker-compose.yml .dockerignore
-          scp \
-            app-source.tgz \
-            "deploy-target:$DEPLOY_APP_DIR/"
+          python3 deploy/runtime_bundle.py --source-commit "$DEPLOY_SOURCE_SHA" \
+            --output deploy-runtime.tgz > runtime-bundle.json
+          cat runtime-bundle.json
+          RUNTIME_SHA256="$(python3 -c "import json; print(json.load(open('runtime-bundle.json'))['sha256'])")"
+          scp deploy-runtime.tgz "deploy-target:$DEPLOY_APP_DIR/.deploy-runtime-$DEPLOY_SOURCE_SHA.tgz"
+          # Stream this checked-out verifier; do not execute files from an unchecked archive.
           ssh deploy-target \
             "cd '$DEPLOY_APP_DIR' \
-             && rm -rf frontend/node_modules frontend/dist frontend/.vite backend/venv agent-server/.venv \
-             && tar xzf app-source.tgz \
-             && rm -f app-source.tgz"
-          rm -f app-source.tgz
+             && python3 - --install '.deploy-runtime-$DEPLOY_SOURCE_SHA.tgz' \
+                  --source-commit '$DEPLOY_SOURCE_SHA' --sha256 '$RUNTIME_SHA256' \
+             && rm -f -- '.deploy-runtime-$DEPLOY_SOURCE_SHA.tgz'" \
+            < deploy/runtime_bundle.py > runtime-install.json
+          cat runtime-install.json
+          rm -f -- deploy-runtime.tgz
 
       - name: Stage and load verified server images
         shell: bash
@@ -669,4 +663,6 @@ jobs:
             running-release.json
             running-images.json
             server-images/server-images.json
+            runtime-bundle.json
+            runtime-install.json
           if-no-files-found: warn

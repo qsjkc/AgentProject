@@ -633,12 +633,21 @@ export async function reducedMotionScenario(context) {
 }
 
 export async function failedKnowledgeUploadScenario(context) {
-  await resetAuthenticated(context)
   const main = context.pages.main
   const account = context.stub.fixture.accounts.get(USERS.A.id)
   account.documents = []
   account.failNextUpload = true
-  await main.click(REQUIRED_SELECTORS.mainTabKnowledge)
+  const initialDocuments = context.stub.holdNext('GET', '/api/v1/rag/documents')
+  try {
+    await resetAuthenticated(context)
+    await withTimeout(initialDocuments.arrived, 5000, 'initial document list')
+    await main.click(REQUIRED_SELECTORS.mainTabKnowledge)
+    assert(await main.evaluate("document.querySelector('[data-e2e=knowledge-upload]').disabled"), 'Initial document loading must disable competing uploads')
+    initialDocuments.release()
+    await waitFor(() => main.evaluate("document.querySelector('[data-e2e=knowledge-upload]')?.disabled === false && document.querySelector('.main-knowledge-panel')?.getAttribute('aria-busy') === 'false'"), { description: 'initial document loading releases upload control' })
+  } finally {
+    initialDocuments.release()
+  }
   const hold = context.stub.holdNext('POST', '/api/v1/rag/upload')
   await main.evaluate(`(() => {
     const transfer = new DataTransfer()
@@ -658,6 +667,7 @@ export async function failedKnowledgeUploadScenario(context) {
   await main.click(`[data-e2e-delete-document="${failedDocument.id}"]`)
   await waitFor(() => main.evaluate(`!document.querySelector('[data-e2e-document-id="${failedDocument.id}"]')`), { description: 'failed upload can be removed' })
   assertEqual(account.documents.length, 0, 'Deleting the failed document did not reclaim its slot')
+  await waitFor(() => main.evaluate("document.querySelector('[data-e2e=knowledge-upload]')?.disabled === false"), { description: 'document deletion releases upload control' })
   await main.evaluate(`(() => {
     const transfer = new DataTransfer()
     transfer.items.add(new File(['Start the day with one small task.'], 'companion-notes.md', { type: 'text/markdown' }))
@@ -671,7 +681,7 @@ export async function failedKnowledgeUploadScenario(context) {
   await main.screenshot(`${context.artifactPath}/knowledge-recovery.png`)
   await main.click('[data-e2e="knowledge-refresh"]')
   await waitFor(() => main.evaluate("document.querySelector('.main-knowledge-panel').getAttribute('aria-busy') === 'false'"), { description: 'document refresh finishes' })
-  return { failedUploadVisible: true, deleteReclaimsSlot: true, duplicateUploadBlocked: true, uploadRecovery: true }
+  return { initialDocumentLoadingBlocksUpload: true, failedUploadVisible: true, deleteReclaimsSlot: true, duplicateUploadBlocked: true, uploadRecovery: true }
 }
 
 export async function hiddenReminderDeadlineScenario(context) {
@@ -725,6 +735,7 @@ export async function conversationReturnScenario(context) {
   const sessionA = seed('历史 A')
   const sessionB = seed('历史 B')
   account.sessions = [sessionA, sessionB]
+  const initialHistory = context.stub.holdNext('GET', `/api/v1/chat/sessions/${sessionA.id}`)
   await resetAuthenticated(context)
   const main = context.pages.main
   const input = '[data-e2e="main-chat-input"]'
@@ -734,14 +745,20 @@ export async function conversationReturnScenario(context) {
     await main.waitForSelector(`[data-e2e-session-id="${session.id}"][aria-pressed="true"]`)
   }
   const contains = (message) => main.evaluate(`document.querySelector('.main-chat-stream').textContent.includes(${JSON.stringify(message)})`)
-  const holds = []
+  const holds = [initialHistory]
   let restoreFailure = null
   let restoreHistoryFailure = null
   try {
+    await withTimeout(initialHistory.arrived, 5000, 'initial conversation detail restoration')
     const first = '回来后仍能收到的回答'
     const firstHold = context.stub.holdNext('POST', '/api/v1/chat/message')
     holds.push(firstHold)
     await main.input(input, first)
+    assert(await main.evaluate(`document.querySelector(${JSON.stringify(send)}).disabled`), 'History selection allowed sending into an unresolved conversation')
+    initialHistory.release()
+    await main.waitForSelector(`[data-e2e-session-id="${sessionA.id}"][aria-pressed="true"]`)
+    await waitFor(() => main.evaluate(`document.querySelector(${JSON.stringify(send)})?.disabled === false`), { description: 'restored conversation is ready to send' })
+    assertEqual(await main.evaluate(`document.querySelector(${JSON.stringify(input)}).value`), first, 'Initial history restoration overwrote the user draft')
     await main.click(send)
     await withTimeout(firstHold.arrived, 5000, 'first pending conversation reply')
     await select(sessionB)
@@ -807,7 +824,7 @@ export async function conversationReturnScenario(context) {
     restoreFailure = null
     await main.click(send)
     await waitFor(() => contains('E2E 小猪收到：失败期间写的新草稿'), { description: 'chat succeeds after service recovery' })
-    return { revisitShowsReply: true, failedHistoryRefreshKeepsReply: true, otherConversationIsolated: true, staleHistoryRefetched: true, newerDraftPreserved: true, serviceFailureRecovered: true }
+    return { initialHistoryRetainsDraft: true, initialHistoryBlocksUnresolvedSend: true, revisitShowsReply: true, failedHistoryRefreshKeepsReply: true, otherConversationIsolated: true, staleHistoryRefetched: true, newerDraftPreserved: true, serviceFailureRecovered: true }
   } finally {
     restoreFailure?.()
     restoreHistoryFailure?.()
@@ -889,10 +906,16 @@ export async function sessionSummaryHistoryScenario(context) {
     await resetAuthenticated(context)
     await waitFor(() => main.evaluate("document.querySelector('.main-header-status')?.textContent.includes('这段历史暂时无法读取')"), { description: 'optional initial history failure is visible after login' })
     assert(await main.evaluate("Boolean(document.querySelector('[data-e2e=main-dashboard]'))"), 'History failure blocked account recovery')
+    await main.waitForSelector(`[data-e2e-session-id="${newest.id}"][aria-pressed="true"]`)
+    const initialDetailReads = context.stub.requests.slice(firstRequest).filter((request) => request.pathname === `/api/v1/chat/sessions/${newest.id}`).length
+    assert(initialDetailReads >= 1, 'The initial detail failure was not exercised')
     await main.input('[data-e2e="main-chat-input"]', '历史暂时不可用也能收到新回答')
     await main.click('[data-e2e="main-chat-send"]')
     await waitFor(() => main.evaluate("document.querySelector('.main-chat-stream').textContent.includes('E2E 小猪收到：历史暂时不可用也能收到新回答')"), { description: 'known answer is preserved when its detail refresh fails' })
     await waitFor(() => main.evaluate("document.querySelector('[data-e2e=main-chat-send]').textContent !== '发送中…' && document.querySelector('.main-chat-stream').getAttribute('aria-busy') === 'false'"), { description: 'failed detail refresh releases the active chat' })
+    const firstSend = context.stub.requests.slice(firstRequest).filter((request) => request.pathname === '/api/v1/chat/message').map((request) => JSON.parse(request.body)).find((body) => body.message === '历史暂时不可用也能收到新回答')
+    assertEqual(firstSend?.session_id, newest.id, 'Initial detail failure changed the first message to a new conversation')
+    assert(context.stub.requests.slice(firstRequest).filter((request) => request.pathname === `/api/v1/chat/sessions/${newest.id}`).length > initialDetailReads, 'The reply detail failure was not exercised against the selected conversation')
     restoreDetail()
     restoreDetail = null
     await main.click(`[data-e2e-session-id="${newest.id}"]`)
@@ -901,7 +924,8 @@ export async function sessionSummaryHistoryScenario(context) {
     await waitFor(() => main.evaluate(`document.querySelector('.main-chat-stream').textContent.includes(${JSON.stringify(second.messages[0].content)})`), { description: 'selecting a summary retrieves only its conversation' })
     assert(!await main.evaluate(`document.querySelector('.main-chat-stream').textContent.includes(${JSON.stringify(newest.messages[0].content)})`), 'Selecting another summary retained the previous conversation messages')
 
-    heldHistory = context.stub.holdNext('GET', `/api/v1/chat/sessions/${newest.id}`)
+    const restoringSession = account.sessions[0]
+    heldHistory = context.stub.holdNext('GET', `/api/v1/chat/sessions/${restoringSession.id}`)
     await resetAuthenticated(context)
     await withTimeout(heldHistory.arrived, 5000, 'initial history read held after restored login')
     await main.click('[data-e2e="new-chat"]')
@@ -909,13 +933,13 @@ export async function sessionSummaryHistoryScenario(context) {
     heldHistory.release()
     await main.click('[data-e2e="main-chat-send"]')
     await waitFor(() => main.evaluate("document.querySelector('.main-chat-stream').textContent.includes('E2E 小猪收到：历史恢复期间的新话题')"), { description: 'late initial history cannot replace a new conversation' })
-    assert(!await main.evaluate(`document.querySelector('.main-chat-stream').textContent.includes(${JSON.stringify(newest.messages[0].content)})`), 'A late initial detail entered the new conversation')
+    assert(!await main.evaluate(`document.querySelector('.main-chat-stream').textContent.includes(${JSON.stringify(restoringSession.messages[0].content)})`), 'A late initial detail entered the new conversation')
     const calls = context.stub.requests.slice(firstRequest)
     const listCalls = calls.filter((request) => request.method === 'GET' && request.pathname === '/api/v1/chat/sessions')
     assert(listCalls.length > 0 && listCalls.every((request) => new URLSearchParams(request.search).get('include_messages') === 'false'), 'Desktop fetched full message history inside a session list', listCalls)
     const body = calls.filter((request) => request.pathname === '/api/v1/chat/message').map((request) => JSON.parse(request.body)).find((value) => value.message === '历史恢复期间的新话题')
     assert(!body?.session_id, 'Late initial history rebound a new conversation to the old session')
-    return { summariesOnly: true, initialDetailFailureRecoverable: true, replyRetainedOnDetailFailure: true, lateInitialHistoryIsolated: true, fullBytes, summaryBytes }
+    return { summariesOnly: true, initialDetailFailureRecoverable: true, initialDetailFailureKeepsConversation: true, replyRetainedOnDetailFailure: true, lateInitialHistoryIsolated: true, fullBytes, summaryBytes }
   } finally {
     restoreDetail?.()
     heldHistory?.release()
