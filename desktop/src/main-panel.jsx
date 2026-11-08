@@ -61,6 +61,7 @@ import {
 } from './shared/pet-account-context'
 import { createMainPanelIntentConsumerController } from './shared/main-panel-intent-controller'
 import { createLoginOperations } from './shared/login-operations'
+import { createSessionRecoveryController } from './shared/session-recovery'
 import {
   getPetDailySummaryHighlights,
   getPetDailySummaryMessage,
@@ -98,6 +99,15 @@ const PET_OPTIONS = ['cat', 'dog', 'pig']
 
 function formatError(error, fallbackMessage) {
   return error instanceof Error ? error.message : fallbackMessage
+}
+
+function formatSessionRecoveryError(error, language) {
+  if (error instanceof TypeError && /^(failed to fetch|fetch failed|networkerror when attempting to fetch resource\.?|load failed)$/i.test(error.message.trim())) {
+    return language === 'zh-CN'
+      ? '连接失败，请检查网络后重新连接。'
+      : 'Unable to connect. Check your network and reconnect.'
+  }
+  return formatError(error, t(language, 'unableToReachService'))
 }
 
 function withTimeout(promise, timeoutMs, timeoutMessage) {
@@ -645,21 +655,40 @@ function CompanionSettingsPanel({
 function MainPanelApp() {
   const [initialized, setInitialized] = useState(false)
   const [authenticated, setAuthenticated] = useState(false)
+  const [sessionRecovery, setSessionRecovery] = useState({ status: 'idle', error: null })
+  const restoreDashboardRef = useRef(null)
+  const sessionRecoveryRef = useRef(null)
+  if (!sessionRecoveryRef.current) {
+    sessionRecoveryRef.current = createSessionRecoveryController({
+      readContext: async () => {
+        const [session, server] = await Promise.all([getSessionSnapshot(), getApiBaseUrl()])
+        return { session, server }
+      },
+      restore: (...args) => restoreDashboardRef.current(...args),
+      onStateChange: setSessionRecovery,
+    })
+  }
   const [user, setUser] = useState(null)
   const [tab, setTab] = useState('chat')
   const [sessions, setSessions] = useState([])
   const [activeSessionId, setActiveSessionId] = useState(null)
-  const conversationRef = useRef({ sessionId: null, selecting: false, pending: new Map(), revision: 0 })
+  const conversationRef = useRef({ sessionId: null, selecting: false, pending: new Map(), revision: 0, navigationRevision: 0 })
+  const [sessionsLoading, setSessionsLoading] = useState(false)
+  const [sessionsError, setSessionsError] = useState('')
+  const sessionListLoadRef = useRef(null)
   const updateActiveSessionId = (sessionId) => {
     conversationRef.current.sessionId = sessionId
     setActiveSessionId(sessionId)
   }
   const [messages, setMessages] = useState([])
   const [prompt, setPrompt] = useState('')
+  const promptValueRef = useRef(prompt)
+  promptValueRef.current = prompt
   const [reminderDraftError, setReminderDraftError] = useState(null)
   const promptInputRef = useRef(null)
   const [useRag, setUseRag] = useState(true)
   const [documents, setDocuments] = useState([])
+  const [documentsError, setDocumentsError] = useState('')
   const [knowledgeBusy, setKnowledgeBusy] = useState(false)
   const knowledgeMutationRef = useRef(null)
   const knowledgeFileRef = useRef(null)
@@ -1142,33 +1171,67 @@ function MainPanelApp() {
     }
   }
 
-  const loadDashboard = async (loginReceipt = null) => {
-    if (loginReceipt && (
-      !isSessionSnapshotCurrent(loginReceipt.session, await getSessionSnapshot())
-      || loginReceipt.server !== await getApiBaseUrl()
-    )) return false
+  const loadSessions = async ({ restoreLatest = false } = {}) => {
+    if (sessionListLoadRef.current) return
+    const initialContext = getCurrentMainPanelAccountContext()
+    const requestContext = sessionListGateRef.current.begin({
+      ...initialContext,
+      epoch: accountRequestEpochRef.current,
+      local: createLocalOperationContext(initialContext, 'account'),
+    })
+    const navigationRevision = conversationRef.current.navigationRevision
+    const conversationRevision = conversationRef.current.revision
+    sessionListLoadRef.current = requestContext
+    setSessionsLoading(true)
+    setSessionsError('')
+    const current = () => isMainPanelAccountRequestCurrent(requestContext)
+      && sessionListGateRef.current.isCurrent(requestContext, getCurrentMainPanelAccountContext())
+    try {
+      const operationContext = await captureApiOperationContext(requestContext, 'account')
+      if (!current()) return
+      const nextSessions = await desktopApi.getSessions(operationContext)
+      await assertApiOperationContextCurrent(operationContext)
+      if (!current()) return
+      setSessions(nextSessions)
+      if (restoreLatest && nextSessions[0]?.id
+        && conversationRef.current.navigationRevision === navigationRevision
+        && conversationRef.current.revision === conversationRevision
+        && conversationRef.current.pending.size === 0
+        && !promptValueRef.current.trim()) {
+        // A delayed list must not replace a newly selected conversation or draft.
+        // Keep the selected conversation even if its optional history read fails.
+        updateActiveSessionId(nextSessions[0].id)
+        setMessages(nextSessions[0].messages || [])
+        void handleSelectSession(nextSessions[0].id)
+      }
+    } catch (error) {
+      if (current()) setSessionsError(formatError(error, language === 'zh-CN' ? '会话列表暂时无法加载。' : 'Conversations are temporarily unavailable.'))
+    } finally {
+      if (sessionListLoadRef.current === requestContext) {
+        sessionListLoadRef.current = null
+        setSessionsLoading(false)
+      }
+    }
+  }
+
+  const loadDashboard = async (savedContext, recoveryAttempt) => {
+    if (!await recoveryAttempt.isContextCurrent()) return false
     const requestEpoch = accountRequestEpochRef.current + 1
     accountRequestEpochRef.current = requestEpoch
+    const current = () => recoveryAttempt.isCurrent() && accountRequestEpochRef.current === requestEpoch
+    // Retry through the existing capability renewal path. The main process
+    // permits only one initial capability capture per renderer instance.
     const operationContext = await captureApiOperationContext({
       epoch: requestEpoch,
-      ...(loginReceipt ? { session: loginReceipt.session, server: loginReceipt.server } : {}),
+      session: savedContext.session,
+      server: savedContext.server,
     }, 'account')
     const expectedToken = operationContext?.session?.token
     if (!expectedToken) {
       return false
     }
-    const [me, sessionList, documentList] = await Promise.all([
-      desktopApi.me(operationContext),
-      desktopApi.getSessions(operationContext),
-      desktopApi.getDocuments(operationContext),
-    ])
-    const currentSession = await getSessionSnapshot()
-    if (
-      accountRequestEpochRef.current !== requestEpoch
-      || !isSessionSnapshotCurrent(operationContext.session, currentSession)
-    ) {
-      return false
-    }
+    const me = await desktopApi.me(operationContext)
+    if (!await recoveryAttempt.isContextCurrent() || !current()) return false
 
     activeSessionTokenRef.current = expectedToken
     activeSessionSnapshotRef.current = operationContext.session
@@ -1186,15 +1249,15 @@ function MainPanelApp() {
     })
     const synchronizedCapability = synchronizedState?.authoritative
     if (
-      accountRequestEpochRef.current !== requestEpoch
+      !await recoveryAttempt.isContextCurrent() || !current()
       || !isSessionSnapshotCurrent(operationContext.session, activeSessionSnapshotRef.current)
     ) {
       return false
     }
     if (!synchronizedState?.ok || !synchronizedCapability) {
       throw new Error(language === 'zh-CN'
-        ? '暂时无法同步桌宠状态，请重新登录后再试。'
-        : 'Unable to sync your companion. Please sign in again.')
+        ? '暂时无法同步桌宠状态，请重试。'
+        : 'Unable to sync your companion. Please try again.')
     }
     activeAuthoritativeContextRef.current = synchronizedCapability
     // Child panels can request account-bound data as soon as they mount.
@@ -1202,29 +1265,24 @@ function MainPanelApp() {
     activeUserIdRef.current = me?.id ?? null
     activePetTypeRef.current = me?.preferences?.pet_type || 'cat'
     setUser(me)
-    setSessions(sessionList)
-    setDocuments(documentList)
-    updateActiveSessionId(sessionList[0]?.id ?? null)
-    setMessages(sessionList[0]?.messages || [])
+    setStatusText('')
     setAuthenticated(true)
-    // List rows are summaries. Restore only the newest conversation, without
-    // making its optional history read a prerequisite for account recovery.
-    if (sessionList[0]?.id) void handleSelectSession(sessionList[0].id)
+    // Optional collections cannot prevent a verified account from opening.
+    void loadSessions({ restoreLatest: true })
+    void handleRefreshDocuments({ silent: true })
     // The first relationship cache write consumes the shared pet capability.
     // Finish that transition before child panels derive their read capabilities.
-    const relationshipReady = await loadPetRelationship(me?.preferences?.pet_type || 'cat')
-    if (
-      accountRequestEpochRef.current !== requestEpoch
-      || !isSessionSnapshotCurrent(operationContext.session, activeSessionSnapshotRef.current)
-    ) return false
-    if (relationshipReady) void loadPetDailySummary(me?.preferences?.pet_type || 'cat')
-    await logDesktopDebug({
+    void loadPetRelationship(me?.preferences?.pet_type || 'cat').then((relationshipReady) => {
+      if (!current() || !isSessionSnapshotCurrent(operationContext.session, activeSessionSnapshotRef.current)) return
+      if (relationshipReady) void loadPetDailySummary(me?.preferences?.pet_type || 'cat')
+    })
+    void logDesktopDebug({
       event: 'main-panel-load-dashboard',
       petType: me?.preferences?.pet_type || 'cat',
-      sessionCount: sessionList.length,
     })
     return true
   }
+  restoreDashboardRef.current = loadDashboard
 
   const handleSaveApiBaseUrl = async (requestedUrl, operation) => {
     const attempt = operation.ownAttempt(await beginLoginAttempt(requestedUrl))
@@ -1271,11 +1329,12 @@ function MainPanelApp() {
           setCompanionSettingsState(normalizeCompanionSettings(savedCompanionSettings))
         }
 
-        if (!token || !savedApiBaseUrl) {
+        if (!active || !token || !savedApiBaseUrl) {
           return
         }
 
-        await loadDashboard()
+        setInitialized(true)
+        await sessionRecoveryRef.current.run()
         await logDesktopDebug({ event: 'main-panel-runtime-ready' })
       } catch (error) {
         if (active) {
@@ -1293,6 +1352,23 @@ function MainPanelApp() {
 
     return () => {
       active = false
+      sessionRecoveryRef.current.dispose()
+      accountRequestEpochRef.current += 1
+      sessionListLoadRef.current = null
+      knowledgeMutationRef.current = null
+      knowledgeSelectGateRef.current.invalidate()
+      sessionListGateRef.current.invalidate()
+      knowledgeUploadGateRef.current.invalidate()
+    }
+  }, [])
+
+  useEffect(() => {
+    const recover = () => { void sessionRecoveryRef.current.run({ automatic: true }) }
+    window.addEventListener('online', recover)
+    window.addEventListener('focus', recover)
+    return () => {
+      window.removeEventListener('online', recover)
+      window.removeEventListener('focus', recover)
     }
   }, [])
 
@@ -1445,6 +1521,11 @@ function MainPanelApp() {
   useEffect(() => {
     const unsubscribe = window.desktopBridge?.onPetRelationshipChanged?.((payload) => {
       if (payload === null || payload === undefined) {
+        sessionRecoveryRef.current.invalidate()
+        sessionListLoadRef.current = null
+        setSessionsLoading(false)
+        setSessionsError('')
+        setDocumentsError('')
         const runtimeReset = createMainPanelRelationshipNullReset()
         accountRequestEpochRef.current += 1
         relationshipRequestRef.current += 1
@@ -1660,6 +1741,7 @@ function MainPanelApp() {
     )
     const parsedReminder = parseReminder(outgoingMessage)
     if (parsedReminder.ok) {
+      conversationRef.current.navigationRevision += 1
       const reminderUserIdAtSend = user?.id
       const reminderPetTypeAtSend = currentPetType
       let reminderRequestContext = {
@@ -1797,6 +1879,7 @@ function MainPanelApp() {
       return
     }
 
+    conversationRef.current.navigationRevision += 1
     setPrompt('')
     setLoading(true)
     setStatusText(t(language, 'waitingResponse'))
@@ -1873,6 +1956,7 @@ function MainPanelApp() {
       if (listResult.status === 'fulfilled') {
         commitAccountOperation(sessionListGateRef.current, sessionListRequest, getCurrentMainPanelAccountContext(), () => {
           setSessions(listResult.value)
+          setSessionsError('')
         })
       }
       if (!isConversationCurrent() && !isReplyConversationVisible()) return
@@ -2104,6 +2188,7 @@ function MainPanelApp() {
   }
 
   const handleSelectSession = async (sessionId) => {
+    conversationRef.current.navigationRevision += 1
     // Capture the click order before IPC: slower capability capture must not win.
     const requestContext = knowledgeSelectGateRef.current.begin(getCurrentMainPanelAccountContext())
     conversationRef.current.selecting = true
@@ -2159,6 +2244,7 @@ function MainPanelApp() {
   }
 
   const handleNewChat = () => {
+    conversationRef.current.navigationRevision += 1
     knowledgeSelectGateRef.current.invalidate()
     conversationRef.current.selecting = false
     setSelectingSession(false)
@@ -2203,8 +2289,12 @@ function MainPanelApp() {
         try {
           const nextDocuments = await desktopApi.getDocuments(operationContext)
           await assertApiOperationContextCurrent(operationContext)
-          if (current()) setDocuments(nextDocuments)
+          if (current()) {
+            setDocuments(nextDocuments)
+            setDocumentsError('')
+          }
         } catch (refreshError) {
+          if (current()) setDocumentsError(formatError(refreshError, language === 'zh-CN' ? '文档列表暂时无法加载。' : 'Documents are temporarily unavailable.'))
           if (!uploadError) uploadError = refreshError
         }
       }
@@ -2260,7 +2350,7 @@ function MainPanelApp() {
     }
   }
 
-  const handleRefreshDocuments = async () => {
+  const handleRefreshDocuments = async ({ silent = false } = {}) => {
     if (knowledgeMutationRef.current) return
     const initialContext = getCurrentMainPanelAccountContext()
     const requestContext = knowledgeUploadGateRef.current.begin({
@@ -2268,6 +2358,7 @@ function MainPanelApp() {
     })
     knowledgeMutationRef.current = requestContext
     setKnowledgeBusy(true)
+    setDocumentsError('')
     try {
       const operationContext = await captureApiOperationContext(requestContext, 'account')
       if (knowledgeMutationRef.current !== requestContext) return
@@ -2275,11 +2366,12 @@ function MainPanelApp() {
       await assertApiOperationContextCurrent(operationContext)
       commitAccountOperation(knowledgeUploadGateRef.current, requestContext, getCurrentMainPanelAccountContext(), () => {
         setDocuments(nextDocuments)
-        setStatusText(language === 'zh-CN' ? '文档列表已更新。' : 'Document list updated.')
+        setDocumentsError('')
+        if (!silent) setStatusText(language === 'zh-CN' ? '文档列表已更新。' : 'Document list updated.')
       })
     } catch (error) {
       commitAccountOperation(knowledgeUploadGateRef.current, requestContext, getCurrentMainPanelAccountContext(), () => {
-        setStatusText(formatError(error, language === 'zh-CN' ? '更新文档列表失败，请重试。' : 'Unable to refresh documents. Try again.'))
+        setDocumentsError(formatError(error, language === 'zh-CN' ? '更新文档列表失败，请重试。' : 'Unable to refresh documents. Try again.'))
       })
     } finally {
       if (knowledgeMutationRef.current === requestContext) {
@@ -2728,6 +2820,11 @@ function MainPanelApp() {
   }
 
   const handleLogout = async () => {
+    sessionRecoveryRef.current.invalidate()
+    sessionListLoadRef.current = null
+    setSessionsLoading(false)
+    setSessionsError('')
+    setDocumentsError('')
     knowledgeMutationRef.current = null
     setKnowledgeBusy(false)
     knowledgeSelectGateRef.current.invalidate()
@@ -2775,6 +2872,11 @@ function MainPanelApp() {
   }
 
   const handleServerSetup = async () => {
+    sessionRecoveryRef.current.invalidate()
+    sessionListLoadRef.current = null
+    setSessionsLoading(false)
+    setSessionsError('')
+    setDocumentsError('')
     knowledgeMutationRef.current = null
     setKnowledgeBusy(false)
     knowledgeSelectGateRef.current.invalidate()
@@ -2866,13 +2968,56 @@ function MainPanelApp() {
   }
 
   if (!authenticated) {
+    if (sessionRecovery.status !== 'idle') {
+      const recovering = sessionRecovery.status === 'recovering'
+      return (
+        <div className="window-shell desktop-login" data-e2e="session-recovery" data-state={sessionRecovery.status}>
+          <header className="desktop-login-windowbar">
+            <span>Detachym</span>
+            <div className="window-titlebar-actions">
+              <button type="button" className="main-header-icon" title={t(language, 'minimizeWindow')} aria-label={t(language, 'minimizeWindow')} onClick={() => void window.desktopBridge?.minimizeMainPanel?.()}>
+                <Minus size={17} aria-hidden="true" />
+              </button>
+              <button type="button" className="main-header-icon" title={t(language, 'hideWindow')} aria-label={t(language, 'hideWindow')} onClick={() => void window.desktopBridge?.hideMainPanel?.()}>
+                <X size={17} aria-hidden="true" />
+              </button>
+            </div>
+          </header>
+          <main className="panel desktop-login-card session-recovery-card" aria-busy={recovering}>
+            <div className="desktop-login-meta">
+              <span>{t(language, 'desktopAccess')}</span>
+              <LanguageSelector language={language} onChange={updateLanguage} compact />
+            </div>
+            <div className="desktop-login-brand">
+              <img src={getPetVisual('pig', 'happy').image} alt="" />
+              <h1>{language === 'zh-CN' ? '恢复登录' : 'Restore your session'}</h1>
+            </div>
+            <p className="desktop-login-intro" role="status">
+              {recovering
+                ? (language === 'zh-CN' ? '正在连接服务，恢复你的登录状态…' : 'Connecting to restore your saved session…')
+                : (language === 'zh-CN' ? '暂时无法连接服务。登录信息已保留，连接恢复后可以继续使用。' : 'The service is temporarily unavailable. Your saved session is still here; reconnect to continue.')}
+            </p>
+            {!recovering && sessionRecovery.error && <p className="session-recovery-error">{formatSessionRecoveryError(sessionRecovery.error, language)}</p>}
+            <div className="session-recovery-actions">
+              <button type="button" className="button-primary" data-e2e="session-recovery-retry" disabled={recovering} onClick={() => void sessionRecoveryRef.current.run()}>
+                {recovering ? (language === 'zh-CN' ? '正在重试…' : 'Reconnecting…') : (language === 'zh-CN' ? '重新连接' : 'Reconnect')}
+              </button>
+              <button type="button" className="button-secondary" data-e2e="session-recovery-sign-out" onClick={handleLogout}>
+                {language === 'zh-CN' ? '退出并重新登录' : 'Sign out and sign in again'}
+              </button>
+            </div>
+          </main>
+        </div>
+      )
+    }
     return (
       <LoginView
         apiBaseUrl={apiBaseUrl}
         onApiBaseUrlChange={setApiBaseUrlState}
         onSaveApiBaseUrl={handleSaveApiBaseUrl}
         onLoggedIn={async (receipt) => {
-          if (await loadDashboard(receipt)) setInitialized(true)
+          sessionRecoveryRef.current.invalidate()
+          await sessionRecoveryRef.current.run({ context: receipt })
         }}
         statusText={statusText}
         language={language}
@@ -3102,6 +3247,12 @@ function MainPanelApp() {
 
               <div className="sidebar-section">
                 <div className="sidebar-title">{t(language, 'sessions')}</div>
+                {sessionsError && <div className="main-list-error" role="alert" data-e2e="sessions-error">
+                  <p>{sessionsError}</p>
+                  <button type="button" className="button-secondary" data-e2e="sessions-retry" disabled={sessionsLoading} onClick={() => void loadSessions()}>
+                    {language === 'zh-CN' ? '重新加载' : 'Retry'}
+                  </button>
+                </div>}
                 <div style={{ display: 'grid', gap: 10 }}>
                   {sessions.map((session) => (
                     <button
@@ -3120,7 +3271,7 @@ function MainPanelApp() {
                       {session.title}
                     </button>
                   ))}
-                  {sessions.length === 0 && <div style={{ color: '#64748b', fontSize: 14 }}>{t(language, 'noSessionYet')}</div>}
+                  {sessions.length === 0 && !sessionsError && <div style={{ color: '#64748b', fontSize: 14 }} role="status">{sessionsLoading ? (language === 'zh-CN' ? '正在加载会话…' : 'Loading conversations…') : t(language, 'noSessionYet')}</div>}
                 </div>
               </div>
             </aside>
@@ -3219,9 +3370,10 @@ function MainPanelApp() {
               </div>
             </div>
 
+            {documentsError && <div className="main-list-error" role="alert" data-e2e="documents-error">{documentsError}</div>}
             <div style={{ display: 'grid', gap: 12 }}>
               {documents.length === 0 ? (
-                <div style={{ fontSize: 14, color: '#64748b' }}>{t(language, 'noDocumentYet')}</div>
+                !documentsError && <div style={{ fontSize: 14, color: '#64748b' }} role="status">{knowledgeBusy ? (language === 'zh-CN' ? '正在加载文档…' : 'Loading documents…') : t(language, 'noDocumentYet')}</div>
               ) : (
                 documents.map((document) => (
                   <div

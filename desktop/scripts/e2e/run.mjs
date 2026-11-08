@@ -28,10 +28,11 @@ import { dressedPetScenario, petParityScenario } from './pet-parity-scenarios.mj
 import { focusHistoryScenario, prepareFocusHistoryFixture } from './focus-history-scenarios.mjs'
 import { capabilityRenewalScenario, prepareCapabilityRenewalFixture } from './capability-renewal-scenario.mjs'
 import { desktopReleaseScenario } from './desktop-release-scenario.mjs'
+import { sessionRecoveryScenario, optionalDashboardRecoveryScenario, sessionRecoveryBoundaryScenario } from './session-recovery-scenarios.mjs'
 import { startStubServer } from './stub-server.mjs'
 
-const SCENARIOS = Object.freeze({ ...BASE_SCENARIOS, 'pet-parity': petParityScenario, 'dressed-pets': dressedPetScenario, 'focus-history': focusHistoryScenario, 'capability-renewal': capabilityRenewalScenario, 'desktop-release': desktopReleaseScenario })
-const FULL_SCENARIO_ORDER = Object.freeze([...BASE_SCENARIO_ORDER, 'pet-parity', 'dressed-pets', 'focus-history', 'capability-renewal', 'desktop-release'])
+const SCENARIOS = Object.freeze({ ...BASE_SCENARIOS, 'pet-parity': petParityScenario, 'dressed-pets': dressedPetScenario, 'focus-history': focusHistoryScenario, 'capability-renewal': capabilityRenewalScenario, 'desktop-release': desktopReleaseScenario, 'session-recovery': sessionRecoveryScenario, 'optional-dashboard-recovery': optionalDashboardRecoveryScenario, 'session-recovery-boundaries': sessionRecoveryBoundaryScenario })
+const FULL_SCENARIO_ORDER = Object.freeze([...BASE_SCENARIO_ORDER, 'pet-parity', 'dressed-pets', 'focus-history', 'capability-renewal', 'desktop-release', 'session-recovery', 'optional-dashboard-recovery', 'session-recovery-boundaries'])
 
 const execFileAsync = promisify(execFile)
 const E2E_TEMP_PREFIX = 'detachym-e2e-'
