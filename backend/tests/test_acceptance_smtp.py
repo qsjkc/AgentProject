@@ -10,13 +10,27 @@ from app.core.config import settings
 from app.services.email import _send_email_sync
 
 
-def test_acceptance_sink_receives_actual_tls_authenticated_mime(monkeypatch):
+@pytest.mark.parametrize("locked_capture", [False, True])
+def test_acceptance_sink_receives_actual_tls_authenticated_mime(monkeypatch, locked_capture):
     path = Path(__file__).parents[1] / "scripts" / "acceptance_smtp.py"
     spec = importlib.util.spec_from_file_location("acceptance_smtp_test", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     with TemporaryDirectory(prefix="detachym-e2e-smtp-") as directory:
         runtime = Path(directory)
+        if locked_capture:
+            replace = Path.replace
+            failures = []
+
+            def replace_after_reader_closes(source, destination):
+                if source == runtime / "smtp-messages.next" and not failures:
+                    failures.append(source)
+                    error = PermissionError("capture reader holds a lock")
+                    error.winerror = 5
+                    raise error
+                return replace(source, destination)
+
+            monkeypatch.setattr(Path, "replace", replace_after_reader_closes)
         sink = module.start_smtp_sink(runtime, "local-acceptance-only")
         try:
             monkeypatch.setattr(settings, "SMTP_SERVER", "127.0.0.1")
@@ -30,6 +44,8 @@ def test_acceptance_sink_receives_actual_tls_authenticated_mime(monkeypatch):
             assert records[0]["recipients"] == ["recipient@example.com"]
             assert records[0]["subject"] == "注册验证码"
             assert "123456" in records[0]["html"]
+            if locked_capture:
+                assert failures == [runtime / "smtp-messages.next"]
             with smtplib.SMTP("127.0.0.1", sink.server_address[1], timeout=5) as client:
                 client.starttls()
                 with pytest.raises(smtplib.SMTPAuthenticationError):

@@ -8,6 +8,7 @@ from pathlib import Path
 import socketserver
 import ssl
 import threading
+import time
 
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
@@ -83,12 +84,21 @@ def start_smtp_sink(runtime: Path, password: str):
                     parsed = BytesParser(policy=policy.default).parsebytes(b"".join(chunks))
                     html = next((part.get_content() for part in parsed.walk() if part.get_content_type() == "text/html"), "")
                     with lock:
-                        messages.append({"receivedAt": datetime.now(timezone.utc).isoformat(),
-                                         "recipients": recipients, "subject": str(parsed["Subject"]),
-                                         "html": html, "tls": encrypted, "authenticated": authenticated})
+                        message = {"receivedAt": datetime.now(timezone.utc).isoformat(),
+                                   "recipients": recipients, "subject": str(parsed["Subject"]),
+                                   "html": html, "tls": encrypted, "authenticated": authenticated}
                         temporary = capture_path.with_suffix(".next")
-                        temporary.write_text(json.dumps(messages, ensure_ascii=False), encoding="utf-8")
-                        temporary.replace(capture_path)
+                        temporary.write_text(json.dumps([*messages, message], ensure_ascii=False), encoding="utf-8")
+                        for attempt in range(10):
+                            try:
+                                temporary.replace(capture_path)
+                                break
+                            except PermissionError as error:
+                                # Windows can deny replacement while the test runner reads the previous log.
+                                if getattr(error, "winerror", None) not in {5, 32, 33} or attempt == 9:
+                                    raise
+                                time.sleep(0.05)
+                        messages.append(message)
                     reply("250 Captured locally; no external relay")
                 elif command == "QUIT":
                     reply("221 Bye")
