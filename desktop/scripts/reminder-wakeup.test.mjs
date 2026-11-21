@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import reminderWakeup from '../electron/reminder-wakeup.cjs'
 import {
+  createReminderDeliveryController,
   createReminderPollController,
   getReminderPollPlan,
   REMINDER_BACKLOG_DELAY_MS,
@@ -130,6 +131,117 @@ test('invalid scheduling inputs and unknown owners cannot arm a reminder clock',
 })
 
 const row = (id, at, extra = {}) => ({ id, remind_at: new Date(at).toISOString(), status: 'pending', triggered_at: null, ...extra })
+
+function receiptProfile() {
+  let saved = null
+  const storage = {
+    getItem: () => saved,
+    setItem: (_key, value) => { saved = value },
+  }
+  return {
+    open: () => createReminderDeliveryController({ getStorage: () => storage, now: () => 1_000_000 }),
+    receipts: () => JSON.parse(saved || '[]'),
+  }
+}
+
+const reminderContext = { server: 'https://reminders.example/api/v1', userId: 1, petType: 'pig' }
+const dueReminder = row(17, 999_900, { user_id: 1, pet_type: 'pig' })
+
+test('a failed trigger acknowledgment retries after renderer reload without replaying either channel', async () => {
+  const profile = receiptProfile()
+  let presentations = 0
+  let acknowledgements = 0
+  const attempt = {
+    context: reminderContext,
+    reminder: dueReminder,
+    present: (remember) => { presentations++; remember() },
+    acknowledge: () => {
+      if (++acknowledgements === 1) throw new Error('503 before trigger commit')
+      return true
+    },
+  }
+  await assert.rejects(profile.open().deliver(attempt), /503/)
+  assert.equal(profile.receipts().length, 1)
+  assert.deepEqual(await profile.open().deliver(attempt), { nextAt: 1_000_000 + REMINDER_BACKLOG_DELAY_MS })
+  assert.equal(presentations, 1)
+  assert.equal(acknowledgements, 2)
+  assert.deepEqual(profile.receipts(), [])
+})
+
+test('an unavailable presentation channel does not consume an unseen reminder', async () => {
+  const profile = receiptProfile()
+  const controller = profile.open()
+  let acknowledgements = 0
+  const attempt = {
+    context: reminderContext,
+    reminder: dueReminder,
+    present: () => {},
+    acknowledge: () => { acknowledgements++; return true },
+  }
+  assert.deepEqual(await controller.deliver(attempt), { retry: true })
+  assert.equal(acknowledgements, 0)
+  assert.deepEqual(profile.receipts(), [])
+
+  // A visible pet can record its bubble even when the native channel is muted.
+  await controller.deliver({ ...attempt, present: (remember) => remember() })
+  assert.equal(acknowledgements, 1)
+})
+
+test('a rejected native notification IPC cannot replay an already displayed bubble', async () => {
+  const profile = receiptProfile()
+  const controller = profile.open()
+  let bubbles = 0
+  let acknowledgements = 0
+  const attempt = {
+    context: reminderContext,
+    reminder: dueReminder,
+    present: (remember) => {
+      bubbles++
+      remember()
+      throw new Error('native notification IPC disconnected')
+    },
+    acknowledge: () => { acknowledgements++; return true },
+  }
+  await assert.rejects(controller.deliver(attempt), /IPC disconnected/)
+  await controller.deliver(attempt)
+  assert.equal(bubbles, 1)
+  assert.equal(acknowledgements, 1)
+})
+
+test('delivery receipts respect the exact scope and deadline and reconcile only covered occurrences', async () => {
+  const profile = receiptProfile()
+  const controller = profile.open()
+  let presentations = 0
+  const attempt = {
+    context: reminderContext,
+    reminder: dueReminder,
+    present: (remember) => { presentations++; remember() },
+    acknowledge: () => false,
+  }
+  await controller.deliver(attempt)
+  await controller.deliver(attempt)
+  await controller.deliver({ ...attempt, context: { ...reminderContext, server: 'https://other.example/api/v1' } })
+  await controller.deliver({
+    ...attempt,
+    context: { ...reminderContext, userId: 2 },
+    reminder: { ...dueReminder, user_id: 2 },
+  })
+  await controller.deliver({
+    ...attempt,
+    context: { ...reminderContext, petType: 'dog' },
+    reminder: { ...dueReminder, pet_type: 'dog' },
+  })
+  const movedReminder = { ...dueReminder, remind_at: dueReminder.remind_at.replace('.900Z', '.900001Z') }
+  assert.equal(Date.parse(movedReminder.remind_at), Date.parse(dueReminder.remind_at))
+  await controller.deliver({ ...attempt, reminder: movedReminder })
+  assert.equal(presentations, 5)
+  controller.reconcile(reminderContext, [dueReminder], 1_000_000)
+  assert.equal(profile.receipts().length, 4)
+  controller.reconcile(reminderContext, [], 999_800)
+  assert.equal(profile.receipts().length, 4)
+  controller.reconcile(reminderContext, [], 1_000_000)
+  assert.equal(profile.receipts().length, 3)
+})
 
 test('future reminders only set a deadline and completed, canceled, delivered or invalid rows never deliver', () => {
   const now = 1_000_000

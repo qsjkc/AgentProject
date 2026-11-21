@@ -1,6 +1,6 @@
 import { join } from 'node:path'
 import { assert, assertEqual, waitFor } from './assertions.mjs'
-import { USERS, createJwt, createRelationship } from './fixtures.mjs'
+import { USERS, createDailySummary, createJwt, createRelationship } from './fixtures.mjs'
 import { callE2e, ensureBaseBridge, expectSnapshot, loginAs, resetToLoggedOut } from './p1k-scenarios.mjs'
 
 const ME = '/api/v1/auth/me'
@@ -50,6 +50,36 @@ async function start(context) {
   await resetToLoggedOut(context)
   await loginAs(context, USERS.A)
   await expectSnapshot(context.pages.main, (snapshot) => snapshot.renderer?.[0]?.userId === USERS.A.id, 'account A dashboard ready')
+}
+
+async function assertDailySummaryRollsOver(context, petType) {
+  const main = context.pages.main
+  const path = `/api/v1/pets/${petType}/daily-summary`
+  const summary = createDailySummary(petType, new Date('2031-04-08T00:00:00Z'))
+  const tomorrow = '2031-04-09'
+  const waitForDate = (date) => waitFor(
+    () => main.evaluate(`document.querySelector('.daily-summary-date')?.textContent === ${JSON.stringify(date)}`),
+    { timeoutMs: 5000, description: `visible daily summary for ${date}` },
+  )
+  let restoreResponse = context.stub.overrideResponse('GET', path, 200, summary)
+  try {
+    await main.reload()
+    await waitForDate(summary.local_date)
+    restoreResponse()
+    restoreResponse = context.stub.overrideResponse('GET', path, 200, { ...summary, local_date: tomorrow })
+    await main.evaluate(`(() => {
+      const originalNow = Date.now
+      window.restoreDailySummaryClock = () => { Date.now = originalNow; delete window.restoreDailySummaryClock }
+      Date.now = () => Date.parse('2031-04-08T16:00:01Z')
+      window.dispatchEvent(new Event('focus'))
+      window.dispatchEvent(new Event('online'))
+    })()`)
+    await waitForDate(tomorrow)
+    assert(await absent(main, LOGIN), 'Day rollover sent the authenticated panel to login')
+  } finally {
+    restoreResponse()
+    await main.evaluate('window.restoreDailySummaryClock?.()')
+  }
 }
 
 export async function sessionRecoveryScenario(context) {
@@ -218,6 +248,7 @@ export async function optionalDashboardRecoveryScenario(context) {
         await waitFor(() => account.reminders.some((item) => item.source_text === message), { description: 'first reminder persists after late history' })
       }
     }
+    await assertDailySummaryRollsOver(context, account.preferences.pet_type)
     return {
       historyFailureDoesNotBlockAccount: true,
       documentsFailureDoesNotBlockAccount: true,
@@ -227,6 +258,7 @@ export async function optionalDashboardRecoveryScenario(context) {
       delayedHistoryPreservesDefaultChatDraft: true,
       delayedHistoryPreservesFirstChat: true,
       delayedHistoryPreservesFirstReminder: true,
+      dailySummaryRollsOverOnFocus: true,
     }
   } finally {
     restore()

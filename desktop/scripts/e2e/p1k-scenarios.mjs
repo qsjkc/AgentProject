@@ -1,3 +1,4 @@
+import { readFile } from 'node:fs/promises'
 import { assert, assertEqual, assertIncludes, waitFor } from './assertions.mjs'
 import {
   CAPABILITY_TTL_MS,
@@ -731,6 +732,59 @@ export async function hiddenReminderDeadlineScenario(context) {
   }
 }
 
+export async function reminderConfirmationRetryScenario(context) {
+  await resetAuthenticated(context)
+  const pet = context.pages.pet
+  await waitFor(() => pet.evaluate("document.visibilityState === 'visible'"), { description: 'pet visible for overdue reminder' })
+  const account = context.stub.fixture.accounts.get(USERS.A.id)
+  const previousReminders = account.reminders
+  const reminder = createReminderRecord({
+    user: USERS.A,
+    id: context.stub.fixture.nextReminderId++,
+    title: '等待确认的会话恢复提醒',
+    remindAt: new Date(Date.now() - 1000),
+  })
+  const route = `/api/v1/reminders/${reminder.id}/trigger`
+  const triggerAttempts = () => context.stub.requests.filter((request) => request.method === 'POST' && request.pathname === route).length
+  const failedTrigger = context.stub.holdNext('POST', route, {
+    statusCode: 503,
+    payload: { detail: 'Temporary trigger confirmation failure' },
+  })
+  const successfulTrigger = context.stub.holdNext('POST', route)
+  const { logPath } = await pet.evaluate('window.desktopBridge.getLogPaths()')
+  const presentations = async () => (await readFile(logPath, 'utf8')).trim().split('\n').map((line) => JSON.parse(line))
+    .filter((record) => record.payload?.event === 'reminder:presented' && record.payload.details?.reminderId === reminder.id)
+    .map((record) => record.payload.details)
+  account.reminders = [reminder]
+  const firstPoll = callE2e(pet, 'flushReminderPoll')
+  try {
+    await withTimeout(failedTrigger.arrived, 15_000, 'first attempt to acknowledge overdue reminder')
+    assert(await pet.evaluate(`document.querySelector('.pet-bubble')?.textContent.includes(${JSON.stringify(reminder.title)})`), 'The first overdue reminder did not display a bubble')
+    failedTrigger.release()
+    await firstPoll
+    assert(!reminder.triggered_at, 'The failed acknowledgment nevertheless triggered the reminder')
+
+    // Force a fresh renderer with the same profile before the acknowledgment retry.
+    // The runner does not re-seed the login, local storage, or the reminder.
+    await pet.reload()
+    await withTimeout(successfulTrigger.arrived, 15_000, 'acknowledgment retry from the same profile')
+    assert(await pet.evaluate(`!document.querySelector('.pet-bubble')?.textContent.includes(${JSON.stringify(reminder.title)})`), 'The acknowledgment retry replayed the reminder bubble')
+    successfulTrigger.release()
+    await waitFor(() => reminder.triggered_at, { description: 'overdue reminder acknowledgment persisted' })
+    await callE2e(pet, 'flushReminderPoll')
+    assertEqual(triggerAttempts(), 2, 'Exactly one retry should confirm the reminder')
+    const receipts = await presentations()
+    assertEqual(receipts.length, 1, 'The acknowledgment retry emitted another presentation')
+    assert(receipts[0].bubbleShown && receipts[0].nativeShown, 'The first presentation did not cover both channels', receipts[0])
+    return { triggerAttempts: triggerAttempts(), presentations: receipts.length, sameProfileReload: true }
+  } finally {
+    failedTrigger.release()
+    successfulTrigger.release()
+    await firstPoll.catch(() => {})
+    account.reminders = previousReminders
+  }
+}
+
 export async function conversationReturnScenario(context) {
   const account = context.stub.fixture.accounts.get(USERS.A.id)
   const createdAt = new Date().toISOString()
@@ -1306,6 +1360,7 @@ export const SCENARIOS = Object.freeze({
   'reduced-motion': reducedMotionScenario,
   'failed-knowledge-upload': failedKnowledgeUploadScenario,
   'hidden-reminder-deadline': hiddenReminderDeadlineScenario,
+  'reminder-confirmation-retry': reminderConfirmationRetryScenario,
   'conversation-return': conversationReturnScenario,
   'quick-chat-refresh-recovery': quickChatRefreshRecoveryScenario,
   'session-summary-history': sessionSummaryHistoryScenario,

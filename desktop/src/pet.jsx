@@ -111,7 +111,7 @@ import {
 import { PET_ONBOARDING_MAIN_PANEL_INTENT } from './shared/pet-onboarding-main'
 import { getPetVisual } from './shared/pets'
 import { getPendingReminders, markReminderTriggered } from './shared/reminders-api'
-import { createReminderPollController, getReminderPollPlan, REMINDER_BACKLOG_DELAY_MS, REMINDER_RECONCILE_MS } from './shared/reminder-poll'
+import { createReminderDeliveryController, createReminderPollController, getReminderPollPlan, REMINDER_RECONCILE_MS } from './shared/reminder-poll'
 
 const DEFAULT_PREFERENCES = {
   quick_chat_enabled: true,
@@ -257,6 +257,8 @@ function PetApp() {
   const interruptOnboardingGuideRef = useRef(null)
   const relationshipLoadEpochRef = useRef(0)
   const reminderPollRef = useRef(null)
+  const reminderDeliveryRef = useRef(null)
+  if (!reminderDeliveryRef.current) reminderDeliveryRef.current = createReminderDeliveryController()
   const companionSettingsRef = useRef(DEFAULT_COMPANION_SETTINGS)
   const companionStateRef = useRef(DEFAULT_COMPANION_STATE)
   const companionStateReadyRef = useRef(false)
@@ -2787,37 +2789,61 @@ function PetApp() {
       if (!hasSessionRef.current || !mounted) return
       const requestContext = getCurrentPetAccountContext()
       const server = await getApiBaseUrl()
-      const operationContext = { ...await capturePetApiOperation(requestContext), server }
-      const isCurrent = () => mounted && isPetAccountOperationCurrent(requestContext, getCurrentPetAccountContext())
+      const operationContext = await capturePetApiOperation({ ...requestContext, server })
+      const isCurrent = () => mounted && isPetAccountOperationCurrent(operationContext, getCurrentPetAccountContext())
       if (!isCurrent()) return
       latestOperation = operationContext
       // Re-read at every deadline: a reminder may have been canceled or moved
       // while its wakeup timer was waiting. Future rows only choose the deadline.
+      const dueBefore = Date.now() + REMINDER_RECONCILE_MS
       const reminders = await getPendingReminders(
         requestContext.petType,
-        new Date(Date.now() + REMINDER_RECONCILE_MS),
+        new Date(dueBefore),
         false,
         operationContext,
       )
       if (!isCurrent()) return
+      reminderDeliveryRef.current.reconcile(operationContext, reminders, dueBefore)
       const plan = getReminderPollPlan(reminders, Date.now())
       if (!plan.reminder) return { nextAt: plan.nextAt }
       const reminder = plan.reminder
-      const copy = getPetReminderCopy(requestContext.petType).reminderDue(reminder.title)
-      await interruptOnboardingGuide('reminder-due')
-      await interruptMilestonePlayback('reminder-due')
-      if (!isCurrent() || server !== await getApiBaseUrl() || !isCurrent()) return
-      setTransientBubbleForDuration(copy, 8000)
-      dispatchPetAnimation({ type: 'REMINDER_DUE', message: copy })
-      const notificationShown = await window.desktopBridge?.showNotification?.({
-        title: 'Detachym',
-        body: copy,
-        reminderServer: server,
-      }, operationContext.authoritative)
-      if (!isCurrent()) return
-      if (notificationShown !== true) return { retry: true }
-      await markReminderTriggered(reminder.id, operationContext)
-      return { nextAt: Date.now() + REMINDER_BACKLOG_DELAY_MS }
+      return reminderDeliveryRef.current.deliver({
+        context: operationContext,
+        reminder,
+        present: async (recordPresentation) => {
+          const copy = getPetReminderCopy(requestContext.petType).reminderDue(reminder.title)
+          await interruptOnboardingGuide('reminder-due')
+          await interruptMilestonePlayback('reminder-due')
+          await assertApiOperationContextCurrent(operationContext)
+          if (!isCurrent()) return
+
+          const bubbleShown = document.visibilityState === 'visible' && phaseRef.current === VOICE_PHASES.IDLE
+          if (bubbleShown) {
+            setTransientBubbleForDuration(copy, 8000)
+            dispatchPetAnimation({ type: 'REMINDER_DUE', message: copy })
+            recordPresentation()
+          }
+
+          let nativeShown = false
+          try {
+            nativeShown = await window.desktopBridge?.showNotification?.({
+              title: 'Detachym',
+              body: copy,
+              reminderServer: server,
+            }, operationContext.authoritative) === true
+            if (nativeShown) recordPresentation()
+          } finally {
+            if (bubbleShown || nativeShown) loggerRef.current.event('reminder:presented', {
+              reminderId: reminder.id, dueAt: reminder.remind_at, bubbleShown, nativeShown,
+            })
+          }
+        },
+        acknowledge: async () => {
+          if (!isCurrent()) return false
+          await markReminderTriggered(reminder.id, operationContext)
+          return true
+        },
+      })
     }
 
     const controller = createReminderPollController({
