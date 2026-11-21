@@ -436,26 +436,33 @@ export const intentAckTimeoutScenario = (context) => ackFailureScenario(context,
 export async function quickBroadcastBeforeChatScenario(context) {
   await ensureBaseBridge(context)
   await resetAuthenticated(context)
-  await callE2e(
-    context.pages.main,
-    'broadcastRelationshipTo',
-    'quick-chat',
-    createRelationship(USERS.A),
-  )
-  await callE2e(context.pages.quick, 'showWindow', 'quick-chat')
-  const adopted = await expectSnapshot(
-    context.pages.quick,
-    (value) => value.relationship?.user_id === 101 && value.relationshipCapabilityAdopted === true,
-    'quick-chat relationship broadcast adoption',
-  )
-  await context.pages.quick.input(REQUIRED_SELECTORS.quickChatInput, '你好，小猪')
-  await context.pages.quick.click(REQUIRED_SELECTORS.quickChatSend)
-  await context.pages.quick.waitForSelector(REQUIRED_SELECTORS.quickChatAssistantMessage)
-  assert(
-    context.stub.requests.some((request) => request.pathname === '/api/v1/chat/message'),
-    'Quick chat did not make a real stub-backed chat request',
-  )
-  return { adoptedRelationship: adopted.relationship }
+  const quick = context.pages.quick
+  const restorePreferences = context.stub.overrideResponse('GET', '/api/v1/users/me/preferences', 503, { detail: 'Temporary preference failure' })
+  const reply = context.stub.holdNext('POST', '/api/v1/chat/message')
+  try {
+    await callE2e(quick, 'showWindow', 'quick-chat')
+    await quick.evaluate('window.dispatchEvent(new Event("focus"))')
+    await quick.waitForSelector('[data-e2e="quick-chat-sync-error"]')
+    await callE2e(context.pages.main, 'broadcastRelationshipTo', 'quick-chat', createRelationship(USERS.A))
+    const adopted = await expectSnapshot(
+      quick,
+      (value) => value.relationship?.user_id === 101 && value.relationshipCapabilityAdopted === true,
+      'quick-chat relationship broadcast adoption',
+    )
+    await quick.input(REQUIRED_SELECTORS.quickChatInput, '你好，小猪')
+    await quick.click(REQUIRED_SELECTORS.quickChatSend)
+    await withTimeout(reply.arrived, 5000, 'quick-chat request after adopting the relationship')
+
+    restorePreferences()
+    await quick.evaluate('window.dispatchEvent(new Event("focus"))')
+    await waitFor(() => quick.evaluate('!document.querySelector("[data-e2e=quick-chat-sync-error]")'), { description: 'preferences refresh completes while the reply is pending' })
+    reply.release()
+    await waitFor(() => quick.evaluate(`document.querySelector(${JSON.stringify(REQUIRED_SELECTORS.quickChatAssistantMessage)})?.textContent.includes('E2E 小猪收到：你好，小猪')`), { description: 'quick reply survives the successful preferences refresh' })
+    return { adoptedRelationship: adopted.relationship, replySurvivesPreferenceRecovery: true }
+  } finally {
+    restorePreferences()
+    reply.release()
+  }
 }
 
 export async function focusTogetherScenario(context) {
