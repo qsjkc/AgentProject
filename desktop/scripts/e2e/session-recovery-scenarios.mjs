@@ -151,7 +151,7 @@ export async function optionalDashboardRecoveryScenario(context) {
     const restoringList = context.stub.holdNext('GET', SESSIONS)
     held.push(restoringList)
     await main.send('Network.enable')
-    const dailySummary = observeNextResponse(main, '/api/v1/pets/pig/daily-summary')
+    const dailySummary = observeNextResponse(main, `/api/v1/pets/${account.preferences.pet_type}/daily-summary`)
     try {
       await main.reload()
       await heldArrival(restoringList, 'initial history held while the relationship refreshes')
