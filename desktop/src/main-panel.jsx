@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import ReactDOM from 'react-dom/client'
 import { MessageCircle, Minus, Plus, Settings2, Sprout, X } from 'lucide-react'
 
@@ -3095,6 +3095,49 @@ function MainPanelApp() {
     )
   }
 
+  const todaySection = (
+    <section key="companion-today" className="main-today" id="companion-today" tabIndex={-1} aria-labelledby="companion-today-heading" data-e2e="companion-today">
+      <h2 id="companion-today-heading"><Sprout size={17} aria-hidden="true" />{language === 'zh-CN' ? '今天一起' : 'Today together'}</h2>
+      <DailyStepPanel
+        key={todayContextKey}
+        language={language}
+        accountContext={{ hasSession: authenticated, server: apiBaseUrl, userId: user?.id, petType: currentPetType }}
+        onFocus={petDataReady ? handleFocusTodayStep : undefined}
+      />
+      <PetDailySummaryPanel
+        language={language}
+        petType={currentPetType}
+        summary={petDataReady ? petDailySummary : null}
+        loading={petDailySummaryLoading || (!petDataReady && !petRelationshipError)}
+        onRetry={petDataReady ? () => void loadPetDailySummary(currentPetType) : undefined}
+      />
+    </section>
+  )
+  const relationshipSection = petDataReady ? (
+    <Fragment key="companion-relationship">
+      <PetRelationshipSummary
+        language={language}
+        petType={currentPetType}
+        relationship={petRelationship}
+        loading={petRelationshipLoading}
+        sectionRef={relationshipSummaryRef}
+      />
+      {petOnboardingScene && (
+        <PetOnboardingCard
+          sectionRef={petOnboardingCardRef}
+          language={language}
+          scene={petOnboardingScene}
+          relationship={petRelationship}
+          busy={petOnboardingBusy || savingOutfit || reminderSavePending}
+          error={petOnboardingError}
+          onCreateSampleReminder={() => void handleCreateOnboardingReminder()}
+          onSnooze={() => void handleSnoozePetOnboarding()}
+          onDismiss={() => void handleDismissPetOnboarding()}
+        />
+      )}
+    </Fragment>
+  ) : null
+
   return (
     <div className="window-shell main-panel-shell" data-e2e="main-dashboard">
       <div className="window-card window-card-main">
@@ -3187,22 +3230,7 @@ function MainPanelApp() {
         {effectiveTab === 'chat' ? (
           <div className="main-chat-layout">
             <aside className="panel main-companion-sidebar">
-              <section className="main-today" id="companion-today" tabIndex={-1} aria-labelledby="companion-today-heading" data-e2e="companion-today">
-                <h2 id="companion-today-heading"><Sprout size={17} aria-hidden="true" />{language === 'zh-CN' ? '今天一起' : 'Today together'}</h2>
-                <DailyStepPanel
-                  key={todayContextKey}
-                  language={language}
-                  accountContext={{ hasSession: authenticated, server: apiBaseUrl, userId: user?.id, petType: currentPetType }}
-                  onFocus={petDataReady ? handleFocusTodayStep : undefined}
-                />
-                <PetDailySummaryPanel
-                  language={language}
-                  petType={currentPetType}
-                  summary={petDataReady ? petDailySummary : null}
-                  loading={petDailySummaryLoading || (!petDataReady && !petRelationshipError)}
-                  onRetry={petDataReady ? () => void loadPetDailySummary(currentPetType) : undefined}
-                />
-              </section>
+              {petOnboardingScene ? [relationshipSection, todaySection] : [todaySection, relationshipSection]}
               <PetPreferencePicker
                 language={language}
                 activePetType={currentPetType}
@@ -3236,32 +3264,6 @@ function MainPanelApp() {
                 onStepIntentHandled={handleFocusStepIntent}
                 onOpenToday={handleOpenToday}
               />
-              <PetRelationshipSummary
-                language={language}
-                petType={currentPetType}
-                relationship={petRelationship}
-                loading={petRelationshipLoading}
-                sectionRef={relationshipSummaryRef}
-              />
-              {petOnboardingScene && (
-                <PetOnboardingCard
-                  sectionRef={petOnboardingCardRef}
-                  language={language}
-                  scene={petOnboardingScene}
-                  relationship={petRelationship}
-                  busy={petOnboardingBusy || savingOutfit || reminderSavePending}
-                  error={petOnboardingError}
-                  onCreateSampleReminder={() => {
-                    void handleCreateOnboardingReminder()
-                  }}
-                  onSnooze={() => {
-                    void handleSnoozePetOnboarding()
-                  }}
-                  onDismiss={() => {
-                    void handleDismissPetOnboarding()
-                  }}
-                />
-              )}
               <PetWeeklySummaryPanel
                 key={`weekly-${user?.id || 'anonymous'}:${currentPetType}:${activeSessionSnapshotRef.current?.generation ?? 'none'}:${accountRequestEpochRef.current}`}
                 language={language}
