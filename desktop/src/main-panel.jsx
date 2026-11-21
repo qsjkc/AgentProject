@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import ReactDOM from 'react-dom/client'
 import { MessageCircle, Minus, Plus, Settings2, Sprout, X } from 'lucide-react'
 
@@ -10,6 +10,7 @@ import { RecurringReminderPanel } from './components/RecurringReminderPanel'
 import { PetOutfitPanel } from './components/PetOutfitPanel'
 import { PetWeeklySummaryPanel } from './components/PetWeeklySummaryPanel'
 import { FocusSessionPanel } from './components/FocusSessionPanel'
+import { DailyStepPanel } from './components/DailyStepPanel'
 import { ChatMessageStream } from './components/ChatMessageStream'
 import { DesktopReleasePanel } from './components/DesktopReleasePanel'
 import {
@@ -163,6 +164,8 @@ function PetRelationshipSummary({ language, petType, relationship, loading, sect
   return (
     <section
       className={`relationship-summary relationship-summary-${petType}`}
+      id="companion-relationship"
+      tabIndex={-1}
       data-e2e="pet-relationship-summary"
       ref={sectionRef}
       aria-busy={loading}
@@ -199,7 +202,7 @@ function PetRelationshipSummary({ language, petType, relationship, loading, sect
   )
 }
 
-function PetDailySummaryPanel({ language, petType, summary, loading }) {
+function PetDailySummaryPanel({ language, petType, summary, loading, onRetry }) {
   if (!PET_OPTIONS.includes(petType)) {
     return null
   }
@@ -226,27 +229,36 @@ function PetDailySummaryPanel({ language, petType, summary, loading }) {
       data-e2e="pet-daily-summary"
       data-pet-type={petType}
       aria-busy={loading}
-      aria-label={language === 'zh-CN' ? '今日相处' : 'Today together'}
+      aria-label={language === 'zh-CN' ? '相处记录' : 'Shared moments'}
     >
       <div className="daily-summary-heading">
         <div className="relationship-label">
-          {language === 'zh-CN' ? '今日相处' : 'Today together'}
+          {language === 'zh-CN' ? '相处记录' : 'Shared moments'}
         </div>
         <span className="daily-summary-date">{summary?.local_date || ''}</span>
       </div>
-      <p className="daily-summary-message">
-        {loading && !summary
-          ? language === 'zh-CN' ? '正在整理今天的记录…' : 'Gathering today’s moments…'
-          : getPetDailySummaryMessage(language, summary)}
-      </p>
-      <div className="daily-summary-metrics">
-        {metrics.map((metric) => (
-          <div className="daily-summary-metric" key={metric.label}>
-            <strong>{metric.value ?? '--'}</strong>
-            <span>{metric.label}</span>
-          </div>
-        ))}
-      </div>
+      {summary ? <>
+        <p className="daily-summary-message">{getPetDailySummaryMessage(language, summary)}</p>
+        <div className="daily-summary-metrics">
+          {metrics.map((metric) => (
+            <div className="daily-summary-metric" key={metric.label}>
+              <strong>{metric.value}</strong>
+              <span>{metric.label}</span>
+            </div>
+          ))}
+        </div>
+      </> : (
+        <p className="daily-summary-message" role="status">
+          {loading
+            ? (language === 'zh-CN' ? '正在整理今天的记录…' : 'Gathering today’s moments…')
+            : (language === 'zh-CN' ? '暂时读不到今天的相处记录。' : 'Today’s shared moments are unavailable.')}
+        </p>
+      )}
+      {!summary && !loading && onRetry && (
+        <button type="button" className="main-today-retry" onClick={onRetry}>
+          {language === 'zh-CN' ? '重新读取' : 'Retry'}
+        </button>
+      )}
       {highlights.length > 0 && (
         <div className="daily-summary-highlights">{highlights.join(' · ')}</div>
       )}
@@ -722,6 +734,7 @@ function MainPanelApp() {
   const [onboardingClock, setOnboardingClock] = useState(() => Date.now())
   const [intentOverride, setIntentOverride] = useState(null)
   const [focusNavigationVersion, setFocusNavigationVersion] = useState(0)
+  const [focusStepIntent, setFocusStepIntent] = useState(null)
   const pendingFocusNavigationRef = useRef(false)
   const tabRef = useRef('chat')
   const intentOverrideRef = useRef(null)
@@ -798,6 +811,12 @@ function MainPanelApp() {
   )
   const petSelectionPending = savingPet || petRelationshipLoading
     || (!petDataReady && !petRelationshipError)
+  const todayContextKey = JSON.stringify([
+    apiBaseUrl, user?.id, currentPetType, activeSessionSnapshotRef.current?.generation, accountRequestEpochRef.current,
+  ])
+  const handleFocusStepIntent = useCallback((handled) => {
+    setFocusStepIntent((current) => current === handled ? null : current)
+  }, [])
 
   useEffect(() => {
     if (!pendingFocusNavigationRef.current || !authenticated || effectiveTab !== 'chat' || !PET_OPTIONS.includes(currentPetType)) return undefined
@@ -806,8 +825,12 @@ function MainPanelApp() {
         || document.querySelector('[data-e2e="companion-sync-retry"]')
       if (!target) return
       pendingFocusNavigationRef.current = false
-      target.scrollIntoView({ block: 'center', behavior: 'auto' })
-      target.focus({ preventScroll: true })
+      if (target.contains(document.activeElement)) {
+        document.activeElement.scrollIntoView({ block: 'nearest', behavior: 'auto' })
+      } else {
+        target.scrollIntoView({ block: 'start', behavior: 'auto' })
+        target.focus({ preventScroll: true })
+      }
     })
     return () => window.cancelAnimationFrame(frame)
   }, [authenticated, currentPetType, effectiveTab, focusNavigationVersion, petDataReady, petRelationshipError])
@@ -1193,11 +1216,13 @@ function MainPanelApp() {
     window.addEventListener('focus', refreshWhenStale)
     window.addEventListener('online', refreshWhenStale)
     document.addEventListener('visibilitychange', refreshWhenStale)
+    const unsubscribeResume = window.desktopBridge?.onSystemResume?.(refreshWhenStale)
     const timer = window.setInterval(refreshWhenStale, 60_000)
     return () => {
       window.removeEventListener('focus', refreshWhenStale)
       window.removeEventListener('online', refreshWhenStale)
       document.removeEventListener('visibilitychange', refreshWhenStale)
+      unsubscribeResume?.()
       window.clearInterval(timer)
     }
   }, [petDataReady, readyRelationshipContext, currentPetType, petDailySummary, petDailySummaryLoading])
@@ -1397,9 +1422,11 @@ function MainPanelApp() {
     const recover = () => { void sessionRecoveryRef.current.run({ automatic: true }) }
     window.addEventListener('online', recover)
     window.addEventListener('focus', recover)
+    const unsubscribeResume = window.desktopBridge?.onSystemResume?.(recover)
     return () => {
       window.removeEventListener('online', recover)
       window.removeEventListener('focus', recover)
+      unsubscribeResume?.()
     }
   }, [])
 
@@ -2980,6 +3007,24 @@ function MainPanelApp() {
     setFocusNavigationVersion((value) => value + 1)
   }
 
+  const handleFocusTodayStep = (title) => {
+    setFocusStepIntent({ title, contextKey: todayContextKey })
+    handleOpenFocus()
+  }
+
+  const handleOpenToday = () => {
+    const today = document.getElementById('companion-today')
+    today?.scrollIntoView({ block: 'start' })
+    today?.focus({ preventScroll: true })
+  }
+
+  const handleOpenOnboarding = () => {
+    const target = petOnboardingScene === PET_ONBOARDING_SCENES.RELATIONSHIP
+      ? relationshipSummaryRef.current : petOnboardingCardRef.current
+    target?.scrollIntoView({ block: 'start' })
+    target?.focus({ preventScroll: true })
+  }
+
   const handleRetryCompanionSync = async () => {
     if (petRelationshipLoading) return
     const requestContext = {
@@ -3059,6 +3104,49 @@ function MainPanelApp() {
     )
   }
 
+  const todaySection = (
+    <section key="companion-today" className="main-today" id="companion-today" tabIndex={-1} aria-labelledby="companion-today-heading" data-e2e="companion-today">
+      <h2 id="companion-today-heading"><Sprout size={17} aria-hidden="true" />{language === 'zh-CN' ? '今天一起' : 'Today together'}</h2>
+      <DailyStepPanel
+        key={todayContextKey}
+        language={language}
+        accountContext={{ hasSession: authenticated, server: apiBaseUrl, userId: user?.id, petType: currentPetType }}
+        onFocus={petDataReady ? handleFocusTodayStep : undefined}
+      />
+      <PetDailySummaryPanel
+        language={language}
+        petType={currentPetType}
+        summary={petDataReady ? petDailySummary : null}
+        loading={petDailySummaryLoading || (!petDataReady && !petRelationshipError)}
+        onRetry={petDataReady ? () => void loadPetDailySummary(currentPetType) : undefined}
+      />
+    </section>
+  )
+  const relationshipSection = petDataReady ? (
+    <Fragment key="companion-relationship">
+      <PetRelationshipSummary
+        language={language}
+        petType={currentPetType}
+        relationship={petRelationship}
+        loading={petRelationshipLoading}
+        sectionRef={relationshipSummaryRef}
+      />
+      {petOnboardingScene && (
+        <PetOnboardingCard
+          sectionRef={petOnboardingCardRef}
+          language={language}
+          scene={petOnboardingScene}
+          relationship={petRelationship}
+          busy={petOnboardingBusy || savingOutfit || reminderSavePending}
+          error={petOnboardingError}
+          onCreateSampleReminder={() => void handleCreateOnboardingReminder()}
+          onSnooze={() => void handleSnoozePetOnboarding()}
+          onDismiss={() => void handleDismissPetOnboarding()}
+        />
+      )}
+    </Fragment>
+  ) : null
+
   return (
     <div className="window-shell main-panel-shell" data-e2e="main-dashboard">
       <div className="window-card window-card-main">
@@ -3112,6 +3200,13 @@ function MainPanelApp() {
               </button>
             </nav>
             <div className="main-header-shortcuts">
+              {effectiveTab === 'chat' && petDataReady && petOnboardingScene && (
+                <button type="button" className="main-header-action main-focus-shortcut" data-e2e="open-onboarding"
+                  aria-controls={petOnboardingScene === PET_ONBOARDING_SCENES.RELATIONSHIP ? 'companion-relationship' : 'companion-onboarding'}
+                  onClick={handleOpenOnboarding}>
+                  {language === 'zh-CN' ? '初次相处' : 'First steps'}
+                </button>
+              )}
               {PET_OPTIONS.includes(currentPetType) && (
                 <button type="button" className="main-header-action main-focus-shortcut" data-e2e="open-focus" aria-controls="companion-focus" onClick={handleOpenFocus}>
                   <Sprout size={14} aria-hidden="true" />
@@ -3151,6 +3246,7 @@ function MainPanelApp() {
         {effectiveTab === 'chat' ? (
           <div className="main-chat-layout">
             <aside className="panel main-companion-sidebar">
+              {petOnboardingScene ? [relationshipSection, todaySection] : [todaySection, relationshipSection]}
               <PetPreferencePicker
                 language={language}
                 activePetType={currentPetType}
@@ -3172,46 +3268,17 @@ function MainPanelApp() {
                 </section>
               )}
               {petDataReady && <>
-              <PetRelationshipSummary
-                language={language}
-                petType={currentPetType}
-                relationship={petRelationship}
-                loading={petRelationshipLoading}
-                sectionRef={relationshipSummaryRef}
-              />
-              {petOnboardingScene && (
-                <PetOnboardingCard
-                  sectionRef={petOnboardingCardRef}
-                  language={language}
-                  scene={petOnboardingScene}
-                  relationship={petRelationship}
-                  busy={petOnboardingBusy || savingOutfit || reminderSavePending}
-                  error={petOnboardingError}
-                  onCreateSampleReminder={() => {
-                    void handleCreateOnboardingReminder()
-                  }}
-                  onSnooze={() => {
-                    void handleSnoozePetOnboarding()
-                  }}
-                  onDismiss={() => {
-                    void handleDismissPetOnboarding()
-                  }}
-                />
-              )}
-              <PetDailySummaryPanel
-                language={language}
-                petType={currentPetType}
-                summary={petDailySummary}
-                loading={petDailySummaryLoading}
-              />
               <FocusSessionPanel
-                key={`focus-${user?.id || 'anonymous'}:${currentPetType}:${activeSessionSnapshotRef.current?.generation ?? 'none'}:${accountRequestEpochRef.current}`}
+                key={todayContextKey}
                 language={language}
                 accountContext={{
                   ...getCurrentMainPanelAccountContext(),
                   server: apiBaseUrl,
                   epoch: accountRequestEpochRef.current,
                 }}
+                stepIntent={focusStepIntent?.contextKey === todayContextKey ? focusStepIntent : null}
+                onStepIntentHandled={handleFocusStepIntent}
+                onOpenToday={handleOpenToday}
               />
               <PetWeeklySummaryPanel
                 key={`weekly-${user?.id || 'anonymous'}:${currentPetType}:${activeSessionSnapshotRef.current?.generation ?? 'none'}:${accountRequestEpochRef.current}`}

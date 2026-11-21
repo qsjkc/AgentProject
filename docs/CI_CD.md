@@ -5,7 +5,7 @@
 本文档描述仓库中的 GitHub Actions 自动化流程。历史远端结果见 `P1L-部署验收记录.md`；本次修改是否通过以对应提交的 Actions 运行记录为准。覆盖：
 
 - `CI`：后端测试、PostgreSQL 迁移恢复检查、前端检查、桌面 renderer 与 Windows Electron 检查
-- `CD`：桌面安装包和服务器镜像构建、可选 Docker Hub 推送、可选服务器部署
+- `CD`：桌面安装包和服务器镜像构建、干净 Windows 安装验收、可选 Docker Hub 推送、可选服务器部署
 
 当前实现以仓库中的以下文件为准：
 
@@ -161,7 +161,13 @@ npm run build
 
 - `agentproject-desktop-win`
 
-### 3. Publish Docker Images
+### 3. Clean Windows Installer Acceptance
+
+独立的 GitHub 托管 `windows-latest` runner 下载安装包构建任务上传的产物，按本次提交和桌面包版本复核文件名、字节数与 SHA-256。使用 NSIS 静默安装并核对快捷方式、卸载登记、三个打包窗口和干净登录页。卸载后检查程序文件、登记项和快捷方式均已移除，重装后确认可正常启动且应用文件哈希与首次安装一致。
+
+服务器部署须等待此项通过。验收脚本仅在 GitHub 托管的 Windows x64 发布任务运行，使用独立临时配置。结果上传为 `clean-windows-installer-evidence`，保留 30 天。此项覆盖安装生命周期和启动，睡眠唤醒、实际登录和邮件提醒需独立验收。
+
+### 4. Publish Docker Images
 
 若配置了：
 
@@ -173,13 +179,13 @@ npm run build
 - `${DOCKER_USERNAME}/agentproject-backend:latest`
 - `${DOCKER_USERNAME}/agentproject-nginx:latest`
 
-### 4. Server Images
+### 5. Server Images
 
 配置服务器部署后，Ubuntu runner 构建 backend、nginx 和 agent-server 三个 `linux/amd64` 镜像，使用完整提交 SHA 标签和 OCI revision 标签。镜像通过 `docker save` 归档，清单记录源提交、归档大小和 SHA-256，以及每个镜像的 ID、标签、平台与 revision。
 
 同一次 CD 的镜像 artifact 供部署 job 下载，不依赖 Docker Hub 账号或生产机访问镜像仓库。PR 和 main CI 也执行真实镜像构建与验证，提前发现 Dockerfile 或依赖安装问题。构建或校验失败即停止，不在生产服务器回退构建。
 
-### 5. Deploy Server
+### 6. Deploy Server
 
 若配置了：
 
@@ -197,7 +203,7 @@ npm run build
 
 执行顺序：
 
-1. 等待同一次 CD 的 `desktop-installer` 和 `server-images` 成功，下载安装包及镜像 artifacts，验证源提交与完整性
+1. 等待同一次 CD 的 `clean-windows-installer` 和 `server-images` 成功，下载安装包及镜像 artifacts，验证源提交与完整性
 2. 写入 `~/.ssh/id_ed25519`
 3. 解析部署目标
 4. 创建远端目录

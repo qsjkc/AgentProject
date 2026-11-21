@@ -71,9 +71,8 @@ async function assertDailySummaryRollsOver(context, petType) {
       const originalNow = Date.now
       window.restoreDailySummaryClock = () => { Date.now = originalNow; delete window.restoreDailySummaryClock }
       Date.now = () => Date.parse('2031-04-08T16:00:01Z')
-      window.dispatchEvent(new Event('focus'))
-      window.dispatchEvent(new Event('online'))
     })()`)
+    assert(await callE2e(main, 'simulateSystemResume'), 'Electron accepted the simulated system resume')
     await waitForDate(tomorrow)
     assert(await absent(main, LOGIN), 'Day rollover sent the authenticated panel to login')
   } finally {
@@ -131,18 +130,22 @@ export async function sessionRecoveryScenario(context) {
     screenshots.push(recoveredScreenshot)
 
     // Automatic event recovery uses the same saved token and obeys its cooldown.
-    for (const event of ['online', 'focus']) {
+    for (const event of ['online', 'focus', 'resume']) {
       restore = context.stub.overrideResponse('GET', ME, 503, { detail: `Temporary ${event} outage` })
       await main.reload()
       await main.waitForSelector(RETRYABLE)
       restore()
       await new Promise((resolve) => setTimeout(resolve, 1600))
-      await main.evaluate(`window.dispatchEvent(new Event(${JSON.stringify(event)}))`)
+      if (event === 'resume') {
+        assert(await callE2e(main, 'simulateSystemResume'), 'Electron accepted the simulated system resume')
+      } else {
+        await main.evaluate(`window.dispatchEvent(new Event(${JSON.stringify(event)}))`)
+      }
       await main.waitForSelector(DASHBOARD)
       assertEqual(JSON.stringify(await session(main)), JSON.stringify(saved), `${event} recovery changed credentials`)
     }
     assertEqual(context.stub.requests.slice(firstRequest).filter((request) => request.pathname === '/api/v1/auth/login').length, 0, 'Recovery unexpectedly performed password login')
-    return { offlineSessionRetained: true, service503SessionRetained: true, manualRetry: true, onlineRetry: true, focusRetry: true, singleFlight: true, passwordLoginsDuringRecovery: 0, screenshots }
+    return { offlineSessionRetained: true, service503SessionRetained: true, manualRetry: true, onlineRetry: true, focusRetry: true, nativeResumeRetry: true, singleFlight: true, passwordLoginsDuringRecovery: 0, screenshots }
   } finally {
     restore()
     for (const hold of held) hold.release()

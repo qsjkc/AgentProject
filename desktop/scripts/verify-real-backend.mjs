@@ -466,6 +466,7 @@ try {
   await record('care interaction and one-minute reminder creation', async () => {
     await patReadyPet('pig', tokenA)
     await pages['pet.html'].evaluate('window.desktopBridge.openMainPanel()')
+    await clickEnabled(pages['main-panel.html'], S.openOnboarding)
     await clickEnabled(pages['main-panel.html'], S.onboardingReminderCreate)
     reminder = await waitFor(async () => (await api('/reminders?pet_type=pig', tokenA))[0],
       { description: 'persisted real reminder' })
@@ -504,6 +505,7 @@ try {
       }
       await patReadyPet(petType, tokenA)
       await pages['pet.html'].evaluate('window.desktopBridge.openMainPanel()')
+      await clickEnabled(main, S.openOnboarding)
       await clickEnabled(main, S.onboardingReminderCreate)
       const sample = await waitFor(async () => (await api(`/reminders?pet_type=${petType}`, tokenA))[0],
         { description: `${petType} real onboarding reminder` })

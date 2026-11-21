@@ -168,8 +168,17 @@ export async function focusHistoryScenario(context) {
   const restoredScreenshot = join(context.artifactPath, 'focus-history-restored-completed.png')
   await main.screenshot(restoredScreenshot)
 
-  await main.click('[data-e2e="focus-reset"]')
+  await main.click('[data-e2e="focus-back-today"]')
+  assertEqual(await main.evaluate('document.activeElement.id'), 'companion-today', 'Completed focus did not return keyboard focus to Today')
+  const nextStep = '给绿植浇水'
+  await main.input('[data-e2e="daily-step-input"]', nextStep)
+  await main.click('[data-e2e="daily-step-save"]')
+  await main.click('[data-e2e="daily-step-focus"]')
+  await main.waitForSelector('[data-e2e="focus-prepare-step"]')
+  await main.waitForSelector(focusState('completed'))
+  await main.click('[data-e2e="focus-prepare-step"]')
   await main.waitForSelector(focusState('idle'))
+  assertEqual(await main.evaluate("document.querySelector('[data-e2e=focus-intention]').value"), nextStep, 'Choosing the next focus did not retain the daily step')
   await assertCompletedHistory(main, fixture, 'reset keeps completed history')
   await assertStoredHistory(fixture, 'idle')
   await main.reload()

@@ -24,6 +24,7 @@ export const REQUIRED_E2E_BRIDGE_API = Object.freeze({
     'setMainPanelIntentAckMode',
     'broadcastRelationshipTo',
     'flushReminderPoll',
+    'simulateSystemResume',
     'triggerRelationshipRefresh',
   ]),
 })
@@ -47,6 +48,7 @@ export const REQUIRED_SELECTORS = Object.freeze({
   openRelationship: '[data-e2e="p1k-open-relationship"]',
   relationshipSummary: '[data-e2e="pet-relationship-summary"]',
   onboardingReminderCreate: '[data-e2e="p1k-create-reminder"]',
+  openOnboarding: '[data-e2e="open-onboarding"]',
   pendingReminderRefresh: '[data-e2e="pending-reminder-refresh"]',
   pendingReminderItem: '[data-e2e-reminder-id="{id}"]',
   pendingReminderComplete: '[data-e2e-reminder-complete="{id}"]',
@@ -785,6 +787,72 @@ export async function reminderConfirmationRetryScenario(context) {
   }
 }
 
+export async function reminderReconnectScenario(context) {
+  await resetAuthenticated(context)
+  await hideMainPanel(context)
+  const pet = context.pages.pet
+  await waitFor(() => pet.evaluate("document.visibilityState === 'visible'"), { description: 'pet visible before simulated resume' })
+  await callE2e(pet, 'flushReminderPoll')
+
+  const account = context.stub.fixture.accounts.get(USERS.A.id)
+  const previousReminders = account.reminders
+  const reminder = createReminderRecord({
+    user: USERS.A,
+    id: context.stub.fixture.nextReminderId++,
+    title: '恢复联网后的到期提醒',
+    remindAt: new Date(Date.now() - 1000),
+  })
+  const { logPath } = await pet.evaluate('window.desktopBridge.getLogPaths()')
+  const readFailure = 'Reminder service unavailable after resume'
+  const requestStart = context.stub.requests.length
+  const reminderReads = () => context.stub.requests.slice(requestStart).filter((request) => (
+    request.method === 'GET' && request.pathname === '/api/v1/reminders'
+    && new URLSearchParams(request.search).has('due_before')
+  ))
+  const failedRead = context.stub.holdNext('GET', '/api/v1/reminders', {
+    statusCode: 503,
+    payload: { detail: readFailure },
+  })
+  account.reminders = [reminder]
+  try {
+    await callE2e(pet, 'simulateSystemResume')
+    const failedRequest = await withTimeout(failedRead.arrived, 8000, 'reminder read after simulated system resume')
+    assert(reminderReads().includes(failedRequest), 'The simulated resume did not start a pet reminder read')
+    failedRead.release()
+    await waitFor(async () => (await readFile(logPath, 'utf8')).includes(readFailure), {
+      timeoutMs: 5000, description: 'pet handles temporary reminder read failure',
+    })
+    assertEqual(reminderReads().length, 1, 'Reminder was read again before the reconnect event')
+    assert(!reminder.triggered_at, 'A failed read confirmed an overdue reminder')
+
+    const reconnectAt = Date.now()
+    await pet.evaluate("window.dispatchEvent(new Event('online'))")
+    await waitFor(() => reminder.triggered_at, {
+      timeoutMs: 8000, description: 'reconnect acknowledges overdue reminder before the ordinary poll cooldown',
+    })
+    await pet.evaluate("window.dispatchEvent(new Event('online'))")
+    await callE2e(pet, 'flushReminderPoll')
+
+    const acknowledgments = context.stub.requests.filter((request) => (
+      request.method === 'POST' && request.pathname === `/api/v1/reminders/${reminder.id}/trigger`
+    ))
+    assertEqual(acknowledgments.length, 1, 'The reconnect events should acknowledge the reminder only once')
+    const presentations = (await readFile(logPath, 'utf8')).trim().split('\n').map((line) => JSON.parse(line))
+      .filter((record) => record.payload?.event === 'reminder:presented' && record.payload.details?.reminderId === reminder.id)
+    assertEqual(presentations.length, 1, 'The reconnect events should present the reminder only once')
+    assertEqual(reminder.status, 'pending', 'Delivery should leave the reminder available for completion')
+    return {
+      simulatedResume: true,
+      reconnectLatencyMs: Date.parse(reminder.triggered_at) - reconnectAt,
+      acknowledgments: acknowledgments.length,
+      presentations: presentations.length,
+    }
+  } finally {
+    failedRead.release()
+    account.reminders = previousReminders
+  }
+}
+
 export async function conversationReturnScenario(context) {
   const account = context.stub.fixture.accounts.get(USERS.A.id)
   const createdAt = new Date().toISOString()
@@ -1361,6 +1429,7 @@ export const SCENARIOS = Object.freeze({
   'failed-knowledge-upload': failedKnowledgeUploadScenario,
   'hidden-reminder-deadline': hiddenReminderDeadlineScenario,
   'reminder-confirmation-retry': reminderConfirmationRetryScenario,
+  'reminder-reconnect': withProactiveCompanionDisabled(reminderReconnectScenario),
   'conversation-return': conversationReturnScenario,
   'quick-chat-refresh-recovery': quickChatRefreshRecoveryScenario,
   'session-summary-history': sessionSummaryHistoryScenario,

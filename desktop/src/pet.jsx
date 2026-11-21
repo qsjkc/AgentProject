@@ -111,7 +111,13 @@ import {
 import { PET_ONBOARDING_MAIN_PANEL_INTENT } from './shared/pet-onboarding-main'
 import { getPetVisual } from './shared/pets'
 import { getPendingReminders, markReminderTriggered } from './shared/reminders-api'
-import { createReminderDeliveryController, createReminderPollController, getReminderPollPlan, REMINDER_RECONCILE_MS } from './shared/reminder-poll'
+import {
+  createReminderDeliveryController,
+  createReminderPollController,
+  getReminderPollPlan,
+  isTransientReminderReadError,
+  REMINDER_RECONCILE_MS,
+} from './shared/reminder-poll'
 
 const DEFAULT_PREFERENCES = {
   quick_chat_enabled: true,
@@ -2796,12 +2802,15 @@ function PetApp() {
       // Re-read at every deadline: a reminder may have been canceled or moved
       // while its wakeup timer was waiting. Future rows only choose the deadline.
       const dueBefore = Date.now() + REMINDER_RECONCILE_MS
-      const reminders = await getPendingReminders(
-        requestContext.petType,
-        new Date(dueBefore),
-        false,
-        operationContext,
-      )
+      let reminders
+      try {
+        reminders = await getPendingReminders(requestContext.petType, new Date(dueBefore), false, operationContext)
+      } catch (error) {
+        if (!isTransientReminderReadError(error)) throw error
+        if (!isCurrent()) return
+        loggerRef.current.error('reminder:poll-failed', error)
+        return { retry: true, retryOnReconnect: true }
+      }
       if (!isCurrent()) return
       reminderDeliveryRef.current.reconcile(operationContext, reminders, dueBefore)
       const plan = getReminderPollPlan(reminders, Date.now())
@@ -2873,7 +2882,7 @@ function PetApp() {
     const onVisible = () => {
       if (document.visibilityState === 'visible') void controller.request()
     }
-    const onOnline = () => void controller.request()
+    const onOnline = () => void controller.request({ reconnected: true })
     document.addEventListener('visibilitychange', onVisible)
     window.addEventListener('online', onOnline)
     if (hasSession) void controller.request()

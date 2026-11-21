@@ -64,6 +64,8 @@ export function PetOnboardingCard({
   return (
     <section
       className={`pet-onboarding-card is-${scene}`}
+      id="companion-onboarding"
+      tabIndex={-1}
       ref={sectionRef}
       role="region"
       aria-labelledby={titleId}

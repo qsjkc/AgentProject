@@ -5,6 +5,7 @@ import {
   createReminderDeliveryController,
   createReminderPollController,
   getReminderPollPlan,
+  isTransientReminderReadError,
   REMINDER_BACKLOG_DELAY_MS,
   REMINDER_RECONCILE_MS,
 } from '../src/shared/reminder-poll.js'
@@ -316,8 +317,8 @@ test('successful reminder delivery drains backlog promptly without another 30s w
   assert.deepEqual(schedules, [1250, 1500])
 })
 
-for (const failure of ['muted', 'network']) {
-  test(`${failure} reminder delivery backs off for 30s even when more refresh events arrive`, async () => {
+for (const failure of ['muted', 'acknowledgment']) {
+  test(`${failure} reminder delivery keeps its cooldown through reconnect`, async () => {
     let now = 1000
     let reads = 0
     const read = deferred()
@@ -328,25 +329,111 @@ for (const failure of ['muted', 'network']) {
         reads += 1
         if (reads > 1) return {}
         await read.promise
-        if (failure === 'network') throw new Error('offline')
+        if (failure === 'acknowledgment') throw Object.assign(new Error('Trigger unavailable'), { status: 503 })
         return { retry: true }
       },
       schedule: async (at) => schedules.push(at),
     })
     const waiting = controller.request()
     await Promise.resolve()
-    controller.request()
+    controller.request({ reconnected: true })
     read.resolve()
     await waiting
     now += 5000
     await controller.request()
+    await controller.request({ reconnected: true })
     assert.equal(reads, 1)
-    assert.deepEqual(schedules, [31_000, 31_000])
+    assert.deepEqual(schedules, [31_000, 31_000, 31_000])
     now = 31_000
     await controller.request()
     assert.equal(reads, 2)
   })
 }
+
+const retryRead = { retry: true, retryOnReconnect: true }
+
+test('a reminder read can retry on browser network failures, timeouts and temporary HTTP failures', () => {
+  assert.equal(isTransientReminderReadError(new TypeError('Failed to fetch')), true)
+  assert.equal(isTransientReminderReadError({ code: 'REQUEST_TIMEOUT' }), true)
+  for (const status of [408, 500, 503, 504]) assert.equal(isTransientReminderReadError({ status }), true)
+  for (const status of [401, 403, 404, 429]) assert.equal(isTransientReminderReadError({ status }), false)
+  assert.equal(isTransientReminderReadError({ code: 'AUTH_CONTEXT_CHANGED' }), false)
+  assert.equal(isTransientReminderReadError(new TypeError('Unexpected value')), false)
+})
+
+test('reconnection accelerates a failed reminder read already waiting for its retry deadline', async () => {
+  let now = 1000
+  let reads = 0
+  const schedules = []
+  const controller = createReminderPollController({
+    now: () => now,
+    poll: async () => {
+      reads += 1
+      return reads === 1 ? retryRead : { nextAt: now + 1000 }
+    },
+    schedule: (at) => schedules.push(at),
+  })
+  await controller.request()
+  now = 1500
+  await controller.request()
+  assert.equal(reads, 1)
+  await controller.request({ reconnected: true })
+  assert.equal(reads, 2)
+  assert.deepEqual(schedules, [31_000, 31_000, 2500])
+})
+
+test('reconnection during a failing read coalesces into one early retry even if that retry also fails', async () => {
+  const first = deferred()
+  const retry = deferred()
+  const schedules = []
+  let reads = 0
+  const controller = createReminderPollController({
+    now: () => 1000,
+    poll: async () => {
+      reads += 1
+      return reads === 1 ? first.promise : retry.promise
+    },
+    schedule: (at) => schedules.push(at),
+  })
+  const waiting = controller.request()
+  await Promise.resolve()
+  assert.equal(controller.request({ reconnected: true }), waiting)
+  assert.equal(controller.request(), waiting)
+  first.resolve(retryRead)
+  await new Promise(setImmediate)
+  assert.equal(reads, 2)
+  assert.equal(controller.request({ reconnected: true }), waiting)
+  retry.resolve(retryRead)
+  await waiting
+  await controller.request({ reconnected: true })
+  assert.equal(reads, 2)
+  assert.deepEqual(schedules, [31_000, 31_000])
+})
+
+test('reconnection during re-arming still retries a failed reminder read', async () => {
+  const arming = deferred()
+  const schedules = []
+  let reads = 0
+  const controller = createReminderPollController({
+    now: () => 1000,
+    poll: async () => {
+      reads += 1
+      return reads === 1 ? retryRead : { nextAt: 2000 }
+    },
+    schedule: async (at) => {
+      schedules.push(at)
+      if (schedules.length === 1) await arming.promise
+    },
+  })
+  const waiting = controller.request()
+  await new Promise(setImmediate)
+  assert.deepEqual(schedules, [31_000])
+  assert.equal(controller.request({ reconnected: true }), waiting)
+  arming.resolve()
+  await waiting
+  assert.equal(reads, 2)
+  assert.deepEqual(schedules, [31_000, 2000])
+})
 
 test('disposing a reminder reader prevents late results from arming another account clock', async () => {
   const read = deferred()
@@ -356,7 +443,7 @@ test('disposing a reminder reader prevents late results from arming another acco
   controller.dispose()
   read.resolve({ nextAt: 1000 })
   await waiting
-  await controller.request()
+  await controller.request({ reconnected: true })
   assert.deepEqual(schedules, [])
 })
 
