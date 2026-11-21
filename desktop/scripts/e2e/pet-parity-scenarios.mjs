@@ -94,6 +94,7 @@ async function exerciseCareAndReminder(context, petType) {
   ), `${petType} care observation recorded`)
 
   await callE2e(context.pages.main, 'showWindow', 'main-panel')
+  await context.pages.main.click(REQUIRED_SELECTORS.openOnboarding)
   await context.pages.main.waitForSelector(REQUIRED_SELECTORS.onboardingReminderCreate)
   const outfit = `[data-item-id="${petType}_basic_scarf"]`
   const heldRefresh = context.stub.holdNext('GET', `/api/v1/pets/${petType}/relationship`)

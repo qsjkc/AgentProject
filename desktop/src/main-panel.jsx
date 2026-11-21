@@ -164,6 +164,8 @@ function PetRelationshipSummary({ language, petType, relationship, loading, sect
   return (
     <section
       className={`relationship-summary relationship-summary-${petType}`}
+      id="companion-relationship"
+      tabIndex={-1}
       data-e2e="pet-relationship-summary"
       ref={sectionRef}
       aria-busy={loading}
@@ -3016,6 +3018,13 @@ function MainPanelApp() {
     today?.focus({ preventScroll: true })
   }
 
+  const handleOpenOnboarding = () => {
+    const target = petOnboardingScene === PET_ONBOARDING_SCENES.RELATIONSHIP
+      ? relationshipSummaryRef.current : petOnboardingCardRef.current
+    target?.scrollIntoView({ block: 'start' })
+    target?.focus({ preventScroll: true })
+  }
+
   const handleRetryCompanionSync = async () => {
     if (petRelationshipLoading) return
     const requestContext = {
@@ -3191,6 +3200,13 @@ function MainPanelApp() {
               </button>
             </nav>
             <div className="main-header-shortcuts">
+              {effectiveTab === 'chat' && petDataReady && petOnboardingScene && (
+                <button type="button" className="main-header-action main-focus-shortcut" data-e2e="open-onboarding"
+                  aria-controls={petOnboardingScene === PET_ONBOARDING_SCENES.RELATIONSHIP ? 'companion-relationship' : 'companion-onboarding'}
+                  onClick={handleOpenOnboarding}>
+                  {language === 'zh-CN' ? '初次相处' : 'First steps'}
+                </button>
+              )}
               {PET_OPTIONS.includes(currentPetType) && (
                 <button type="button" className="main-header-action main-focus-shortcut" data-e2e="open-focus" aria-controls="companion-focus" onClick={handleOpenFocus}>
                   <Sprout size={14} aria-hidden="true" />

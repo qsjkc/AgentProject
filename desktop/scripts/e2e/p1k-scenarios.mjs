@@ -48,6 +48,7 @@ export const REQUIRED_SELECTORS = Object.freeze({
   openRelationship: '[data-e2e="p1k-open-relationship"]',
   relationshipSummary: '[data-e2e="pet-relationship-summary"]',
   onboardingReminderCreate: '[data-e2e="p1k-create-reminder"]',
+  openOnboarding: '[data-e2e="open-onboarding"]',
   pendingReminderRefresh: '[data-e2e="pending-reminder-refresh"]',
   pendingReminderItem: '[data-e2e-reminder-id="{id}"]',
   pendingReminderComplete: '[data-e2e-reminder-complete="{id}"]',
