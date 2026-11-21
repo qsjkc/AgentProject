@@ -50,6 +50,12 @@ async function requireApiBaseUrl() {
   return apiBaseUrl
 }
 
+function assertOperationServer(operationContext, apiBaseUrl) {
+  if (operationContext?.server === undefined) return
+  const expected = normalizeApiBaseUrl(operationContext.server)
+  if (!expected || expected !== apiBaseUrl) throw createAuthContextChangedError()
+}
+
 export async function getApiBaseUrl() {
   const bridge = getDesktopBridge()
   const storedApiBaseUrl = normalizeApiBaseUrl(await bridge?.getApiBaseUrl?.())
@@ -140,6 +146,9 @@ export async function getSessionSnapshot() {
 
 export async function captureApiOperationContext(values = {}, scope = 'pet') {
   const bridge = getDesktopBridge()
+  // Keep the initiating service even when callers only supply account state.
+  const initiatingServer = await requireApiBaseUrl()
+  assertOperationServer(values, initiatingServer)
   const initiatingSession = normalizeSessionSnapshot(values?.session ?? await getSessionSnapshot())
   if (!initiatingSession || !isSessionSnapshotCurrent(initiatingSession, await getSessionSnapshot())) {
     throw createAuthContextChangedError()
@@ -151,6 +160,7 @@ export async function captureApiOperationContext(values = {}, scope = 'pet') {
   const petState = await bridge?.getPetState?.()
   const semanticValues = {
     ...values,
+    server: initiatingServer,
     hasSession: true,
     userId: values.userId ?? values.user_id ?? petState?.userId ?? null,
     petType: values.petType ?? values.pet_type ?? petState?.petType ?? null,
@@ -176,6 +186,7 @@ export async function captureApiOperationContext(values = {}, scope = 'pet') {
 
 export async function assertApiOperationContextCurrent(operationContext) {
   let effectiveContext = withLocalOperationContext(operationContext)
+  if (effectiveContext?.server !== undefined) assertOperationServer(effectiveContext, await getApiBaseUrl())
   if (
     !effectiveContext?.session
     || !isSessionSnapshotCurrent(effectiveContext.session, await getSessionSnapshot())
@@ -196,6 +207,7 @@ export async function assertApiOperationContextCurrent(operationContext) {
       effectiveContext.local,
     )) throw createAuthContextChangedError()
   }
+  if (effectiveContext.server !== undefined) assertOperationServer(effectiveContext, await getApiBaseUrl())
   return true
 }
 
@@ -219,11 +231,6 @@ export async function clearSessionToken(expectedSession) {
 
 async function request(path, options = {}, operationContext = null) {
   const effectiveContext = withLocalOperationContext(operationContext)
-  const assertServer = (apiBaseUrl) => {
-    if (effectiveContext?.server === undefined) return
-    const expected = normalizeApiBaseUrl(effectiveContext.server)
-    if (!expected || expected !== apiBaseUrl) throw createAuthContextChangedError()
-  }
   const result = await executeSessionBoundRequest({
     path,
     options,
@@ -231,7 +238,7 @@ async function request(path, options = {}, operationContext = null) {
     getSessionSnapshot,
     requireApiBaseUrl: async () => {
       const apiBaseUrl = await requireApiBaseUrl()
-      assertServer(apiBaseUrl)
+      assertOperationServer(effectiveContext, apiBaseUrl)
       return apiBaseUrl
     },
     fetchImpl: fetch,
@@ -246,13 +253,13 @@ async function request(path, options = {}, operationContext = null) {
       )
     ),
     validateOperationContext: async (context) => {
-      if (effectiveContext?.server !== undefined) assertServer(await getApiBaseUrl())
+      if (effectiveContext?.server !== undefined) assertOperationServer(effectiveContext, await getApiBaseUrl())
       const authorized = !context?.authoritative || Boolean(await getDesktopBridge()?.validateOperationContext?.(
         context.authoritative,
         context.local?.scope || 'pet',
         context.local,
       ))
-      if (effectiveContext?.server !== undefined) assertServer(await getApiBaseUrl())
+      if (effectiveContext?.server !== undefined) assertOperationServer(effectiveContext, await getApiBaseUrl())
       return authorized
     },
   })

@@ -1202,7 +1202,7 @@ function MainPanelApp() {
         // Keep the selected conversation even if its optional history read fails.
         updateActiveSessionId(nextSessions[0].id)
         setMessages(nextSessions[0].messages || [])
-        void handleSelectSession(nextSessions[0].id)
+        void handleSelectSession(nextSessions[0].id, operationContext)
       }
     } catch (error) {
       if (current()) setSessionsError(formatError(error, language === 'zh-CN' ? '会话列表暂时无法加载。' : 'Conversations are temporarily unavailable.'))
@@ -2187,7 +2187,7 @@ function MainPanelApp() {
     }
   }
 
-  const handleSelectSession = async (sessionId) => {
+  const handleSelectSession = async (sessionId, initialAccountContext = null) => {
     conversationRef.current.navigationRevision += 1
     // Capture the click order before IPC: slower capability capture must not win.
     const requestContext = knowledgeSelectGateRef.current.begin(getCurrentMainPanelAccountContext())
@@ -2195,7 +2195,9 @@ function MainPanelApp() {
     setLoading(false)
     setSelectingSession(true)
     try {
-      const operationContext = await captureApiOperationContext(
+      // Initial hydration already owns an independently validated account
+      // capability. Its pet source may be consumed by relationship setup.
+      const operationContext = initialAccountContext || await captureApiOperationContext(
         requestContext,
         'account',
       )

@@ -247,6 +247,11 @@ async function withApiFixture(run) {
       },
       changeServer: () => { server = 'https://fixture-b.invalid/api/v1' },
       changeRenderer: () => registry.registerRendererInstance({ ...owner, rendererInstanceNonce: 'replacement-renderer' }),
+      transitionPetCapability: (capability) => registry.transition({
+        ...owner, capability, requiredScope: 'pet', currentContext: context, nextScope: 'relationship',
+        apply: () => { authority.observe(context, { forceRelationshipRevision: true }); return true },
+        getCurrentContext: () => context,
+      }),
       rejectRepeatedCapture: () => issue('account', context),
       succeed: () => { responseStatus = 200 },
       setFetchResponse: (callback) => { fetchResponse = callback },
@@ -306,6 +311,57 @@ test('real API finishes rejecting late 401 before reading its body or clearing t
     assert.equal(bodyRead, false)
     assert.equal(counts().clears, 0)
     assert.deepEqual(values(), savedB)
+  })
+})
+
+test('initial history retains its account authority while a parallel relationship write consumes the pet capability', async () => {
+  await withApiFixture(async ({ api, values, transitionPetCapability, succeed, counts }) => {
+    const pet = await api.captureApiOperationContext(values(), 'pet')
+    const list = await api.captureApiOperationContext({ ...values(), authoritative: pet.authoritative }, 'account')
+    assert.notEqual(list.authoritative.id, pet.authoritative.id, 'The list must own a distinct account capability')
+    const transition = transitionPetCapability(pet.authoritative)
+    assert.equal(transition.ok, true)
+    // This is the failing CI ordering: the main process has consumed P, but the
+    // renderer still holds P while the cache write's IPC reply is in flight.
+    await assert.rejects(api.captureApiOperationContext({ ...values(), authoritative: pet.authoritative }, 'account'), changed)
+    succeed()
+    await api.assertApiOperationContextCurrent(list)
+    assert.deepEqual(await api.desktopApi.getSession(44, list), { id: 101 })
+    assert.equal(counts().requests, 1)
+  })
+})
+
+for (const boundary of ['session', 'server']) {
+  test(`retained initial-history authority still rejects a changed ${boundary}`, async () => {
+    await withApiFixture(async ({ api, values, transitionPetCapability, changeSession, changeServer, counts }) => {
+      const pet = await api.captureApiOperationContext(values(), 'pet')
+      const list = await api.captureApiOperationContext({ ...values(), authoritative: pet.authoritative }, 'account')
+      assert.equal(transitionPetCapability(pet.authoritative).ok, true)
+      if (boundary === 'session') changeSession()
+      else changeServer()
+      await assert.rejects(api.desktopApi.getSession(44, list), changed)
+      assert.equal(counts().requests, 0, 'Old account data request escaped the retained-context boundary')
+    })
+  })
+}
+
+test('capturing an account context binds it to the current server when the caller omits it', async () => {
+  await withApiFixture(async ({ api, values, transitionPetCapability, changeServer, succeed, counts }) => {
+    const { server, ...accountValues } = values()
+    const pet = await api.captureApiOperationContext(accountValues, 'pet')
+    const list = await api.captureApiOperationContext({ ...accountValues, authoritative: pet.authoritative }, 'account')
+    assert.equal(list.server, server)
+    assert.equal(transitionPetCapability(pet.authoritative).ok, true)
+    const savedSession = { ...list.session }
+    changeServer()
+    assert.deepEqual(values().session, savedSession, 'This boundary must hold without changing the token or generation')
+    succeed()
+    await assert.rejects(api.assertApiOperationContextCurrent(list), changed)
+    await assert.rejects(api.desktopApi.getSession(44, list), changed)
+    const retainedCounts = counts()
+    await assert.rejects(api.captureApiOperationContext({ ...accountValues, server, authoritative: list.authoritative }, 'account'), changed)
+    assert.deepEqual(counts(), retainedCounts, 'A stale source reached the current server or capability registry')
+    assert.equal(counts().requests, 0, 'A context from the previous server reached the replacement server')
   })
 })
 

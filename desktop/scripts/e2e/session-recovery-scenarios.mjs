@@ -148,9 +148,22 @@ export async function optionalDashboardRecoveryScenario(context) {
     assert(await absent(main, '[data-e2e="sessions-error"]'), 'Successful retry did not clear history error')
 
     restore = context.stub.overrideResponse('GET', DOCUMENTS, 503, { detail: 'Documents temporarily unavailable' })
-    await main.reload()
-    await main.waitForSelector(DASHBOARD)
-    await main.waitForSelector(`[data-e2e-session-id="${history.id}"]`)
+    const restoringList = context.stub.holdNext('GET', SESSIONS)
+    held.push(restoringList)
+    await main.send('Network.enable')
+    const dailySummary = observeNextResponse(main, '/api/v1/pets/pig/daily-summary')
+    try {
+      await main.reload()
+      await heldArrival(restoringList, 'initial history held while the relationship refreshes')
+      await main.waitForSelector(DASHBOARD)
+      // The main panel requests its daily summary after the relationship cache write.
+      await waitFor(() => dailySummary.evidence.status === 200, { description: 'main-panel relationship refresh completed before history arrives' })
+      restoringList.release()
+      await main.waitForSelector(`[data-e2e-session-id="${history.id}"][aria-pressed="true"]`)
+      await waitFor(() => main.evaluate(`document.querySelector('.main-chat-stream').textContent.includes(${JSON.stringify(history.messages[0].content)})`), { description: 'initial history detail loads after the relationship refresh' })
+    } finally {
+      dailySummary.dispose()
+    }
     await main.click('[data-e2e="main-tab-knowledge"]')
     await main.waitForSelector('[data-e2e="documents-error"]')
     restore()
@@ -158,21 +171,23 @@ export async function optionalDashboardRecoveryScenario(context) {
     await main.waitForSelector(`[data-e2e-document-id="${document.id}"]`)
     assert(await absent(main, '[data-e2e="documents-error"]'), 'Successful retry did not clear documents error')
 
-    // Delayed initial history hydration cannot navigate away from a new draft.
-    const historyHold = context.stub.holdNext('GET', SESSIONS)
-    held.push(historyHold)
-    await main.reload()
-    await heldArrival(historyHold, 'delayed initial history')
-    await main.waitForSelector(DASHBOARD)
-    await main.click('[data-e2e="new-chat"]')
-    const draft = 'Keep this unsent draft after history returns'
-    await main.input(INPUT, draft)
-    const beforeRelease = context.stub.requests.length
-    historyHold.release()
-    await main.waitForSelector(`[data-e2e-session-id="${history.id}"]`)
-    assertEqual(await main.evaluate(`document.querySelector('${INPUT}').value`), draft, 'Late history discarded the unsent draft')
-    assertEqual(await main.evaluate(`document.querySelector('[data-e2e-session-id="${history.id}"]').getAttribute('aria-pressed')`), 'false', 'Late list navigated to the old conversation')
-    assertEqual(context.stub.requests.slice(beforeRelease).filter((request) => request.pathname === `${SESSIONS}/${history.id}`).length, 0, 'Late history loaded old conversation details')
+    // Typing in the default conversation must protect the draft even without a New Chat click.
+    for (const conversation of ['new', 'default']) {
+      const historyHold = context.stub.holdNext('GET', SESSIONS)
+      held.push(historyHold)
+      await main.reload()
+      await heldArrival(historyHold, `initial history delayed for the ${conversation} conversation draft`)
+      await main.waitForSelector(DASHBOARD)
+      if (conversation === 'new') await main.click('[data-e2e="new-chat"]')
+      const draft = `Keep this unsent draft in the ${conversation} conversation`
+      await main.input(INPUT, draft)
+      const beforeRelease = context.stub.requests.length
+      historyHold.release()
+      await main.waitForSelector(`[data-e2e-session-id="${history.id}"]`)
+      assertEqual(await main.evaluate(`document.querySelector('${INPUT}').value`), draft, `Late history discarded the ${conversation} conversation draft`)
+      assertEqual(await main.evaluate(`document.querySelector('[data-e2e-session-id="${history.id}"]').getAttribute('aria-pressed')`), 'false', `Late list replaced the ${conversation} conversation`)
+      assertEqual(context.stub.requests.slice(beforeRelease).filter((request) => request.pathname === `${SESSIONS}/${history.id}`).length, 0, `Late history loaded old details during the ${conversation} conversation draft`)
+    }
     // Sending in the default empty conversation must also claim navigation before
     // its first session id exists. Do not click New Chat in these two cases.
     for (const kind of ['chat', 'reminder']) {
@@ -203,7 +218,16 @@ export async function optionalDashboardRecoveryScenario(context) {
         await waitFor(() => account.reminders.some((item) => item.source_text === message), { description: 'first reminder persists after late history' })
       }
     }
-    return { historyFailureDoesNotBlockAccount: true, documentsFailureDoesNotBlockAccount: true, independentListRetries: true, delayedHistoryPreservesNewChatAndDraft: true, delayedHistoryPreservesFirstChat: true, delayedHistoryPreservesFirstReminder: true }
+    return {
+      historyFailureDoesNotBlockAccount: true,
+      documentsFailureDoesNotBlockAccount: true,
+      independentListRetries: true,
+      restoredHistoryAfterRelationshipRefresh: true,
+      delayedHistoryPreservesNewChatAndDraft: true,
+      delayedHistoryPreservesDefaultChatDraft: true,
+      delayedHistoryPreservesFirstChat: true,
+      delayedHistoryPreservesFirstReminder: true,
+    }
   } finally {
     restore()
     for (const hold of held) hold.release()
