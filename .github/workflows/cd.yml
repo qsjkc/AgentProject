@@ -159,6 +159,52 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  clean-windows-installer:
+    name: Clean Windows Installer Acceptance
+    needs: desktop-installer
+    runs-on: windows-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    env:
+      EXPECTED_SOURCE_SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.EXPECTED_SOURCE_SHA }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: agentproject-desktop-win
+          path: ${{ runner.temp }}/detachym-release
+
+      - name: Verify install, uninstall and reinstall
+        shell: pwsh
+        run: |
+          & ./.github/acceptance/clean-windows-installer.ps1 `
+            -PackageDirectory (Join-Path $env:RUNNER_TEMP 'detachym-release') `
+            -ReportDirectory (Join-Path $env:RUNNER_TEMP 'detachym-install-evidence') `
+            -SourceCommit $env:EXPECTED_SOURCE_SHA
+
+      - name: Upload clean Windows acceptance report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: clean-windows-installer-evidence
+          path: ${{ runner.temp }}/detachym-install-evidence/*.json
+          if-no-files-found: warn
+          retention-days: 30
+
   server-images:
     name: Build Verified Server Images
     needs: preflight
@@ -253,7 +299,7 @@ jobs:
 
   deploy-server:
     name: Deploy Server
-    needs: [preflight, desktop-installer, server-images]
+    needs: [preflight, clean-windows-installer, server-images]
     if: needs.preflight.outputs.server_enabled == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
