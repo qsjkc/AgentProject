@@ -279,6 +279,11 @@ const desktopBridge = {
     ipcRenderer.on('desktop:reminder-wakeup', listener)
     return () => ipcRenderer.removeListener('desktop:reminder-wakeup', listener)
   },
+  onSystemResume: (callback) => {
+    const listener = () => callback()
+    ipcRenderer.on('desktop:system-resume', listener)
+    return () => ipcRenderer.removeListener('desktop:system-resume', listener)
+  },
   onPetRelationshipChanged: (callback) => {
     const listener = (_event, payload) => {
       if (e2eEnabled) {
@@ -385,6 +390,7 @@ if (e2eEnabled) {
     },
     showWindow: (role) => invokeE2eControl('showWindow', role),
     hideWindow: (role) => invokeE2eControl('hideWindow', role),
+    simulateSystemResume: () => invokeE2eControl('simulateSystemResume'),
     prepareOnboarding: (options) => invokeE2eControl('prepareOnboarding', options),
     expireOperationCapabilities: () => invokeE2eControl('expireOperationCapabilities'),
     switchAccount: async (fixture) => {

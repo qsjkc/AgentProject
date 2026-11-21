@@ -1193,11 +1193,13 @@ function MainPanelApp() {
     window.addEventListener('focus', refreshWhenStale)
     window.addEventListener('online', refreshWhenStale)
     document.addEventListener('visibilitychange', refreshWhenStale)
+    const unsubscribeResume = window.desktopBridge?.onSystemResume?.(refreshWhenStale)
     const timer = window.setInterval(refreshWhenStale, 60_000)
     return () => {
       window.removeEventListener('focus', refreshWhenStale)
       window.removeEventListener('online', refreshWhenStale)
       document.removeEventListener('visibilitychange', refreshWhenStale)
+      unsubscribeResume?.()
       window.clearInterval(timer)
     }
   }, [petDataReady, readyRelationshipContext, currentPetType, petDailySummary, petDailySummaryLoading])
@@ -1397,9 +1399,11 @@ function MainPanelApp() {
     const recover = () => { void sessionRecoveryRef.current.run({ automatic: true }) }
     window.addEventListener('online', recover)
     window.addEventListener('focus', recover)
+    const unsubscribeResume = window.desktopBridge?.onSystemResume?.(recover)
     return () => {
       window.removeEventListener('online', recover)
       window.removeEventListener('focus', recover)
+      unsubscribeResume?.()
     }
   }, [])
 

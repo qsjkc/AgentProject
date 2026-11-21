@@ -479,6 +479,13 @@ function requestPetReminderRefresh() {
   }
 }
 
+function refreshAfterSystemResume() {
+  if (!reminderWakeupController?.wake()) requestPetReminderRefresh()
+  if (mainPanelWindow && !mainPanelWindow.isDestroyed() && !mainPanelWindow.webContents.isLoading()) {
+    mainPanelWindow.webContents.send('desktop:system-resume')
+  }
+}
+
 function getFocusSessionForRenderer(event, expectedContext) {
   const authorization = authorizeRendererAccountMutation(event, expectedContext, ['main-panel', 'pet'], { requiredScope: 'pet' })
   if (!authorization.ok) return { ok: false, reason: authorization.reason }
@@ -2772,6 +2779,7 @@ async function handleE2eControl(event, method, ...args) {
     return applyE2eAccountFixture(fixture, { reset: true })
   }
   if (method === 'snapshot') return getE2eSnapshot()
+  if (method === 'simulateSystemResume') return powerMonitor.emit('resume')
   if (method === 'showWindow') return showE2eWindow(args[0])
   if (method === 'hideWindow') return hideE2eWindow(args[0])
   if (method === 'prepareOnboarding') return prepareE2ePetOnboarding(args[0])
@@ -3170,9 +3178,7 @@ if (!app.requestSingleInstanceLock()) {
     screen.on('display-metrics-changed', scheduleDisplayRecovery)
     powerMonitor.on('resume', scheduleDisplayRecovery)
     powerMonitor.on('resume', () => focusSessionController?.resume())
-    powerMonitor.on('resume', () => {
-      if (!reminderWakeupController?.wake()) requestPetReminderRefresh()
-    })
+    powerMonitor.on('resume', refreshAfterSystemResume)
   })
 
   app.on('activate', () => {

@@ -82,25 +82,33 @@ export function getReminderPollPlan(reminders, now) {
   }
 }
 
+export function isTransientReminderReadError(error) {
+  return error?.code === 'REQUEST_TIMEOUT' || error?.status === 408
+    || (error?.status >= 500 && error.status < 600)
+    || (error instanceof TypeError && error.message === 'Failed to fetch')
+}
+
 // Events that arrive during a request must cause a fresh read afterwards.
-// A failed/muted delivery still backs off, even if events keep arriving.
+// Reconnecting permits one early read retry. Other failures keep their cooldown.
 export function createReminderPollController({ poll, schedule, onError = () => {}, now = Date.now }) {
   let pending = null
-  let requested = false
+  let requested = null
   let disposed = false
   let retryAt = 0
+  let retryOnReconnect = false
   let contextRetries = 0
 
-  function request() {
+  function request({ reconnected = false } = {}) {
     if (disposed) return Promise.resolve()
     if (pending) {
-      requested = true
+      if (requested !== 'reconnect') requested = reconnected ? 'reconnect' : 'refresh'
       return pending
     }
-    if (now() < retryAt) return Promise.resolve(schedule(retryAt))
+    let retriedOnReconnect = now() < retryAt
+    if (retriedOnReconnect && !(reconnected && retryOnReconnect)) return Promise.resolve(schedule(retryAt))
     pending = Promise.resolve().then(async () => {
-      do {
-        requested = false
+      while (!disposed) {
+        requested = null
         let result
         try {
           result = await poll()
@@ -120,18 +128,26 @@ export function createReminderPollController({ poll, schedule, onError = () => {
         if (disposed) return
         if (result?.retry) {
           retryAt = now() + REMINDER_RECONCILE_MS
-          requested = false
+          retryOnReconnect = result.retryOnReconnect === true && !retriedOnReconnect
+          if (!retryOnReconnect || requested !== 'reconnect') requested = null
+        } else {
+          retryAt = 0
+          retryOnReconnect = false
         }
-        if (requested) continue
-        const nextAt = result?.retry ? retryAt : result?.nextAt
-        await schedule(Number.isFinite(nextAt) ? nextAt : now() + REMINDER_RECONCILE_MS)
-      } while (requested && !disposed && now() >= retryAt)
+        if (!requested) {
+          const nextAt = result?.retry ? retryAt : result?.nextAt
+          await schedule(Number.isFinite(nextAt) ? nextAt : now() + REMINDER_RECONCILE_MS)
+        }
+        if (!requested || disposed) return
+        retriedOnReconnect = now() < retryAt
+        if (retriedOnReconnect && !(retryOnReconnect && requested === 'reconnect')) return
+      }
     }).finally(() => { pending = null })
     return pending
   }
 
   return {
     request,
-    dispose() { disposed = true; requested = false },
+    dispose() { disposed = true; requested = null },
   }
 }
