@@ -1,0 +1,95 @@
+.daily-step {
+  min-width: 0;
+  color: #32493e;
+}
+
+.daily-step-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 4px 8px;
+}
+
+.daily-step-heading h3 {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.daily-step-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: #405b3d;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.daily-step-input {
+  display: grid;
+  gap: 5px;
+  margin-top: 7px;
+  color: #596854;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.daily-step-input input {
+  min-width: 0;
+  width: 100%;
+  padding: 7px 8px;
+  border: 1px solid #c6d4c1;
+  border-radius: 8px;
+  background: #fffdf9;
+  color: #32493e;
+  font: inherit;
+}
+
+.daily-step-input input::placeholder { color: #687567; }
+
+.daily-step-title {
+  margin: 7px 0 0;
+  font-size: 13px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.daily-step-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 8px;
+}
+
+.daily-step-actions button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-height: 29px;
+  padding: 4px 8px;
+  border: 1px solid #c6d4c1;
+  border-radius: 7px;
+  background: transparent;
+  color: #405b3d;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.daily-step-actions button:hover:not(:disabled) { background: #e5eee0; }
+.daily-step-actions .daily-step-primary { border-color: #496844; background: #496844; color: #fffef9; }
+.daily-step-actions .daily-step-primary:hover:not(:disabled) { background: #365333; }
+.daily-step-actions .daily-step-remove { color: #8b4237; }
+.daily-step-actions button:disabled { opacity: .55; cursor: default; }
+.daily-step :is(button, input):focus-visible { outline: 2px solid #587553; outline-offset: 2px; }
+
+.daily-step-error {
+  margin: 7px 0 0;
+  color: #8b4237;
+  font-size: 11px;
+  line-height: 1.5;
+}
+.daily-step-local { margin: 7px 0 0; color: #615f53; font-size: 10px; line-height: 1.5; }

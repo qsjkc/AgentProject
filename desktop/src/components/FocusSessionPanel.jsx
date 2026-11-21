@@ -6,13 +6,14 @@ import { captureFocusSnapshot, formatFocusTime, getFocusSnapshotRemainingMs, isF
 import { getFocusHistoryRefreshDelay, getFocusHistorySummary } from '../shared/focus-history'
 import './focus-session.css'
 
-export function FocusSessionPanel({ language, accountContext }) {
+export function FocusSessionPanel({ language, accountContext, stepIntent, onStepIntentHandled, onOpenToday }) {
   const zh = language === 'zh-CN'
   const languageRef = useRef(zh)
   languageRef.current = zh
   const [snapshot, setSnapshot] = useState(null)
   const [minutes, setMinutes] = useState(25)
   const [intention, setIntention] = useState('')
+  const [offeredStep, setOfferedStep] = useState('')
   const [now, setNow] = useState(() => performance.now())
   const [calendarNow, setCalendarNow] = useState(() => Date.now())
   const [loading, setLoading] = useState(true)
@@ -23,6 +24,8 @@ export function FocusSessionPanel({ language, accountContext }) {
   const mutationRef = useRef(false)
   const mountedRef = useRef(false)
   const requestRef = useRef(0)
+  const handledStepIntentRef = useRef(null)
+  const intentionInputRef = useRef(null)
   contextRef.current = accountContext
   const contextKey = JSON.stringify([accountContext?.server, accountContext?.userId, accountContext?.petType, accountContext?.session?.generation, accountContext?.epoch])
   const keyRef = useRef(contextKey)
@@ -36,6 +39,7 @@ export function FocusSessionPanel({ language, accountContext }) {
     const captured = captureFocusSnapshot(value, previous, receivedAt)
     snapshotRef.current = captured
     setSnapshot(captured)
+    if (captured.state?.status !== previous?.state?.status) setOfferedStep('')
     setError('')
     setNow(receivedAt)
     setCalendarNow(Date.now())
@@ -67,6 +71,7 @@ export function FocusSessionPanel({ language, accountContext }) {
     snapshotRef.current = null
     setSnapshot(null)
     setIntention('')
+    setOfferedStep('')
     setError('')
     mutationRef.current = false
     setBusy(false)
@@ -94,13 +99,43 @@ export function FocusSessionPanel({ language, accountContext }) {
   const history = useMemo(() => getFocusHistorySummary(snapshot, accountContext, calendarNow), [snapshot, accountContext, calendarNow])
   const historyDate = useMemo(() => new Intl.DateTimeFormat(zh ? 'zh-CN' : 'en', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }), [zh, calendarNow])
   const status = state?.status || 'idle'
+
+  useEffect(() => {
+    if (!stepIntent || handledStepIntentRef.current === stepIntent || (loading && !state)) return
+    // Consume the request even when the current timer cannot accept a draft.
+    // Resetting or reopening the panel should never replay that choice.
+    handledStepIntentRef.current = stepIntent
+    onStepIntentHandled?.(stepIntent)
+    setOfferedStep('')
+    const title = typeof stepIntent.title === 'string' ? stepIntent.title.trim().slice(0, 80) : ''
+    if (mutationRef.current || error || !title) return
+    if (state?.status === 'completed') {
+      setOfferedStep(title)
+      return
+    }
+    if (state?.status !== 'idle') return
+    if (intention.trim() && intention !== title) {
+      setOfferedStep(title)
+      return
+    }
+    setIntention(title)
+    intentionInputRef.current?.focus({ preventScroll: true })
+  }, [stepIntent, onStepIntentHandled, loading, state, error, intention])
+
   useEffect(() => {
     if (status !== 'running') return undefined
     const timer = window.setInterval(() => setNow(performance.now()), 1000)
     return () => window.clearInterval(timer)
   }, [status])
 
-  async function act(command) {
+  function applyOfferedStep() {
+    if (!offeredStep || state?.status !== 'idle' || mutationRef.current) return
+    setIntention(offeredStep)
+    setOfferedStep('')
+    intentionInputRef.current?.focus({ preventScroll: true })
+  }
+
+  async function act(command, nextIntention = '') {
     if (mutationRef.current || !state) return
     mutationRef.current = true
     const requestKey = keyRef.current
@@ -115,7 +150,10 @@ export function FocusSessionPanel({ language, accountContext }) {
       if (!mountedRef.current || requestKey !== keyRef.current) return
       if (result?.state) applySnapshot(result)
       if (!result?.ok) throw new Error(result?.reason || 'unavailable')
-      if (command === 'reset') setIntention('')
+      if (command === 'reset') {
+        setIntention(nextIntention)
+        if (nextIntention) window.requestAnimationFrame(() => intentionInputRef.current?.focus({ preventScroll: true }))
+      }
     } catch (failure) {
       if (mountedRef.current && requestKey === keyRef.current) {
         setError(failure.message === 'conflict'
@@ -146,7 +184,16 @@ export function FocusSessionPanel({ language, accountContext }) {
           <div className="focus-durations" role="group" aria-label={zh ? '专注时长' : 'Focus duration'}>
             {[15, 25, 45].map((duration) => <button key={duration} type="button" aria-pressed={minutes === duration} onClick={() => setMinutes(duration)} disabled={busy}>{duration}<span>{zh ? '分钟' : 'min'}</span></button>)}
           </div>
-          <label className="focus-intention"><span>{zh ? '这次想做什么？（选填）' : 'What is on your mind? (optional)'}</span><input value={intention} maxLength={80} placeholder={zh ? '比如，读几页书' : 'Maybe read a few pages'} onChange={(event) => setIntention(event.target.value)} disabled={busy} data-e2e="focus-intention" /></label>
+          <label className="focus-intention">
+            <span>{zh ? '这次想做什么？（选填）' : 'What is on your mind? (optional)'}</span>
+            <input ref={intentionInputRef} value={intention} maxLength={80} placeholder={zh ? '比如，读几页书' : 'Maybe read a few pages'} onChange={(event) => setIntention(event.target.value)} disabled={busy} data-e2e="focus-intention" />
+          </label>
+          {offeredStep && <div className="focus-step-offer">
+            <p role="status">{zh ? `你已有专注计划，也可以改用“${offeredStep}”。` : `You have a focus plan. You can switch it to “${offeredStep}”.`}</p>
+            <button type="button" className="focus-secondary" onClick={applyOfferedStep} disabled={busy} data-e2e="focus-apply-step">
+              {zh ? '改用这一步' : 'Use this step'}
+            </button>
+          </div>}
           <button type="button" className="focus-primary" onClick={() => void act('start')} disabled={busy} data-e2e="focus-start"><Play size={14} aria-hidden="true" />{zh ? '一起开始' : 'Let’s begin'}</button>
         </>
       ) : status === 'completed' ? (
@@ -155,7 +202,18 @@ export function FocusSessionPanel({ language, accountContext }) {
           <h3>{zh ? '这一小段，我们完成啦。' : 'We finished this little stretch.'}</h3>
           {state.intention && <p className="focus-task">{state.intention}</p>}
           <p className="focus-copy">{zh ? '喝口水，伸个懒腰。下一步可以慢慢来。' : 'Some water and a stretch. The next step can wait.'}</p>
-          <button type="button" className="focus-primary" onClick={() => void act('reset')} disabled={busy} data-e2e="focus-reset">{zh ? '再选一小段' : 'Choose another little stretch'}</button>
+          {offeredStep && <div className="focus-step-offer">
+            <p role="status">{zh ? `下一段可以继续做“${offeredStep}”。` : `You can use “${offeredStep}” for the next session.`}</p>
+            <button type="button" className="focus-secondary" onClick={() => void act('reset', offeredStep)} disabled={busy} data-e2e="focus-prepare-step">
+              {zh ? '带入下一段' : 'Prepare next session'}
+            </button>
+          </div>}
+          <div className="focus-completed-actions">
+            <button type="button" className="focus-primary" onClick={() => void act('reset')} disabled={busy} data-e2e="focus-reset">{zh ? '再选一小段' : 'Choose another little stretch'}</button>
+            {onOpenToday && <button type="button" className="focus-secondary" onClick={onOpenToday} data-e2e="focus-back-today">
+              {zh ? '回到今天' : 'Back to today'}
+            </button>}
+          </div>
         </div>
       ) : (
         <>
