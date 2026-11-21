@@ -50,6 +50,22 @@ export function normalizePetDailySummary(value, petType = 'pig') {
   }
 }
 
+export function isPetDailySummaryCurrent(summary, now = Date.now()) {
+  if (!summary?.local_date || !summary.timezone) return false
+  try {
+    const formatter = new Intl.DateTimeFormat('en', {
+      timeZone: summary.timezone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    })
+    const dateParts = Object.fromEntries(formatter.formatToParts(now).map(({ type, value }) => [type, value]))
+    return summary.local_date === `${dateParts.year}-${dateParts.month}-${dateParts.day}`
+  } catch {
+    return false
+  }
+}
+
 export function getPetDailySummaryHighlights(language, summary) {
   if (!summary) {
     return []

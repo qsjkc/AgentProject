@@ -65,6 +65,7 @@ import { createSessionRecoveryController } from './shared/session-recovery'
 import {
   getPetDailySummaryHighlights,
   getPetDailySummaryMessage,
+  isPetDailySummaryCurrent,
 } from './shared/pet-daily-summary'
 import {
   getPetDailySummary,
@@ -1170,6 +1171,36 @@ function MainPanelApp() {
       }
     }
   }
+
+  useEffect(() => {
+    if (!petDataReady) return undefined
+    let refreshing = false
+    const refreshWhenStale = async () => {
+      if (
+        refreshing
+        || document.visibilityState !== 'visible'
+        || petDailySummaryLoading
+        || isPetDailySummaryCurrent(petDailySummary)
+        || !isMainPanelAccountRequestCurrent(readyRelationshipContext)
+      ) return
+      refreshing = true
+      try {
+        await loadPetDailySummary(currentPetType)
+      } finally {
+        refreshing = false
+      }
+    }
+    window.addEventListener('focus', refreshWhenStale)
+    window.addEventListener('online', refreshWhenStale)
+    document.addEventListener('visibilitychange', refreshWhenStale)
+    const timer = window.setInterval(refreshWhenStale, 60_000)
+    return () => {
+      window.removeEventListener('focus', refreshWhenStale)
+      window.removeEventListener('online', refreshWhenStale)
+      document.removeEventListener('visibilitychange', refreshWhenStale)
+      window.clearInterval(timer)
+    }
+  }, [petDataReady, readyRelationshipContext, currentPetType, petDailySummary, petDailySummaryLoading])
 
   const loadSessions = async ({ restoreLatest = false } = {}) => {
     if (sessionListLoadRef.current) return
