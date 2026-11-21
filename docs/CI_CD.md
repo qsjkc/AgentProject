@@ -202,7 +202,7 @@ npm run build
 3. 解析部署目标
 4. 创建远端目录
 5. 检查线上桌面版本与 Alembic revision，阻止应用降级或目标缺失线上迁移
-6. 验证 artifact 的唯一 EXE、版本、字节数、SHA-256 和源提交，再上传应用源码及暂存安装包
+6. 验证 artifact 的唯一 EXE、版本、字节数、SHA-256 和源提交；上传固定提交中的最小部署配置包及暂存安装包，配置包先校验来源、哈希、文件路径和类型再解包
 7. 服务端再核对安装包 SHA-256 与大小后原子改名；已存在的同名包必须具有相同哈希，避免覆盖已有版本。保留原 `.env` 和 `data/`，仅更新两个 `DESKTOP_RELEASE_*` 键，并保存原发布键元数据；原有本地 Agent 地址修正逻辑继续保留
 8. 服务器验证镜像归档后加载，再核对实际 image ID、平台和 revision。使用镜像 compose override 启动主服务及 `agent-server/`：
 
@@ -220,7 +220,7 @@ python deploy/verify_desktop_artifact.py --directory desktop-release --package d
   --public-base-url https://detachym.top
 ```
 
-公网 origin 优先使用服务端 `WEB_APP_URL`，而非把 SSH 的 IP 当作 TLS 域名。全部检查成功后，服务器才将本次清单写为 `.deployed-release.json`；`server-release-verification` artifact 保留安装包清单、部署前版本检查与公网检查结果。公网 HEAD 只核对可访问性与体积，不能替代公网完整下载 SHA-256 或 Windows 安装验收。
+公网 origin 优先使用服务端 `WEB_APP_URL`，而非把 SSH 的 IP 当作 TLS 域名。全部检查成功后，服务器才将本次清单写为 `.deployed-release.json`；`server-release-verification` artifact 保留安装包清单、配置包清单 `runtime-bundle.json`、远端配置校验 `runtime-install.json`、部署前版本检查与公网检查结果。公网 HEAD 只核对可访问性与体积，不能替代公网完整下载 SHA-256 或 Windows 安装验收。
 
 镜像归档在加载与校验成功后删除，清单、compose overrides 和 `running-images.json` 留在 `.server-images-<main-sha>/`。旧镜像保留，不做全局 prune。部署还会将已验证镜像写入两个项目的默认 `docker-compose.override.yml`，保证日后普通 `docker compose up -d` 仍选中本次镜像。文件带来源标识和 `pull_policy: never`；未知或人工扩展的同名配置会阻止覆盖，旧配置快照只保存一次，重试不丢失原状态。
 
@@ -286,27 +286,23 @@ CD 保留服务器已有 `.env`，不再使用 `APP_ENV_FILE` Secret 覆盖生�
 
 ## 防污染设计
 
-当前 `CD` 已经针对前端依赖污染问题做了双重防护。
+当前 `CD` 在 runner 构建镜像，服务器仅接收运行配置和已验证制品。
 
-### 1. 上传源码时排除本机依赖目录
+### 1. 从固定提交生成最小配置包
 
-`Upload application source` 会显式排除：
+`Upload committed runtime configuration` 调用 `deploy/runtime_bundle.py`，以完整 40 位提交 SHA 执行 `git archive`，只打包三个来源路径：
 
-- `frontend/node_modules`
-- `frontend/dist`
-- `frontend/.vite`
-- `backend/venv`
-- `backend/__pycache__`
-- `backend/**/*.pyc`
+- `deploy/`：远端镜像校验脚本及部署配置，包括 `nginx.conf`；未来已提交的部署脚本会一并包含
+- `docker-compose.yml`
+- `agent-server/docker-compose.yml`
 
-### 2. 服务器解包前清理旧脏目录
+配置包不读取工作区内容。生成时检查必要配置，拒绝越界路径、链接及 `.env`、证书、运行数据等文件。清单记录源 SHA、SHA-256、字节数与文件列表。服务器使用 runner 传入的校验器，再检查归档哈希和 Git 归档内的提交标识，全部路径检查通过后才逐个替换配置文件。
 
-远端解包前会先删除：
+### 2. 保留服务器运行状态
 
-- `frontend/node_modules`
-- `frontend/dist`
-- `frontend/.vite`
-- `backend/venv`
+配置解包不再删除远端源码或依赖目录。已有 `.env`、TLS 证书、`data/`、`logs/`、默认镜像 overrides、`.server-images-<sha>/` 与发布记录不在配置包中，保持原有发布流程管理；目标文件或目录存在符号链接时停止解包。应用代码与 Nginx 配置已包含在 CI 构建的镜像中，Compose 仅挂载持久数据、日志、下载目录和 `/etc/letsencrypt` 证书。
+
+服务器保留的 `backend/`、`frontend/`、`agent-server/` 旧应用源码不再随发布同步，不能据此判断运行版本或重新构建生产镜像。版本与来源以镜像清单、运行容器和公网验收结果为准。此调整减少重复源码传输及超时风险，不改变单实例服务切换方式。
 
 ### 3. Nginx 构建隔离依赖并复用缓存
 
@@ -344,7 +340,7 @@ sh: tsc: Permission denied
 | `unable to authenticate` | SSH Secret 不正确或服务器未接受密钥 | 先在本机用同一把私钥执行 `ssh -o IdentitiesOnly=yes` 验证 |
 | `Bad port ''` | 端口变量为空或被错误解析 | 检查 `SERVER_PORT`，当前 workflow 已做兜底 |
 | `hostname contains invalid characters` | `SERVER_HOST` 含协议头、路径或用户名 | workflow 已做清洗，但仍建议 Secret 只填纯主机/IP |
-| `sh: tsc: Permission denied` | Windows `node_modules` 污染了 Linux 构建环境 | 检查 `.dockerignore`、源码打包排除项、Dockerfile 重装依赖逻辑 |
+| `sh: tsc: Permission denied` | Windows `node_modules` 污染了 Linux 构建环境 | 检查 runner 或本地构建的 `.dockerignore` 和 Dockerfile 依赖安装逻辑 |
 | `Missing .env` | 服务器部署目录没有 `.env` | 先手工准备生产 `.env` |
 | `docker compose` 执行失败 | 服务器未安装 Docker/Compose 或权限不足 | 在服务器上先验证 `docker --version`、`docker compose version` |
 
@@ -352,7 +348,7 @@ sh: tsc: Permission denied
 
 ### 部署前版本检查
 
-CD 在上传源码和切换版本之前，读取正在运行的后端版本及数据库 Alembic revision，然后运行 `deploy/verify_release_transition.py`。目标桌面版本比线上旧、目标迁移目录不包含线上 revision，或无法确认线上状态时，部署会停止。
+CD 在上传配置和切换版本之前，读取正在运行的后端版本及数据库 Alembic revision，然后运行 `deploy/verify_release_transition.py`。目标桌面版本比线上旧、目标迁移目录不包含线上 revision，或无法确认线上状态时，部署会停止。
 
 这用于阻止将旧 PR 合入主分支后，自动部署覆盖更新的线上版本。它不执行数据库降级，也不代替备份和回退方案。首次安装没有运行中的后端时，应使用初始化部署流程；恢复或回退应按对应版本的备份方案单独执行。
 

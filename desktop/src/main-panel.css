@@ -31,6 +31,12 @@
 .desktop-release-actions { display: flex; flex-wrap: wrap; gap: 6px; }
 .desktop-release-panel .desktop-release-note { color: #81786c; font-size: 11px; }
 .main-header-status { margin-top: 8px; max-height: 3.4em; overflow: auto; color: #736455; font-size: 11px; line-height: 1.7; overflow-wrap: anywhere; }
+.session-recovery-card .desktop-login-intro { margin-bottom: 18px; }
+.session-recovery-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+.session-recovery-error, .main-list-error { color: #945538; font-size: 13px; line-height: 1.7; overflow-wrap: anywhere; }
+.session-recovery-error { margin: 0 0 18px; }
+.main-list-error { margin-bottom: 12px; padding: 10px; border: 1px solid #e7d8c4; border-radius: 10px; background: #fbf6ee; }
+.main-list-error p { margin: 0 0 8px; }
 .main-chat-layout { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 14px; flex: 1; min-height: 0; }
 .main-panel-shell .panel { border-color: #e4e3da; border-radius: 19px; box-shadow: 0 5px 24px #49392105; }
 .main-companion-sidebar { min-width: 0; padding: 16px; overflow: auto; scrollbar-gutter: stable; }

@@ -14,6 +14,7 @@ import {
   adoptPetStateCapability,
   commitAccountOperation,
   createAccountOperationGate,
+  createLocalOperationContext,
   deriveQuickChatPetStateContext,
   isAuthContextChangedError,
 } from './shared/pet-account-context'
@@ -369,8 +370,13 @@ function QuickChatApp() {
     const outgoingMessage = message.trim()
     setReminderDraftError(null)
     const parsedReminder = parseReminder(outgoingMessage)
+    // Preference and relationship refreshes can update the same pet while a reply is pending.
+    const initiatingContext = {
+      ...petContextRef.current,
+      local: createLocalOperationContext(petContextRef.current, 'pet'),
+    }
     if (parsedReminder.ok) {
-      let reminderContext = reminderGateRef.current.begin({ ...petContextRef.current })
+      let reminderContext = reminderGateRef.current.begin(initiatingContext)
       setMessages((current) => [...current, { role: 'user', content: outgoingMessage }])
       setMessage('')
       setLoading(true)
@@ -431,13 +437,17 @@ function QuickChatApp() {
             nextRelationship,
             reminderContext,
           )
-          if (!cacheResult?.ok || !cacheResult.authoritative) return
+          if (!cacheResult?.ok || !cacheResult.authoritative
+            || !reminderGateRef.current.isCurrent(reminderContext, petContextRef.current)) return
           petContextRef.current = {
             ...petContextRef.current,
             relationshipId: nextRelationship.id,
             authoritative: cacheResult.authoritative,
           }
-          reminderContext = reminderGateRef.current.begin({ ...petContextRef.current })
+          reminderContext = reminderGateRef.current.begin({
+            ...petContextRef.current,
+            local: createLocalOperationContext(petContextRef.current, 'pet'),
+          })
         } catch (error) {
           await logDesktopDebug({
             event: 'quick-chat-relationship-refresh-failed',
@@ -516,7 +526,7 @@ function QuickChatApp() {
     setMessages((current) => [...current, { role: 'user', content: outgoingMessage }])
     setMessage('')
     setLoading(true)
-    const requestContext = chatGateRef.current.begin({ ...petContextRef.current })
+    const requestContext = chatGateRef.current.begin(initiatingContext)
 
     try {
       await logDesktopDebug({

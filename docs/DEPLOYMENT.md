@@ -182,7 +182,7 @@ docker compose up -d --build --remove-orphans
 2. `CD` 锁定当前 `main` SHA；旧提交的 CI、非 main 手动部署或没有成功 CI 的手动部署会停止
 3. `desktop-installer` 在 Windows runner 构建唯一安装包与 `desktop-release.json`（版本、文件名、字节数、SHA-256、源提交）
 4. `server-images` 在 Ubuntu runner 构建三项服务镜像，以完整提交 SHA 标记并生成包含 image ID、平台、revision、归档哈希的清单；`deploy-server` 等待安装包与镜像成功后下载并验证同一次运行的 artifacts，在首次远端变更前再核对 main 没有移动
-5. 通过原生 `ssh/scp` 核对线上版本及 Alembic revision，上传源码及暂存安装包，校验哈希后原子改名
+5. 通过原生 `ssh/scp` 核对线上版本及 Alembic revision；使用完整 SHA 的 `git archive` 打包部署配置，服务端校验哈希、来源和路径后解包；暂存安装包校验哈希后原子改名
 6. 保留服务器 `.env` 和业务数据，保存原发布键，仅更新 `DESKTOP_RELEASE_VERSION`、`DESKTOP_RELEASE_FILE`；原有 Agent 公网地址修正逻辑继续保留
 7. 服务器校验并加载镜像归档，核对实际镜像与清单一致，保存默认镜像 override，以显式 override 执行 `up -d --no-build --pull never --remove-orphans`，核对运行容器的 image ID。普通重启也会读取默认 override，未知自定义 override 不会被覆盖。生产部署不安装构建依赖、不编译源码；失败不会回退到服务器构建
 8. 后端、Agent 就绪后验证公网 HTTPS readiness、版本元数据及安装包 HEAD/长度；成功后写 `.deployed-release.json`，上传 `server-release-verification` 验证 artifact
@@ -193,8 +193,9 @@ docker compose up -d --build --remove-orphans
 - SSH 必须配置私钥 `SERVER_SSH_KEY`，不支持密码单独登录
 - 不再通过 `APP_ENV_FILE` Secret 覆盖服务器 `.env`
 - SSH 主机 IP 与公网 TLS 域名可以不同，公网检查优先使用 `WEB_APP_URL`
-- 当前源码上传时会排除 `frontend/node_modules` 等本机依赖目录
-- 解包前会先清理远端旧的 `frontend/node_modules`
+- 配置包只包含该提交中的 `deploy/`、根目录 `docker-compose.yml` 和 `agent-server/docker-compose.yml`，不读取工作区未提交内容，也不重复传输已装入镜像的应用源码
+- 解包不会清理旧源码、依赖、`.env`、证书、业务数据、默认镜像 override 或历史镜像报告；运行文件误入配置包或目标路径是符号链接时会停止。服务器旧源码不再随发布更新，线上代码以已验证镜像为准
+- `runtime-bundle.json` 记录配置包 SHA、哈希、字节数和文件列表，`runtime-install.json` 记录远端校验结果，均随发布验收 artifact 保存
 - 固定并发组将 CD 排队，避免后续运行中断正在进行的服务切换
 
 合并后跟踪 `CI` 和自动 `CD`，不要重复触发手工部署。只有需要重跑且没有同批自动部署时使用：
@@ -216,7 +217,7 @@ npm ci
 npm run build
 ```
 
-如果上传到服务器的源码里夹带了 Windows 下的 `frontend/node_modules`，会导致：
+如果本地构建上下文夹带 Windows 下的 `frontend/node_modules`，可能导致：
 
 ```text
 sh: tsc: Permission denied
@@ -268,4 +269,4 @@ docker compose logs --tail=100 nginx
 | `unable to authenticate` | SSH key 不正确或服务器未接受密钥 | 先在本机用同一把私钥测试 |
 | `Bad port ''` | 端口值异常 | 检查 `SERVER_PORT`，当前 workflow 已做端口兜底 |
 | `hostname contains invalid characters` | `SERVER_HOST` 带协议头/路径/用户名 | 建议 Secret 只填主机或 IP |
-| `tsc: Permission denied` | 前端依赖目录污染 Linux 构建 | 检查 `.dockerignore` 和上传排除项 |
+| `tsc: Permission denied` | 前端依赖目录污染 Linux 构建 | 检查 runner 或本地构建的 `.dockerignore` |
