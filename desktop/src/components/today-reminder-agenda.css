@@ -51,4 +51,5 @@
   text-underline-offset: 2px;
 }
 
-.today-reminder-agenda button:focus-visible { outline: 2px solid #587553; outline-offset: 2px; }
+.today-agenda-more > summary { display: list-item; list-style-position: inside; }
+.today-reminder-agenda :is(button, summary):focus-visible { outline: 2px solid #587553; outline-offset: 2px; }
