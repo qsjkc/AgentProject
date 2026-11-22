@@ -65,7 +65,7 @@ for (const [timeZone, inputTime, expectedIso] of [
 
 test('DST editing preserves an untouched later fold and rejects a nonexistent local clock', () => {
   runInTimeZone('America/New_York', `
-    const original = '2026-11-01T06:30:42.123Z';
+    const original = '2026-11-01T06:30:42.123456Z';
     const now = Date.parse('2026-11-01T06:15:00Z');
     assert.equal(toReminderLocalInput(original), '2026-11-01T01:30');
     assert.deepEqual(parseReminderReschedule('2026-11-01T01:30', original, now), { ok: true, remindAt: original });

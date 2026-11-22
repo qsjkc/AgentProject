@@ -23,13 +23,13 @@ export function parseReminderReschedule(value, originalTime, now = Date.now()) {
   }
   // An untouched minute input must retain seconds and the original DST fold.
   const original = new Date(originalTime)
-  const date = Number.isFinite(original.getTime()) && value === toReminderLocalInput(originalTime)
-    ? original
-    : new Date(value)
+  const unchanged = Number.isFinite(original.getTime()) && value === toReminderLocalInput(original)
+  const date = unchanged ? original : new Date(value)
   // Reject invalid calendar dates and local clocks skipped by a DST transition.
   if (!Number.isFinite(date.getTime()) || toReminderLocalInput(date) !== value) {
     return { ok: false, reason: 'invalid_time' }
   }
   if (date.getTime() <= Number(now)) return { ok: false, reason: 'past_time' }
-  return { ok: true, remindAt: date.toISOString() }
+  // API timestamps can have microseconds that Date cannot serialize.
+  return { ok: true, remindAt: unchanged && typeof originalTime === 'string' ? originalTime : date.toISOString() }
 }
