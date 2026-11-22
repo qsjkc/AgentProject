@@ -20,14 +20,55 @@ function Find-DetachymRegistration {
     }
 }
 
-function Invoke-InstallerProcess([string]$Executable, [string[]]$Arguments) {
+function Find-InstallerAccessViolation([string]$Executable, [int]$ProcessId, [datetime]$StartedAt) {
+    $name = [IO.Path]::GetFileName($Executable)
+    $hexProcessId = '0x{0:x}' -f $ProcessId
+    $filter = @{ LogName = 'Application'; ProviderName = 'Application Error'; Id = 1000; StartTime = $StartedAt }
+    for ($attempt = 0; $attempt -lt 5; $attempt++) {
+        if ($attempt -gt 0) { Start-Sleep -Seconds 1 }
+        foreach ($eventRecord in Get-WinEvent -FilterHashtable $filter -ErrorAction SilentlyContinue) {
+            [xml]$eventXml = $eventRecord.ToXml()
+            $fields = @{}
+            foreach ($field in $eventXml.Event.EventData.Data) {
+                $fields[$field.Name] = [string]$field.'#text'
+            }
+            if ($fields.AppName -ne $name -or $fields.ProcessId -ne $hexProcessId -or
+                $fields.ExceptionCode -notin @('c0000005', '0xc0000005')) { continue }
+            return [ordered]@{
+                status = 'matched'
+                eventId = 1000
+                time = $eventRecord.TimeCreated.ToUniversalTime().ToString('o')
+                exceptionCode = $fields.ExceptionCode
+                faultingModule = $fields.ModuleName
+                faultingModuleVersion = $fields.ModuleVersion
+                faultOffset = $fields.FaultingOffset
+            }
+        }
+    }
+    return @{ status = 'not-found' }
+}
+
+function Invoke-InstallerProcess([string]$Phase, [string]$Executable, [string[]]$Arguments) {
+    $startedAt = Get-Date
     $process = Start-Process -FilePath $Executable -ArgumentList $Arguments -PassThru -WindowStyle Hidden
     if (-not $process.WaitForExit(120000)) {
         & taskkill.exe /PID $process.Id /T /F | Out-Null
-        throw "NSIS timed out ($Executable)"
+        throw "$Phase NSIS timed out ($Executable)"
     }
     if ($process.ExitCode -ne 0) {
-        throw "NSIS failed with exit code $($process.ExitCode) ($Executable)"
+        $problem = [InvalidOperationException]::new("$Phase NSIS failed with exit code $($process.ExitCode) ($Executable)")
+        $failure = [ordered]@{
+            phase = $Phase
+            exitCode = $process.ExitCode
+            processId = $process.Id
+            startedAt = $startedAt.ToUniversalTime().ToString('o')
+        }
+        if ($process.ExitCode -eq -1073741819) {
+            try { $failure.accessViolation = Find-InstallerAccessViolation $Executable $process.Id $startedAt }
+            catch { $failure.accessViolation = @{ status = 'unavailable' } }
+        }
+        $problem.Data['installerFailure'] = $failure
+        throw $problem
     }
 }
 
