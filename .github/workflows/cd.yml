@@ -208,19 +208,106 @@ jobs:
   server-images:
     name: Build Verified Server Images
     needs: preflight
-    if: needs.preflight.outputs.server_enabled == 'true'
+    if: >-
+      needs.preflight.outputs.server_enabled == 'true' &&
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event_name == 'workflow_run' &&
+        github.event.workflow_run.head_repository.full_name == github.repository &&
+        github.event.workflow_run.head_branch == 'main' &&
+        (github.event.workflow_run.event == 'push' || github.event.workflow_run.event == 'workflow_dispatch')))
+    # This job only builds the preflight-verified main checkout. workflow_run defaults to read-only cache access.
+    cache-mode: write
     runs-on: ubuntu-latest
     timeout-minutes: 40
     env:
       DEPLOY_SOURCE_SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+      DOCKER_BUILD_RECORD_UPLOAD: 'false'
 
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+          persist-credentials: false
 
-      - name: Build source-bound server image archive
-        run: bash deploy/build_server_images.sh "$DEPLOY_SOURCE_SHA" "$RUNNER_TEMP/server-images"
+      - name: Verify build source and select cache week
+        id: release-cache
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ "$DEPLOY_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$DEPLOY_SOURCE_SHA"
+          test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')" = "$DEPLOY_SOURCE_SHA"
+          # Rotate the scope so regular releases also refresh the apt and pip layers.
+          printf 'week=%s\n' "$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          cache-binary: false
+
+      - name: Build release backend image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          platforms: linux/amd64
+          load: true
+          provenance: false
+          sbom: false
+          tags: agentproject-backend:sha-${{ env.DEPLOY_SOURCE_SHA }}
+          labels: org.opencontainers.image.revision=${{ env.DEPLOY_SOURCE_SHA }}
+          build-args: |
+            PYTHON_BASE_IMAGE=python:3.11.9-slim-bookworm
+            APT_MIRROR=
+            PIP_INDEX_URL=https://pypi.org/simple
+          cache-from: type=gha,version=2,scope=agentproject-release-backend-${{ steps.release-cache.outputs.week }},timeout=1m
+          cache-to: type=gha,version=2,scope=agentproject-release-backend-${{ steps.release-cache.outputs.week }},mode=max,timeout=3m,ignore-error=true
+
+      - name: Build release agent-server image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./agent-server
+          platforms: linux/amd64
+          load: true
+          provenance: false
+          sbom: false
+          tags: agentproject-agent-server:sha-${{ env.DEPLOY_SOURCE_SHA }}
+          labels: org.opencontainers.image.revision=${{ env.DEPLOY_SOURCE_SHA }}
+          build-args: |
+            PYTHON_BASE_IMAGE=python:3.11.9-slim-bookworm
+            APT_MIRROR=
+            PIP_INDEX_URL=https://pypi.org/simple
+          cache-from: type=gha,version=2,scope=agentproject-release-agent-server-${{ steps.release-cache.outputs.week }},timeout=1m
+          cache-to: type=gha,version=2,scope=agentproject-release-agent-server-${{ steps.release-cache.outputs.week }},mode=max,timeout=3m,ignore-error=true
+
+      - name: Build release nginx image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/Dockerfile.nginx
+          platforms: linux/amd64
+          load: true
+          provenance: false
+          sbom: false
+          tags: agentproject-nginx:sha-${{ env.DEPLOY_SOURCE_SHA }}
+          labels: org.opencontainers.image.revision=${{ env.DEPLOY_SOURCE_SHA }}
+          build-args: |
+            NODE_BASE_IMAGE=node:20.11-alpine
+            NGINX_BASE_IMAGE=nginx:1.26-alpine
+            NPM_REGISTRY=https://registry.npmjs.org
+          cache-from: type=gha,version=2,scope=agentproject-release-nginx-${{ steps.release-cache.outputs.week }},timeout=1m
+          cache-to: type=gha,version=2,scope=agentproject-release-nginx-${{ steps.release-cache.outputs.week }},mode=max,timeout=3m,ignore-error=true
+
+      - name: Archive and verify the loaded release images
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash deploy/archive_server_images.sh "$DEPLOY_SOURCE_SHA" "$RUNNER_TEMP/server-images"
+          docker image inspect --format '{{json .RepoTags}} {{json .RootFS.Layers}}' \
+            "agentproject-backend:sha-$DEPLOY_SOURCE_SHA" "agentproject-nginx:sha-$DEPLOY_SOURCE_SHA" \
+            "agentproject-agent-server:sha-$DEPLOY_SOURCE_SHA"
 
       - name: Smoke test the exact server images
         run: bash deploy/smoke_server_images.sh "$DEPLOY_SOURCE_SHA"
