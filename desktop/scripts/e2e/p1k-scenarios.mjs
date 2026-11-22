@@ -942,10 +942,13 @@ export async function quickChatReminderSyncScenario(context) {
   const account = stub.fixture.accounts.get(USERS.A.id)
   const previousReminders = account.reminders
   const remindersPath = '/api/v1/reminders'
+  const seriesPath = '/api/v1/reminder-series'
   const title = '检查窗边的花'
   const draft = `明天12:00提醒我${title}`
   let save
   let relationshipRefresh
+  let recurringSave
+  let restoreSeries
   account.reminders = []
   try {
     await resetAuthenticated(context)
@@ -1007,10 +1010,69 @@ export async function quickChatReminderSyncScenario(context) {
       description: 'the confirmed Quick Chat message survives the relationship failure',
     })
     assertEqual(account.reminders.length, 1, 'Quick Chat created duplicate reminders')
-    return { todayUpdated: true, upcomingUpdated: true, refreshBeforeRelationship: true, confirmationRetained: true, reminderId: persisted.id }
+
+    const recurringTitle = '给窗边的花浇水'
+    const localHour = await quick.evaluate("new Date(Date.now() + 2 * 60 * 60 * 1000).getHours()")
+    const recurringDraft = `每天${String(localHour).padStart(2, '0')}:42提醒我${recurringTitle}`
+    const recurringResponse = { statusCode: 200, payload: null }
+    recurringSave = stub.holdNext('POST', remindersPath, recurringResponse)
+    await quick.input(REQUIRED_SELECTORS.quickChatInput, recurringDraft)
+    await quick.click(REQUIRED_SELECTORS.quickChatSend)
+    const recurringRequest = await withTimeout(recurringSave.arrived, 5000, 'held Quick Chat recurring reminder creation')
+    const recurrence = JSON.parse(recurringRequest.body)
+    assertEqual(recurrence.recurrence_type, 'daily', 'Quick Chat did not send a daily reminder')
+    assertEqual(recurrence.title, recurringTitle, 'Quick Chat changed the recurring reminder title')
+
+    const first = new Date(recurrence.remind_at)
+    const end = new Date(first)
+    end.setHours(24, 0, 0, 0)
+    const beforeRecurringDay = stub.requests.length
+    await main.evaluate(`(() => {
+      Date.now = () => ${first.getTime() - 5 * 60_000}
+      window.dispatchEvent(new Event('focus'))
+    })()`)
+    await waitFor(() => stub.requests.slice(beforeRecurringDay).some(({ method, pathname, search }) => (
+      method === 'GET' && pathname === remindersPath && new URLSearchParams(search).get('due_before') === end.toISOString()
+    )), { description: 'the agenda reads the daily reminder’s first local day' })
+
+    const seriesId = stub.fixture.nextReminderId++
+    const recurringRow = `#recurring-reminders [data-reminder-series-id="${seriesId}"]`
+    assertEqual(await main.evaluate(`Boolean(document.querySelector(${JSON.stringify(recurringRow)}))`), false,
+      'The recurring row appeared before the reminder was saved')
+    const next = new Date(first)
+    next.setDate(next.getDate() + 1)
+    const occurrence = createReminderRecord({
+      id: stub.fixture.nextReminderId++, user: USERS.A, petType: 'pig', title: recurringTitle,
+      remindAt: first, sourceText: recurringDraft,
+    })
+    occurrence.recurrence_type = 'daily'
+    occurrence.series_id = seriesId
+    recurringResponse.payload = occurrence
+    // The production write commits the new series and its first occurrence together.
+    account.reminders.push(occurrence)
+    restoreSeries = stub.overrideResponse('GET', seriesPath, 200, [{
+      id: seriesId, user_id: USERS.A.id, pet_type: 'pig', title: recurringTitle, status: 'active',
+      recurrence_type: 'daily', timezone: recurrence.recurrence_timezone,
+      local_hour: localHour, local_minute: 42, weekdays: [0, 1, 2, 3, 4, 5, 6], next_occurrence_at: next.toISOString(),
+    }])
+    const recurringReadsStart = stub.requests.length
+    recurringSave.release()
+    const recurringAgendaItem = `[data-e2e="today-agenda-item"][data-destination="recurring"][data-target-id="${seriesId}"]`
+    await main.waitForSelector(recurringAgendaItem, { timeoutMs: 5000 })
+    await main.waitForSelector(recurringRow, { timeoutMs: 5000 })
+    await main.click(recurringAgendaItem)
+    await waitFor(() => main.evaluate(`document.activeElement === document.querySelector(${JSON.stringify(recurringRow)})`),
+      { timeoutMs: 5000, description: 'the Quick Chat reminder immediately focuses its exact recurring row' })
+    assertEqual(stub.requests.slice(recurringReadsStart).filter(({ method, pathname }) => method === 'GET' && pathname === seriesPath).length,
+      2, 'Today and the recurring list should each refresh once for this write')
+    assertEqual(await main.evaluate('window.readReminderUpdateCount()'), 2, 'Each committed Quick Chat reminder publishes one refresh')
+    return { todayUpdated: true, upcomingUpdated: true, refreshBeforeRelationship: true, confirmationRetained: true,
+      reminderId: persisted.id, recurringRowFocused: true, seriesId }
   } finally {
     save?.release()
     relationshipRefresh?.release()
+    recurringSave?.release()
+    restoreSeries?.()
     await main.evaluate('window.stopReminderUpdateObservation?.(); window.restoreQuickReminderClock?.()').catch(() => {})
     account.reminders = previousReminders
   }

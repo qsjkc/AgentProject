@@ -122,15 +122,15 @@ export function RecurringReminderPanel({ language, petType, accountContext, onUp
 
   useEffect(() => {
     void loadSeries()
-    const handleSeriesChanged = () => {
+    const handleRemindersChanged = () => {
       void loadSeries({ silent: true, queue: true })
     }
-    window.addEventListener('detachym:reminder-series-changed', handleSeriesChanged)
+    window.addEventListener('detachym:reminders-changed', handleRemindersChanged)
     const timer = window.setInterval(() => {
       void loadSeries({ silent: true })
     }, REFRESH_INTERVAL_MS)
     return () => {
-      window.removeEventListener('detachym:reminder-series-changed', handleSeriesChanged)
+      window.removeEventListener('detachym:reminders-changed', handleRemindersChanged)
       window.clearInterval(timer)
     }
   }, [loadSeries])
