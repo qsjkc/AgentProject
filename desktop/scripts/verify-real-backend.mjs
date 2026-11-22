@@ -360,6 +360,23 @@ async function clickEnabled(page, selector, { confirmMovedPointer = false } = {}
   await page.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: point.x, y: point.y, button: 'left', buttons: 0, clickCount: 1 })
   return point
 }
+async function pressEnterOnButton(page, selector) {
+  await page.bringToFront()
+  await waitFor(() => page.evaluate(`(() => {
+    const button = document.querySelector(${JSON.stringify(selector)});
+    if (!(button instanceof HTMLButtonElement) || button.matches(':disabled') || !document.hasFocus()) return false;
+    button.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
+    const rect = button.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0 || rect.top < 0 || rect.left < 0
+      || rect.bottom > window.innerHeight || rect.right > window.innerWidth
+      || getComputedStyle(button).visibility !== 'visible') return false;
+    button.focus({ preventScroll: true });
+    return document.activeElement === button && !button.matches(':disabled');
+  })()`), { description: `focused visible enabled button ${selector}` })
+  const enter = { key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 }
+  await page.send('Input.dispatchKeyEvent', { ...enter, type: 'keyDown', text: '\r', unmodifiedText: '\r' })
+  await page.send('Input.dispatchKeyEvent', { ...enter, type: 'keyUp' })
+}
 async function record(name, run) {
   console.log(`[real-backend] ${name} started`)
   try {
@@ -372,17 +389,19 @@ async function record(name, run) {
   }
 }
 
-async function selectActualPet(petType) {
+async function selectActualPet(petType, { keyboard = false } = {}) {
   const main = pages['main-panel.html']
   const pet = pages['pet.html']
-  const attempt = { petType, phase: 'open-main-panel' }
+  const attempt = { petType, activation: keyboard ? 'keyboard-enter' : 'pointer', phase: 'open-main-panel' }
   report.petSwitches.push(attempt)
   const networkStart = main.diagnostics.network.length
   const unsubscribeDialog = main.on('Page.javascriptDialogOpening', ({ type }) => { attempt.dialogType = type })
   try {
     await pet.evaluate('window.desktopBridge.openMainPanel()')
     attempt.phase = 'activate-pet-option'
-    await clickEnabled(main, `[data-e2e="pet-option-${petType}"]`, { confirmMovedPointer: true })
+    const option = `[data-e2e="pet-option-${petType}"]`
+    if (keyboard) await pressEnterOnButton(main, option)
+    else await clickEnabled(main, option, { confirmMovedPointer: true })
     attempt.phase = 'observe-desktop-state'
     await waitFor(async () => {
       const observed = await pet.evaluate(`window.desktopBridge.getPetState().then(s => ({ petType: s.petType, expectedAccount: s.userId === ${identities.a} }))`)
@@ -623,7 +642,7 @@ try {
   }
   await record('switching among three pets restores independent completed state', async () => {
     for (const petType of ['cat', 'dog', 'pig']) {
-      await selectActualPet(petType)
+      await selectActualPet(petType, { keyboard: true })
       await assertOnboardingCompleted(petType)
       const relationship = await api(`/pets/${petType}/relationship`, tokenA)
       assert(relationship.outfit.equipped_outfits.neck === `${petType}_basic_scarf`, 'Pet switch lost or mixed outfit state')
