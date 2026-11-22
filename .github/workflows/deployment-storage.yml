@@ -1,0 +1,51 @@
+name: Deployment Storage
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deployment-storage-main
+  cancel-in-progress: true
+
+jobs:
+  inspect:
+    name: Inspect deployment storage
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Set up SSH deploy target
+        shell: bash
+        env:
+          SERVER_HOST_RAW: ${{ secrets.SERVER_HOST }}
+          SERVER_USERNAME_RAW: ${{ secrets.SERVER_USERNAME }}
+          SERVER_APP_DIR_RAW: ${{ secrets.SERVER_APP_DIR }}
+          SERVER_PORT_RAW: ${{ secrets.SERVER_PORT }}
+          SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+        run: bash deploy/configure_ssh_target.sh
+
+      - name: Read filesystem and deployment staging usage
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf -v remote_command 'cd %q && python3 - --directory "$(pwd -P)" --protected-source %q' \
+            "$DEPLOY_APP_DIR" "$GITHUB_SHA"
+          timeout 150s ssh deploy-target "$remote_command" < deploy/deployment_storage.py \
+            | tee "$RUNNER_TEMP/deployment-storage.json"
+
+      - name: Upload storage evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deployment-storage-evidence
+          path: ${{ runner.temp }}/deployment-storage.json
+          if-no-files-found: warn
+          retention-days: 7
