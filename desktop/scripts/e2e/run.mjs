@@ -30,10 +30,11 @@ import { capabilityRenewalScenario, prepareCapabilityRenewalFixture } from './ca
 import { desktopReleaseScenario } from './desktop-release-scenario.mjs'
 import { sessionRecoveryScenario, optionalDashboardRecoveryScenario, sessionRecoveryBoundaryScenario } from './session-recovery-scenarios.mjs'
 import { dailyStepScenario } from './daily-step-scenario.mjs'
+import { todayReminderScenario } from './today-reminder-scenario.mjs'
 import { startStubServer } from './stub-server.mjs'
 
-const SCENARIOS = Object.freeze({ ...BASE_SCENARIOS, 'pet-parity': petParityScenario, 'dressed-pets': dressedPetScenario, 'focus-history': focusHistoryScenario, 'capability-renewal': capabilityRenewalScenario, 'desktop-release': desktopReleaseScenario, 'session-recovery': sessionRecoveryScenario, 'optional-dashboard-recovery': optionalDashboardRecoveryScenario, 'session-recovery-boundaries': sessionRecoveryBoundaryScenario, 'daily-step': dailyStepScenario })
-const FULL_SCENARIO_ORDER = Object.freeze([...BASE_SCENARIO_ORDER, 'pet-parity', 'dressed-pets', 'focus-history', 'capability-renewal', 'desktop-release', 'session-recovery', 'optional-dashboard-recovery', 'session-recovery-boundaries', 'daily-step'])
+const SCENARIOS = Object.freeze({ ...BASE_SCENARIOS, 'pet-parity': petParityScenario, 'dressed-pets': dressedPetScenario, 'focus-history': focusHistoryScenario, 'capability-renewal': capabilityRenewalScenario, 'desktop-release': desktopReleaseScenario, 'session-recovery': sessionRecoveryScenario, 'optional-dashboard-recovery': optionalDashboardRecoveryScenario, 'session-recovery-boundaries': sessionRecoveryBoundaryScenario, 'daily-step': dailyStepScenario, 'today-reminder': todayReminderScenario })
+const FULL_SCENARIO_ORDER = Object.freeze([...BASE_SCENARIO_ORDER, 'pet-parity', 'dressed-pets', 'focus-history', 'capability-renewal', 'desktop-release', 'session-recovery', 'optional-dashboard-recovery', 'session-recovery-boundaries', 'daily-step', 'today-reminder'])
 
 const execFileAsync = promisify(execFile)
 const E2E_TEMP_PREFIX = 'detachym-e2e-'

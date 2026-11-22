@@ -11,6 +11,7 @@ import { PetOutfitPanel } from './components/PetOutfitPanel'
 import { PetWeeklySummaryPanel } from './components/PetWeeklySummaryPanel'
 import { FocusSessionPanel } from './components/FocusSessionPanel'
 import { DailyStepPanel } from './components/DailyStepPanel'
+import { TodayReminderComposer } from './components/TodayReminderComposer'
 import { ChatMessageStream } from './components/ChatMessageStream'
 import { DesktopReleasePanel } from './components/DesktopReleasePanel'
 import { normalizeApiBaseUrl } from './shared/api-base-url'
@@ -1818,6 +1819,94 @@ function MainPanelApp() {
     useRag,
   ])
 
+  const describeCreatedReminder = (reminder) => getPetReminderCopy(reminder.pet_type).createdReminder(
+    reminder.title,
+    new Date(reminder.remind_at).toLocaleString(language === 'zh-CN' ? 'zh-CN' : 'en-US', {
+      month: 'numeric',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    }),
+    reminder.email_enabled,
+    getReminderRecurrenceLabel(reminder.recurrence_type, reminder.remind_at, language),
+  )
+
+  const syncCreatedReminder = async (reminder, requestContext, message) => {
+    const { petType, userId } = requestContext
+    window.dispatchEvent(new Event('detachym:reminders-changed'))
+    if (reminder.series_id) window.dispatchEvent(new Event('detachym:reminder-series-changed'))
+    if (PET_OPTIONS.includes(petType) && petOnboardingContextRef.current.petType === petType
+      && Number(petOnboardingContextRef.current.userId) === Number(userId)) {
+      const expectedContextKey = petOnboardingContextKeyRef.current
+      try {
+        const result = await window.desktopBridge?.recordPetOnboardingObservation?.(
+          petType, PET_ONBOARDING_CAPABILITIES.REMINDER_CREATED, { reminderId: reminder.id }, requestContext,
+        )
+        if (!isMainPanelAccountRequestCurrent(requestContext)) return
+        if (result !== undefined) applyPetOnboardingResponse(result, expectedContextKey)
+        if (result === undefined || result?.ok === false) throw new Error(result?.reason || 'onboarding_bridge_unavailable')
+      } catch (error) {
+        if (!isMainPanelAccountRequestCurrent(requestContext)) return
+        void logDesktopDebug({
+          event: 'main-panel-onboarding-reminder-observation-rejected',
+          reason: error instanceof Error ? error.message : String(error),
+          reminderId: reminder.id,
+        })
+      }
+    }
+    // Attaching the reminder can advance the relationship capability used to wake the pet.
+    const refreshedContext = await syncReminderRelationship(requestContext).catch((error) => {
+      void logDesktopDebug({
+        event: 'main-panel-relationship-refresh-failed',
+        source: 'reminder-created',
+        reason: error instanceof Error ? error.message : String(error),
+      })
+      return null
+    })
+    const currentContext = refreshedContext || requestContext
+    if (!isMainPanelAccountRequestCurrent(currentContext)) return
+    void loadPetDailySummary(petType)
+    await window.desktopBridge?.notifyPetReminderEvent?.({
+      type: 'created', petType, title: reminder.title, message, reminderId: reminder.id,
+    }, currentContext)
+  }
+
+  const createTodayReminder = async ({ title, remindAt }) => {
+    if (!petDataReady || savingOutfit || petOnboardingBusy || reminderSavePending) return null
+    const request = {
+      ...getCurrentMainPanelAccountContext(),
+      relationshipId: petOnboardingContextRef.current.relationshipId,
+      epoch: accountRequestEpochRef.current,
+      server: apiBaseUrl,
+    }
+    if (!isMainPanelAccountRequestCurrent(request)) return null
+    if (!(Date.parse(remindAt) > Date.now())) throw new Error('past_time')
+    const finish = () => setReminderSaveContext((current) => current === request ? null : current)
+    setReminderSaveContext(request)
+    let syncing = false
+    try {
+      const reminder = await createReminder({
+        pet_type: request.petType,
+        title,
+        remind_at: remindAt,
+        recurrence_type: 'once',
+        email_enabled: false,
+      }, request)
+      if (!isMainPanelAccountRequestCurrent(request)
+        || Number(reminder?.user_id) !== Number(request.userId) || reminder?.pet_type !== request.petType) return null
+      syncing = true
+      void syncCreatedReminder(reminder, request, describeCreatedReminder(reminder)).catch((error) => {
+        void logDesktopDebug({
+          event: 'main-panel-reminder-notification-failed',
+          reason: error instanceof Error ? error.message : String(error),
+        })
+      }).finally(finish)
+      return reminder
+    } finally {
+      if (!syncing) finish()
+    }
+  }
+
   const handleSend = async () => {
     if (!prompt.trim() || loading || selectingSession || reminderDraftBlocked) {
       return
@@ -1836,16 +1925,14 @@ function MainPanelApp() {
     const parsedReminder = parseReminder(outgoingMessage)
     if (parsedReminder.ok) {
       conversationRef.current.navigationRevision += 1
-      const reminderUserIdAtSend = user?.id
       const reminderPetTypeAtSend = currentPetType
-      let reminderRequestContext = {
+      const reminderRequestContext = {
         ...getCurrentMainPanelAccountContext(),
         relationshipId: petOnboardingContextRef.current.relationshipId,
         epoch: accountRequestEpochRef.current,
         session: activeSessionSnapshotRef.current,
       }
-      const pendingReminderRequest = reminderRequestContext
-      setReminderSaveContext(pendingReminderRequest)
+      setReminderSaveContext(reminderRequestContext)
       setPrompt('')
       setLoading(true)
       setStatusText(t(language, 'waitingResponse'))
@@ -1867,26 +1954,11 @@ function MainPanelApp() {
         if (
           !isMainPanelAccountRequestCurrent(reminderRequestContext)
           || Number(reminder.user_id) !== Number(reminderRequestContext.userId)
+          || reminder.pet_type !== reminderPetTypeAtSend
         ) {
           return
         }
-        const confirmedRemindAt = new Date(reminder.remind_at)
-        const timeText = confirmedRemindAt.toLocaleString(language === 'zh-CN' ? 'zh-CN' : 'en-US', {
-          month: 'numeric',
-          day: 'numeric',
-          hour: '2-digit',
-          minute: '2-digit',
-        })
-        const copy = getPetReminderCopy(reminderPetTypeAtSend).createdReminder(
-          reminder.title,
-          timeText,
-          reminder.email_enabled,
-          getReminderRecurrenceLabel(
-            reminder.recurrence_type,
-            reminder.remind_at,
-            language,
-          ),
-        )
+        const copy = describeCreatedReminder(reminder)
         if (isConversationCurrent()) {
           setMessages((current) => [
             ...current,
@@ -1895,72 +1967,14 @@ function MainPanelApp() {
           ])
           setStatusText(copy)
         }
-        window.dispatchEvent(new Event('detachym:reminders-changed'))
-        if (reminder.series_id) {
-          window.dispatchEvent(new Event('detachym:reminder-series-changed'))
-        }
-        if (
-          PET_OPTIONS.includes(reminderPetTypeAtSend)
-          && petOnboardingContextRef.current.petType === reminderPetTypeAtSend
-          && Number(petOnboardingContextRef.current.userId) === Number(reminderUserIdAtSend)
-          && Number(reminder.user_id) === Number(reminderUserIdAtSend)
-        ) {
-          const expectedContextKey = petOnboardingContextKeyRef.current
-          const onboardingResult = await window.desktopBridge?.recordPetOnboardingObservation?.(
-            reminderPetTypeAtSend,
-            PET_ONBOARDING_CAPABILITIES.REMINDER_CREATED,
-            { reminderId: reminder.id },
-            reminderRequestContext,
-          )
-          if (!isMainPanelAccountRequestCurrent(reminderRequestContext)) {
-            return
-          }
-          if (onboardingResult !== undefined) {
-            applyPetOnboardingResponse(onboardingResult, expectedContextKey)
-          }
-          if (onboardingResult === undefined || onboardingResult?.ok === false) {
-            await logDesktopDebug({
-              event: 'main-panel-onboarding-reminder-observation-rejected',
-              reason: onboardingResult?.reason || 'onboarding_bridge_unavailable',
-              reminderId: reminder.id,
-            })
-            if (!isMainPanelAccountRequestCurrent(reminderRequestContext)) {
-              return
-            }
-          }
-        }
-        // Complete the relationship transition before releasing reminder and
-        // outfit controls. The notification must use the post-cache capability.
-        const refreshedContext = await syncReminderRelationship(reminderRequestContext).catch((error) => {
-          void logDesktopDebug({
-            event: 'main-panel-relationship-refresh-failed',
-            source: 'reminder-created',
-            reason: error instanceof Error ? error.message : String(error),
-          })
-          return null
-        })
-        if (refreshedContext) reminderRequestContext = refreshedContext
-        if (!isMainPanelAccountRequestCurrent(reminderRequestContext)) {
-          return
-        }
-        void loadPetDailySummary(reminderPetTypeAtSend)
-        await window.desktopBridge?.notifyPetReminderEvent?.({
-          type: 'created',
-          petType: reminderPetTypeAtSend,
-          title: reminder.title,
-          message: copy,
-          reminderId: reminder.id,
-        }, reminderRequestContext)
-        if (!isMainPanelAccountRequestCurrent(reminderRequestContext)) {
-          return
-        }
+        await syncCreatedReminder(reminder, reminderRequestContext, copy)
       } catch (error) {
         if (isConversationCurrent() && !reminderCreated) {
           setPrompt((current) => restoreFailedChatDraft(current, outgoingMessage))
           setStatusText(formatError(error, t(language, 'messageDeliveryFailed')))
         }
       } finally {
-        setReminderSaveContext((current) => current === pendingReminderRequest ? null : current)
+        setReminderSaveContext((current) => current === reminderRequestContext ? null : current)
         if (isConversationCurrent()) {
           setLoading(false)
         }
@@ -3142,6 +3156,12 @@ function MainPanelApp() {
         language={language}
         accountContext={{ hasSession: authenticated, server: apiBaseUrl, userId: user?.id, petType: currentPetType }}
         onFocus={petDataReady ? handleFocusTodayStep : undefined}
+      />
+      <TodayReminderComposer
+        key={`today-reminder-${todayContextKey}`}
+        language={language}
+        canSave={petDataReady && !savingOutfit && !petOnboardingBusy && !reminderSavePending}
+        onCreate={createTodayReminder}
       />
       <PetDailySummaryPanel
         language={language}

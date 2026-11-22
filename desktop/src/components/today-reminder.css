@@ -1,0 +1,82 @@
+.today-reminder { min-width: 0; margin-top: 10px; color: #405b3d; }
+
+.today-reminder-form {
+  min-width: 0;
+  display: grid;
+  gap: 9px;
+  padding: 9px;
+  border: 1px solid #d5e1d2;
+  border-radius: 8px;
+  background: #edf4e9;
+}
+
+.today-reminder-field {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.today-reminder-field input {
+  min-width: 0;
+  width: 100%;
+  padding: 7px 8px;
+  border: 1px solid #c6d4c1;
+  border-radius: 8px;
+  background: #fffdf9;
+  color: #32493e;
+}
+
+.today-reminder-field input::placeholder { color: #687567; }
+.today-reminder-field input[aria-invalid='true'] { border-color: #983e31; }
+
+.today-reminder-options {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 4px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  font-size: 11px;
+}
+
+.today-reminder-options legend { margin-bottom: 4px; padding: 0; font-size: 12px; }
+.today-reminder-options label { display: flex; align-items: center; gap: 4px; min-height: 25px; cursor: pointer; }
+.today-reminder-options input { flex-shrink: 0; margin: 0; accent-color: #496844; }
+
+.today-reminder-actions { display: flex; flex-wrap: wrap; gap: 5px; }
+
+.today-reminder button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-height: 29px;
+  padding: 4px 8px;
+  border: 1px solid #c6d4c1;
+  border-radius: 7px;
+  background: transparent;
+  color: #405b3d;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.today-reminder button:hover:not(:disabled) { background: #e1eddd; }
+.today-reminder .today-reminder-save { border-color: #496844; background: #496844; color: #fffef9; }
+.today-reminder .today-reminder-save:hover:not(:disabled) { background: #365333; }
+.today-reminder button:disabled { opacity: .55; cursor: default; }
+.today-reminder :is(input, button):focus-visible { outline: 2px solid #587553; outline-offset: 2px; }
+
+.today-reminder-error,
+.today-reminder-success {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.today-reminder-error { color: #983e31; }
+.today-reminder-success { display: grid; gap: 2px; margin-top: 6px; }
