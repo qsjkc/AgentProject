@@ -10,6 +10,8 @@ const FOCUS_PANEL = '#companion-focus'
 const ACTIVE = `${TODAY} [data-e2e="today-focus-active"]`
 const ACTION = `${TODAY} [data-e2e="today-focus-action"]`
 const CHAT_DRAFT = '[data-e2e="main-chat-input"]'
+const FOCUS_INTENTION = '[data-e2e="focus-intention"]'
+const RETRY_FOCUS = `${FOCUS_PANEL} [role="alert"] button`
 
 function hasFocus(main, selector) {
   return main.evaluate(`document.activeElement === document.querySelector(${JSON.stringify(selector)})`)
@@ -84,6 +86,22 @@ async function selectPet(main, petType, relationship) {
   await waitForScope(main, petType, relationship)
 }
 
+async function verifyFocusReadRecovery(main) {
+  const stepTitle = '先读两页书'
+  await main.waitForSelector(RETRY_FOCUS)
+  await main.input('[data-e2e="daily-step-input"]', stepTitle)
+  await main.click('[data-e2e="daily-step-save"]')
+  await main.click('[data-e2e="daily-step-focus"]')
+  await expectFocus(main, FOCUS_PANEL)
+  assertEqual(await main.evaluate(`document.querySelector(${JSON.stringify(FOCUS_INTENTION)}) === null`), true,
+    'An unavailable focus state should still show its retry before preparing the step')
+  await callE2e(main, 'setFocusReadsUnavailable', false)
+  await main.click(RETRY_FOCUS)
+  await waitFor(() => main.evaluate(`document.querySelector(${JSON.stringify(FOCUS_INTENTION)})?.value === ${JSON.stringify(stepTitle)}`),
+    { timeoutMs: 5000, description: 'the originally selected Today step is prefilled after retry' })
+  await expectFocus(main, FOCUS_INTENTION)
+}
+
 export async function todayFocusHandoffScenario(context) {
   const { main } = context.pages
   const relationships = new Map(['pig', 'cat'].map((petType) => [petType, createRelationship(OWNER, petType)]))
@@ -92,8 +110,25 @@ export async function todayFocusHandoffScenario(context) {
     relationshipByPet: relationships, sessions: [], documents: [], reminders: [],
   })
   await resetToLoggedOut(context)
-  await loginAs(context, OWNER)
-  await waitForScope(main, 'pig', relationships.get('pig'))
+  await main.waitForSelector(REQUIRED_SELECTORS.loginUsername)
+  await callE2e(main, 'setFocusReadsUnavailable', true)
+  try {
+    await loginAs(context, OWNER)
+    await waitForScope(main, 'pig', relationships.get('pig'))
+    await verifyFocusReadRecovery(main)
+
+    await main.input(FOCUS_INTENTION, '')
+    await callE2e(main, 'setFocusReadsUnavailable', true)
+    await main.evaluate("window.dispatchEvent(new Event('focus'))")
+    await main.waitForSelector(RETRY_FOCUS)
+    await main.click('[data-e2e="daily-step-focus"]')
+    await expectFocus(main, FOCUS_PANEL)
+    await callE2e(main, 'setFocusReadsUnavailable', false)
+    await main.click(RETRY_FOCUS)
+    await expectFocus(main, FOCUS_INTENTION)
+  } finally {
+    await callE2e(main, 'setFocusReadsUnavailable', false)
+  }
   await expectNoActive(main, 'pig')
   await observeFocusState(main)
   try {
@@ -162,5 +197,5 @@ async function verifyFocusHandoff(context, relationships) {
 
   await main.click('[data-e2e="focus-end"]')
   await expectNoActive(main, 'pig')
-  return { runningNavigation: true, hiddenPanelPreservesPause: true, pausedTimersMatch: true, sameSessionResumes: true, petIsolation: true, clearsAfterEnd: true, screenshot }
+  return { recoversSelectedStep: true, runningNavigation: true, hiddenPanelPreservesPause: true, pausedTimersMatch: true, sameSessionResumes: true, petIsolation: true, clearsAfterEnd: true, screenshot }
 }

@@ -10,13 +10,15 @@ from contextlib import asynccontextmanager
 from threading import RLock
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List
+from typing import List, TYPE_CHECKING
 
-import chromadb
 from pypdf import PdfReader
 
 from app.core.config import settings
 from app.schemas.rag import RAGSource
+
+if TYPE_CHECKING:
+    from chromadb.api import ClientAPI
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +31,7 @@ class RAGContext:
 
 class RAGService:
     def __init__(self) -> None:
-        self._client: chromadb.PersistentClient | None = None
+        self._client: ClientAPI | None = None
         self._collection = None
         self._initialization_lock = RLock()
         self._index_lock = RLock()
@@ -51,11 +53,13 @@ class RAGService:
             else:
                 self._user_operations[user_id] = (lock, remaining - 1)
 
-    def _get_client(self) -> chromadb.PersistentClient:
+    def _get_client(self) -> ClientAPI:
         with self._initialization_lock:
             if self._client is None:
+                from chromadb import PersistentClient
+
                 Path(settings.CHROMA_PERSIST_DIR).mkdir(parents=True, exist_ok=True)
-                self._client = chromadb.PersistentClient(path=settings.CHROMA_PERSIST_DIR)
+                self._client = PersistentClient(path=settings.CHROMA_PERSIST_DIR)
             return self._client
 
     def _get_collection(self):

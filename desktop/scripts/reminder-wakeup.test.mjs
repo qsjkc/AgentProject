@@ -6,7 +6,7 @@ import {
   createReminderPollController,
   getReminderPollPlan,
   isReminderWakeScopeCurrent,
-  isTransientReminderReadError,
+  isTransientReminderRequestError,
   REMINDER_BACKLOG_DELAY_MS,
   REMINDER_RECONCILE_MS,
 } from '../src/shared/reminder-poll.js'
@@ -334,8 +334,8 @@ test('successful reminder delivery drains backlog promptly without another 30s w
   assert.deepEqual(schedules, [1250, 1500])
 })
 
-for (const failure of ['muted', 'acknowledgment']) {
-  test(`${failure} reminder delivery keeps its cooldown through reconnect`, async () => {
+for (const failure of ['muted delivery', 'permanent acknowledgment failure']) {
+  test(`${failure} keeps the reminder cooldown through reconnect`, async () => {
     let now = 1000
     let reads = 0
     const read = deferred()
@@ -346,7 +346,9 @@ for (const failure of ['muted', 'acknowledgment']) {
         reads += 1
         if (reads > 1) return {}
         await read.promise
-        if (failure === 'acknowledgment') throw Object.assign(new Error('Trigger unavailable'), { status: 503 })
+        if (failure === 'permanent acknowledgment failure') {
+          throw Object.assign(new Error('Trigger forbidden'), { status: 403 })
+        }
         return retryPresentation
       },
       schedule: async (at) => schedules.push(at),
@@ -442,12 +444,12 @@ for (const failure of ['network', 'acknowledgment']) {
 }
 
 test('a reminder read can retry on browser network failures, timeouts and temporary HTTP failures', () => {
-  assert.equal(isTransientReminderReadError(new TypeError('Failed to fetch')), true)
-  assert.equal(isTransientReminderReadError({ code: 'REQUEST_TIMEOUT' }), true)
-  for (const status of [408, 500, 503, 504]) assert.equal(isTransientReminderReadError({ status }), true)
-  for (const status of [401, 403, 404, 429]) assert.equal(isTransientReminderReadError({ status }), false)
-  assert.equal(isTransientReminderReadError({ code: 'AUTH_CONTEXT_CHANGED' }), false)
-  assert.equal(isTransientReminderReadError(new TypeError('Unexpected value')), false)
+  assert.equal(isTransientReminderRequestError(new TypeError('Failed to fetch')), true)
+  assert.equal(isTransientReminderRequestError({ code: 'REQUEST_TIMEOUT' }), true)
+  for (const status of [408, 500, 503, 504]) assert.equal(isTransientReminderRequestError({ status }), true)
+  for (const status of [401, 403, 404, 429]) assert.equal(isTransientReminderRequestError({ status }), false)
+  assert.equal(isTransientReminderRequestError({ code: 'AUTH_CONTEXT_CHANGED' }), false)
+  assert.equal(isTransientReminderRequestError(new TypeError('Unexpected value')), false)
 })
 
 test('reconnection accelerates a failed reminder read already waiting for its retry deadline', async () => {

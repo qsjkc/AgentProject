@@ -91,7 +91,7 @@ export function getReminderPollPlan(reminders, now) {
   }
 }
 
-export function isTransientReminderReadError(error) {
+export function isTransientReminderRequestError(error) {
   return error?.code === 'REQUEST_TIMEOUT' || error?.status === 408
     || (error?.status >= 500 && error.status < 600)
     || (error instanceof TypeError && error.message === 'Failed to fetch')
@@ -140,7 +140,7 @@ export function createReminderPollController({ poll, schedule, onError = () => {
             result = { nextAt: now() + Math.min(REMINDER_RECONCILE_MS, 250 * 2 ** (contextRetries - 1)) }
           } else {
             if (!disposed) onError(error)
-            result = { retry: true }
+            result = { retry: true, retryOnReconnect: isTransientReminderRequestError(error) }
           }
         }
         if (disposed) return

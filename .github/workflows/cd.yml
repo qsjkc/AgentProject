@@ -465,6 +465,24 @@ jobs:
             cat resume-probe.json
           fi
 
+      - name: Check whether the same CD run already staged verified artifacts
+        id: staged
+        if: steps.resume.outputs.verify_only != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if (( GITHUB_RUN_ATTEMPT <= 1 )); then
+            exit 0
+          fi
+          if python3 -B deploy/verify_release_resume.py --app-dir "$DEPLOY_APP_DIR" \
+            --source-commit "$DEPLOY_SOURCE_SHA" --run-id "$GITHUB_RUN_ID" --stage verify > staged-probe.json; then
+            echo 'reuse_staged=true' >> "$GITHUB_OUTPUT"
+            echo 'Reusing the verified images and staged installer from this CD run.'
+          else
+            echo 'Verified staging cannot be reused. Running the full transfer and capacity gates.'
+            cat staged-probe.json
+          fi
+
       - name: Prepare remote directories
         if: steps.resume.outputs.verify_only != 'true'
         shell: bash
@@ -490,9 +508,14 @@ jobs:
       - name: Check server platform and disk capacity
         if: steps.resume.outputs.verify_only != 'true'
         shell: bash
+        env:
+          REUSE_STAGED: ${{ steps.staged.outputs.reuse_staged }}
         run: |
           set -euo pipefail
-          ARCHIVE_BYTES="$(stat -c %s server-images/server-images.tar.gz)"
+          ARCHIVE_BYTES=0
+          if [[ "${REUSE_STAGED:-}" != true ]]; then
+            ARCHIVE_BYTES="$(stat -c %s server-images/server-images.tar.gz)"
+          fi
           ssh deploy-target "cd '$DEPLOY_APP_DIR' && ARCHIVE_BYTES='$ARCHIVE_BYTES' bash -s" <<'REMOTE_CAPACITY'
           set -euo pipefail
           command -v python3 >/dev/null
@@ -535,7 +558,7 @@ jobs:
           rm -f -- deploy-runtime.tgz
 
       - name: Stage and load verified server images
-        if: steps.resume.outputs.verify_only != 'true'
+        if: steps.resume.outputs.verify_only != 'true' && steps.staged.outputs.reuse_staged != 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -554,7 +577,7 @@ jobs:
           REMOTE_IMAGES
 
       - name: Stage verified desktop download
-        if: steps.resume.outputs.verify_only != 'true'
+        if: steps.resume.outputs.verify_only != 'true' && steps.staged.outputs.reuse_staged != 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -563,6 +586,18 @@ jobs:
             "desktop-release/$DESKTOP_ARTIFACT_FILENAME"
           bash deploy/transfer_release_files.sh 1m \
             "deploy-target:$DEPLOY_APP_DIR/.desktop-release-$DEPLOY_SOURCE_SHA.json" desktop-release/desktop-release.json
+          python3 -B deploy/verify_release_resume.py --app-dir "$DEPLOY_APP_DIR" \
+            --source-commit "$DEPLOY_SOURCE_SHA" --run-id "$GITHUB_RUN_ID" --stage record > staged-receipt.json
+          cat staged-receipt.json
+
+      - name: Recheck reused staged artifacts before service switch
+        if: steps.resume.outputs.verify_only != 'true' && steps.staged.outputs.reuse_staged == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -B deploy/verify_release_resume.py --app-dir "$DEPLOY_APP_DIR" \
+            --source-commit "$DEPLOY_SOURCE_SHA" --run-id "$GITHUB_RUN_ID" --stage verify > staged-recheck.json
+          cat staged-recheck.json
 
       - name: Recheck main before service switch
         shell: bash
@@ -792,4 +827,7 @@ jobs:
             runtime-install.json
             resume-probe.json
             resume-publication.json
+            staged-probe.json
+            staged-receipt.json
+            staged-recheck.json
           if-no-files-found: warn

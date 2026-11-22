@@ -834,7 +834,43 @@ export async function unmuteReminderScenario(context) {
       && request.pathname === `/api/v1/reminders/${reminder.id}/trigger`).length, 1, 'Unmute acknowledged the occurrence exactly once')
     assertEqual(reminder.status, 'pending', 'Unmute must keep the reminder available for explicit completion')
     assert(await pet.evaluate("document.visibilityState === 'hidden'"), 'The unmute check must not reveal the pet')
-    return { actualTrayCallback: true, hidden: true, nativeSubmissions: 1, acknowledgments: 1, latencyMs }
+
+    assertEqual(await toggle(), true, 'The actual tray mute callback is available')
+    const muted = await expectSnapshot(pet, (snapshot) => snapshot.notificationsMuted === true, 'the tray persisted mute again')
+    const reopenedReminder = createReminderRecord({
+      user: USERS.A, id: context.stub.fixture.nextReminderId++, title: '重新显示桌宠后的待处理提醒',
+      petType: 'pig', remindAt: new Date(Date.now() - 1000),
+    })
+    const reopenedReadStart = context.stub.requests.length
+    account.reminders = [reopenedReminder]
+    await callE2e(pet, 'flushReminderPoll')
+    assert(context.stub.requests.slice(reopenedReadStart).some((request) => request.method === 'GET'
+      && request.pathname === '/api/v1/reminders' && new URLSearchParams(request.search).has('due_before')),
+      'The hidden pet must read the due reminder before showing the bubble channel')
+    assert(!reopenedReminder.triggered_at, 'The second reminder was acknowledged while hidden and muted')
+
+    const rendererTimeOrigin = await pet.evaluate('performance.timeOrigin')
+    const reopenedAt = Date.now()
+    await callE2e(pet, 'showWindow', 'pet')
+    await waitFor(() => reopenedReminder.triggered_at, { timeoutMs: 5000, description: 'showing the pet resumes the muted reminder before regular reconciliation' })
+    const reopenedLatencyMs = Date.parse(reopenedReminder.triggered_at) - reopenedAt
+    assert(reopenedLatencyMs >= 0 && reopenedLatencyMs <= 5000, 'The reopened pet missed the five-second window', { reopenedLatencyMs })
+    assertEqual(await pet.evaluate('performance.timeOrigin'), rendererTimeOrigin, 'The reopened pet replaced its renderer')
+    assert(await pet.evaluate(`document.querySelector('.pet-bubble')?.textContent.includes(${JSON.stringify(reopenedReminder.title)})`), 'The reopened pet did not show the reminder in its bubble')
+    const reopened = await callE2e(pet, 'snapshot')
+    assertEqual(reopened.notificationsMuted, true, 'Reopening the pet changed the tray mute setting')
+    assertEqual(reopened.reminderNotificationAttempts, muted.reminderNotificationAttempts, 'Reopening submitted a muted native notification')
+    assertEqual(context.stub.requests.filter((request) => request.method === 'POST'
+      && request.pathname === `/api/v1/reminders/${reopenedReminder.id}/trigger`).length, 1, 'Reopening must acknowledge the occurrence exactly once')
+    assertEqual(reopenedReminder.status, 'pending', 'Reopening must keep the reminder available for explicit completion')
+    return {
+      actualTrayCallback: true,
+      hidden: true,
+      nativeSubmissions: 1,
+      acknowledgments: 1,
+      latencyMs,
+      reopened: { latencyMs: reopenedLatencyMs, nativeSubmissions: 0, acknowledgments: 1, sameRenderer: true },
+    }
   } finally {
     account.reminders = originalReminders
     if ((await callE2e(pet, 'snapshot')).notificationsMuted !== originalMuted) await toggle()
@@ -1181,11 +1217,67 @@ export async function reminderReconnectScenario(context) {
       .filter((record) => record.payload?.event === 'reminder:presented' && record.payload.details?.reminderId === reminder.id)
     assertEqual(presentations.length, 1, 'The reconnect events should present the reminder only once')
     assertEqual(reminder.status, 'pending', 'Delivery should leave the reminder available for completion')
+
+    const acknowledgmentRecovery = []
+    for (const onlineWhilePending of [false, true]) {
+      const dueAt = new Date(Date.now() - 1000)
+      const [first, next] = ['联网恢复前已展示的提醒', '等待前一条确认的提醒'].map((title) => createReminderRecord({
+        user: USERS.A, id: context.stub.fixture.nextReminderId++, title, remindAt: dueAt,
+      }))
+      const triggerPath = (item) => `/api/v1/reminders/${item.id}/trigger`
+      const attempts = (item) => context.stub.requests.filter((request) => (
+        request.method === 'POST' && request.pathname === triggerPath(item)
+      )).length
+      const failedTrigger = context.stub.holdNext('POST', triggerPath(first), {
+        statusCode: 503,
+        payload: { detail: 'Temporary acknowledgment failure during reconnect' },
+      })
+      account.reminders = [first, next]
+      const poll = callE2e(pet, 'flushReminderPoll')
+      try {
+        await withTimeout(failedTrigger.arrived, 8000, 'first acknowledgment after reminder presentation')
+        assertEqual(attempts(next), 0, 'The next reminder was acknowledged before the first')
+
+        if (!onlineWhilePending) {
+          failedTrigger.release()
+          await poll
+          assert(!first.triggered_at, 'The failed acknowledgment confirmed the first reminder')
+        }
+        const onlineAt = Date.now()
+        await pet.evaluate("window.dispatchEvent(new Event('online'))")
+        failedTrigger.release()
+        await waitFor(() => first.triggered_at && next.triggered_at, {
+          timeoutMs: 5000,
+          description: onlineWhilePending ? 'reconnect during the failed acknowledgment delivers both reminders'
+            : 'reconnect after the failed acknowledgment delivers both reminders',
+        })
+        await poll
+        await callE2e(pet, 'flushReminderPoll')
+
+        const records = (await readFile(logPath, 'utf8')).trim().split('\n').map((line) => JSON.parse(line))
+        for (const item of [first, next]) {
+          assertEqual(records.filter((record) => record.payload?.event === 'reminder:presented'
+            && record.payload.details?.reminderId === item.id).length, 1, 'Reconnect repeated a reminder presentation')
+          assertEqual(item.status, 'pending', 'Reconnect completed a reminder instead of confirming presentation')
+        }
+        assertEqual(attempts(first), 2, 'Reconnect should retry the first acknowledgment once')
+        assertEqual(attempts(next), 1, 'Reconnect should acknowledge the next reminder once')
+        acknowledgmentRecovery.push({
+          onlineWhilePending,
+          firstLatencyMs: Date.parse(first.triggered_at) - onlineAt,
+          nextLatencyMs: Date.parse(next.triggered_at) - onlineAt,
+        })
+      } finally {
+        failedTrigger.release()
+        await poll.catch(() => {})
+      }
+    }
     return {
       simulatedResume: true,
       reconnectLatencyMs: Date.parse(reminder.triggered_at) - reconnectAt,
       acknowledgments: acknowledgments.length,
       presentations: presentations.length,
+      acknowledgmentRecovery,
     }
   } finally {
     failedRead.release()

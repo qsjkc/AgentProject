@@ -118,7 +118,7 @@ import {
   createReminderPollController,
   getReminderPollPlan,
   isReminderWakeScopeCurrent,
-  isTransientReminderReadError,
+  isTransientReminderRequestError,
   REMINDER_RECONCILE_MS,
 } from './shared/reminder-poll'
 
@@ -130,6 +130,7 @@ const DEFAULT_PREFERENCES = {
 const PET_TYPES = ['cat', 'dog', 'pig']
 
 const DRAG_THRESHOLD = 8
+const MOUSE_DRAG_RELEASE_WAIT_MS = 350
 const REPLY_VISIBLE_MS = 8000
 const PROCESSING_TIMEOUT_MS = 18000
 const AUTH_EXPIRED_BUBBLE_MS = 4200
@@ -2807,7 +2808,7 @@ function PetApp() {
       try {
         reminders = await getPendingReminders(requestContext.petType, new Date(dueBefore), false, operationContext)
       } catch (error) {
-        if (!isTransientReminderReadError(error)) throw error
+        if (!isTransientReminderRequestError(error)) throw error
         if (!isCurrent()) return
         loggerRef.current.error('reminder:poll-failed', error)
         return { retry: true, retryOnReconnect: true }
@@ -2901,7 +2902,7 @@ function PetApp() {
       }
     })
     const onVisible = () => {
-      if (document.visibilityState === 'visible') void controller.request()
+      if (document.visibilityState === 'visible') void controller.request({ presentationAvailable: true })
     }
     const onOnline = () => void controller.request({ reconnected: true })
     document.addEventListener('visibilitychange', onVisible)
@@ -3351,6 +3352,7 @@ function PetApp() {
     if (!drag) return
     dragRef.current = null
     if (drag.frame !== null) window.cancelAnimationFrame(drag.frame)
+    if (drag.releaseTimer !== null) window.clearTimeout(drag.releaseTimer)
     if (cancelled || drag.moved) suppressClickRef.current = true
 
     if (drag.moved) {
@@ -3434,15 +3436,27 @@ function PetApp() {
       screenX: event.screenX,
       screenY: event.screenY,
       frame: null,
+      releaseTimer: null,
       moved: false,
     }
   }
 
   const handlePointerMove = (event) => {
     const drag = dragRef.current
-    if (!drag || drag.pointerId !== event.pointerId) return
+    if (!drag || drag.pointerId !== event.pointerId || drag.releaseTimer !== null) return
     if (drag.pointerType === 'mouse' && !(event.buttons & 1)) {
-      finishDrag({ cancelled: true })
+      if (!drag.moved) {
+        finishDrag({ cancelled: true })
+        return
+      }
+      if (drag.frame !== null) {
+        window.cancelAnimationFrame(drag.frame)
+        drag.frame = null
+      }
+      // A move can report a released button before pointerup delivers the release position.
+      drag.releaseTimer = window.setTimeout(() => {
+        if (dragRef.current === drag) finishDragRef.current?.({ cancelled: true })
+      }, MOUSE_DRAG_RELEASE_WAIT_MS)
       return
     }
     event.preventDefault()

@@ -125,14 +125,15 @@ export function FocusSessionPanel({ language, accountContext, stepIntent, onStep
   const canCompleteStep = isDailyStepFocusCurrent(stepStorageKey, completedStepOrigin, calendarNow)
 
   useEffect(() => {
-    if (!stepIntent || handledStepIntentRef.current === stepIntent || (loading && !state)) return
-    // Consume the request even when the current timer cannot accept a draft.
+    if (!stepIntent || handledStepIntentRef.current === stepIntent || !state || error) return
+    // Wait for a live snapshot so a read failure preserves the selected step for retry.
+    // Consume the request once a snapshot is available, even if the timer is active.
     // Resetting or reopening the panel should never replay that choice.
     handledStepIntentRef.current = stepIntent
     onStepIntentHandled?.(stepIntent)
     setOfferedStep(null)
     const title = typeof stepIntent.title === 'string' ? stepIntent.title.trim().slice(0, 80) : ''
-    if (mutationRef.current || error || !title) return
+    if (mutationRef.current || !title || (stepIntent.origin && !isDailyStepFocusCurrent(stepStorageKey, stepIntent.origin))) return
     const step = { title, origin: stepIntent.origin }
     if (state?.status === 'completed') {
       setOfferedStep(step)
@@ -146,7 +147,7 @@ export function FocusSessionPanel({ language, accountContext, stepIntent, onStep
     setIntention(title)
     setStepOrigin(step.origin)
     intentionInputRef.current?.focus({ preventScroll: true })
-  }, [stepIntent, onStepIntentHandled, loading, state, error, intention])
+  }, [stepIntent, onStepIntentHandled, state, error, intention, stepStorageKey])
 
   useEffect(() => {
     if (status !== 'running') return undefined
