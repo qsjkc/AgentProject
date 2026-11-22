@@ -18,7 +18,7 @@ async def get_windows_release() -> DesktopReleaseResponse:
         release_stat = release_path.stat()
     except FileNotFoundError:
         release_stat = None
-    available = release_stat is not None and S_ISREG(release_stat.st_mode)
+    available = release_stat is not None and S_ISREG(release_stat.st_mode) and release_stat.st_size > 0
     if available:
         published_at = datetime.fromtimestamp(release_stat.st_mtime, tz=UTC)
 

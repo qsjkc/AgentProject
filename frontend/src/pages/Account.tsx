@@ -272,17 +272,14 @@ export default function Account() {
             <div className="mt-6 space-y-3">
               <div className="text-3xl font-semibold">{release.version}</div>
               <div className="text-sm text-slate-400">{release.filename}</div>
-              <a
-                href={release.available ? resolveDownloadUrl(release) : undefined}
-                aria-disabled={!release.available}
-                className={`inline-flex rounded-full px-6 py-3 text-sm font-medium transition ${
-                  release.available
-                    ? 'bg-white text-slate-950 hover:bg-slate-200'
-                    : 'cursor-not-allowed bg-slate-700 text-slate-300'
-                }`}
-              >
-                {release.available ? '下载客户端' : '安装包暂未发布'}
-              </a>
+              {release.available ? (
+                <a href={resolveDownloadUrl(release)} className="inline-flex rounded-full bg-white px-6 py-3 text-sm font-medium text-slate-950 transition hover:bg-slate-200">下载客户端</a>
+              ) : (
+                <div className="flex flex-wrap items-center gap-3">
+                  <span role="status" aria-disabled="true" className="inline-flex cursor-not-allowed rounded-full bg-slate-700 px-6 py-3 text-sm font-medium text-slate-300">安装包暂未发布</span>
+                  <button type="button" onClick={() => void retryRelease()} className="rounded-full border border-slate-400 px-4 py-2 text-sm">重新检查</button>
+                </div>
+              )}
             </div>
           ) : (
             <div className="mt-6 text-sm text-slate-300">
