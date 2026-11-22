@@ -118,7 +118,7 @@ import {
   createReminderPollController,
   getReminderPollPlan,
   isReminderWakeScopeCurrent,
-  isTransientReminderReadError,
+  isTransientReminderRequestError,
   REMINDER_RECONCILE_MS,
 } from './shared/reminder-poll'
 
@@ -2807,7 +2807,7 @@ function PetApp() {
       try {
         reminders = await getPendingReminders(requestContext.petType, new Date(dueBefore), false, operationContext)
       } catch (error) {
-        if (!isTransientReminderReadError(error)) throw error
+        if (!isTransientReminderRequestError(error)) throw error
         if (!isCurrent()) return
         loggerRef.current.error('reminder:poll-failed', error)
         return { retry: true, retryOnReconnect: true }
