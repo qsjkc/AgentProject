@@ -34,7 +34,7 @@ const artifacts = join(desktop, 'artifacts/e2e', `real-backend-${Date.now()}`)
 const password = `Acceptance-${randomBytes(12).toString('hex')}`
 const secret = randomBytes(32).toString('hex')
 const execAsync = promisify(execFile)
-const report = { status: 'running', backend: 'real-local-fastapi-sqlite', packaged, registrationOnly, checks: [], artifacts }
+const report = { status: 'running', backend: 'real-local-fastapi-sqlite', packaged, registrationOnly, checks: [], petSwitches: [], artifacts }
 report.evidenceScope = { registration: 'real Web UI and FastAPI, no seeded accounts', email: 'local SMTP STARTTLS/AUTH capture; not external inbox delivery', growth: 'real earned XP and outfits; long-term level thresholds covered separately by backend tests' }
 const identities = {}
 let backend
@@ -362,11 +362,34 @@ async function record(name, run) {
 }
 
 async function selectActualPet(petType) {
-  await pages['pet.html'].evaluate('window.desktopBridge.openMainPanel()')
-  await clickEnabled(pages['main-panel.html'], `[data-e2e="pet-option-${petType}"]`)
-  await waitFor(() => pages['pet.html'].evaluate(`window.desktopBridge.getPetState().then(s => s.petType === ${JSON.stringify(petType)} && s.userId === ${identities.a})`),
-    { description: `${petType} desktop state` })
-  await pages['main-panel.html'].waitForSelector(`[data-e2e="pet-relationship-summary"].relationship-summary-${petType}`)
+  const main = pages['main-panel.html']
+  const pet = pages['pet.html']
+  const attempt = { petType, phase: 'open-main-panel' }
+  report.petSwitches.push(attempt)
+  const networkStart = main.diagnostics.network.length
+  const unsubscribeDialog = main.on('Page.javascriptDialogOpening', ({ type }) => { attempt.dialogType = type })
+  try {
+    await pet.evaluate('window.desktopBridge.openMainPanel()')
+    attempt.phase = 'activate-pet-option'
+    await clickEnabled(main, `[data-e2e="pet-option-${petType}"]`)
+    attempt.phase = 'observe-desktop-state'
+    await waitFor(async () => {
+      const observed = await pet.evaluate(`window.desktopBridge.getPetState().then(s => ({ petType: s.petType, expectedAccount: s.userId === ${identities.a} }))`)
+      attempt.observedPetType = observed.petType
+      attempt.expectedAccount = observed.expectedAccount
+      return observed.petType === petType && observed.expectedAccount
+    }, { description: `${petType} desktop state` })
+    attempt.phase = 'observe-relationship'
+    await main.waitForSelector(`[data-e2e="pet-relationship-summary"].relationship-summary-${petType}`)
+    attempt.phase = 'complete'
+  } catch (error) {
+    const requests = main.diagnostics.network.slice(networkStart)
+    attempt.pendingSummaryRequested = requests.some(({ request }) => request?.url?.startsWith(`${baseUrl()}/reminders/pending-summary?`))
+    attempt.preferencesUpdateRequested = requests.some(({ request }) => request?.method === 'PUT' && request.url === `${baseUrl()}/users/me/preferences`)
+    throw error
+  } finally {
+    unsubscribeDialog()
+  }
 }
 
 async function assertOnboardingCompleted(petType) {
@@ -389,7 +412,8 @@ async function readOnboardingFacts() {
 }
 
 async function patReadyPet(petType, token) {
-  await pages['main-panel.html'].evaluate('window.desktopBridge.hideMainPanel()')
+  // Invoke from the pet so the CDP reply does not depend on the window being hidden.
+  assert(await pages['pet.html'].evaluate('window.desktopBridge.hideMainPanel()'), `${petType} care could not hide the main panel`)
   await pages['pet.html'].bringToFront()
   await waitFor(async () => (await readOnboardingFacts()).some((state) => (
     state.user_id === identities.a && state.pet_type === petType && state.status === 'active'
