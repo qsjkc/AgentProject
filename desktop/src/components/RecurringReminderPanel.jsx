@@ -59,25 +59,40 @@ function getCopy(language) {
   }
 }
 
-export function RecurringReminderPanel({ language, petType, accountContext, onUpdated }) {
-  const [seriesItems, setSeriesItems] = useState([])
+export function RecurringReminderPanel({ language, petType, accountContext, onUpdated, onAgendaSnapshot }) {
+  const [agenda, setAgenda] = useState({ status: 'loading', rows: [] })
+  const seriesItems = agenda.rows.filter((item) => item.status !== 'canceled')
   const [loading, setLoading] = useState(true)
   const [savingId, setSavingId] = useState(null)
   const [error, setError] = useState('')
   const currentContextRef = useRef(accountContext)
+  const queuedRefreshRef = useRef(false)
+  const loadRef = useRef(null)
   const operationsRef = useRef(null)
   if (!operationsRef.current) operationsRef.current = createReminderPanelOperations()
   const { loadGate, actionGate } = operationsRef.current
   currentContextRef.current = accountContext
   const copy = getCopy(language)
 
-  const loadSeries = useCallback(async ({ silent = false } = {}) => {
+  useEffect(() => { onAgendaSnapshot?.(agenda) }, [agenda, onAgendaSnapshot])
+
+  const refreshQueued = useCallback(() => {
+    if (!queuedRefreshRef.current) return
+    queuedRefreshRef.current = false
+    void loadRef.current({ silent: true, queue: true })
+  }, [])
+
+  const loadSeries = useCallback(async ({ silent = false, queue = false } = {}) => {
     const requestContext = operationsRef.current.beginLoad(currentContextRef.current)
-    if (!requestContext) return
+    if (!requestContext) {
+      if (queue) queuedRefreshRef.current = true
+      return
+    }
+    queuedRefreshRef.current = false
     if (!silent) {
       setLoading(true)
     }
-    await runAccountOperation({
+    const { stale } = await runAccountOperation({
       gate: loadGate,
       requestContext,
       getCurrentContext: () => currentContextRef.current,
@@ -86,14 +101,20 @@ export function RecurringReminderPanel({ language, petType, accountContext, onUp
         await captureApiOperationContext(requestContext, 'pet'),
       ),
       onSuccess: (items) => {
-        setSeriesItems(items.filter((item) => item.status !== 'canceled'))
+        if (!Array.isArray(items)) throw new Error('invalid_reminder_series_list')
+        setAgenda({ status: 'ready', rows: items })
         setError('')
       },
-      onError: () => setError(copy.loadFailed),
+      onError: () => {
+        setAgenda((current) => ({ ...current, status: 'error' }))
+        setError(copy.loadFailed)
+      },
       onFinally: () => setLoading(false),
     })
     operationsRef.current.finishLoad(requestContext)
+    if (!stale) refreshQueued()
   }, [
+    accountContext?.server,
     accountContext?.session?.generation,
     accountContext?.session?.token,
     accountContext?.userId,
@@ -101,12 +122,14 @@ export function RecurringReminderPanel({ language, petType, accountContext, onUp
     copy.loadFailed,
     loadGate,
     petType,
+    refreshQueued,
   ])
+  loadRef.current = loadSeries
 
   useEffect(() => {
     void loadSeries()
     const handleSeriesChanged = () => {
-      void loadSeries({ silent: true })
+      void loadSeries({ silent: true, queue: true })
     }
     window.addEventListener('detachym:reminder-series-changed', handleSeriesChanged)
     const timer = window.setInterval(() => {
@@ -119,8 +142,10 @@ export function RecurringReminderPanel({ language, petType, accountContext, onUp
   }, [loadSeries])
 
   useEffect(() => () => {
+    queuedRefreshRef.current = false
     operationsRef.current.invalidate()
   }, [
+    accountContext?.server,
     accountContext?.session?.generation,
     accountContext?.session?.token,
     accountContext?.userId,
@@ -137,7 +162,7 @@ export function RecurringReminderPanel({ language, petType, accountContext, onUp
     setLoading(false)
     setSavingId(series.id)
     setError('')
-    await runAccountOperation({
+    const { stale } = await runAccountOperation({
       gate: actionGate,
       requestContext,
       getCurrentContext: () => currentContextRef.current,
@@ -146,17 +171,18 @@ export function RecurringReminderPanel({ language, petType, accountContext, onUp
         await captureApiOperationContext(requestContext, 'pet'),
       ),
       onSuccess: (updated) => {
-        setSeriesItems((current) => (
-          updated.status === 'canceled'
-            ? current.filter((item) => item.id !== series.id)
-            : current.map((item) => (item.id === series.id ? updated : item))
-        ))
+        setAgenda((current) => ({
+          ...current,
+          rows: current.rows.map((item) => item.id === series.id ? updated : item),
+        }))
+        window.dispatchEvent(new Event('detachym:reminders-changed'))
         onUpdated?.(updated, requestContext)
       },
       onError: () => setError(copy.updateFailed),
       onFinally: () => setSavingId(null),
     })
     operationsRef.current.finishAction(requestContext)
+    if (!stale) refreshQueued()
   }
 
   const handleCancel = (series) => {
@@ -167,7 +193,7 @@ export function RecurringReminderPanel({ language, petType, accountContext, onUp
   }
 
   return (
-    <section className="recurring-reminder-panel" aria-label={copy.title}>
+    <section id="recurring-reminders" tabIndex={-1} className="recurring-reminder-panel" aria-label={copy.title}>
       <div className="pending-reminder-header">
         <div className="sidebar-title recurring-reminder-heading">
           <Repeat2 size={14} aria-hidden="true" />

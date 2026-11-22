@@ -589,6 +589,88 @@ try {
     await pages['pet.html'].evaluate('window.desktopBridge.openMainPanel()')
     return { reminderId: recurring.id, seriesId: recurring.series_id, localTime, deviceTimeZone }
   })
+  await record('Today creates and persists a weekday reminder at the device clock time', async () => {
+    const main = pages['main-panel.html']
+    const title = 'Weekday hydration from Today'
+    const clock = '08:45'
+    const selector = (name) => `[data-e2e="today-reminder-${name}"]`
+    const readTime = (name) => main.evaluate(`document.querySelector(${JSON.stringify(`${selector(name)} time`)})?.dateTime`)
+    const setControl = (name, value) => main.evaluate(`(() => {
+      const control = document.querySelector(${JSON.stringify(selector(name))});
+      Object.getOwnPropertyDescriptor(Object.getPrototypeOf(control), 'value').set.call(control, ${JSON.stringify(value)});
+      control.dispatchEvent(new Event('input', { bubbles: true }));
+      control.dispatchEvent(new Event('change', { bubbles: true }));
+    })()`)
+    const networkStart = main.diagnostics.network.length
+    const schedule = await main.evaluate(`(() => {
+      // Advance only the main renderer clock. Keep both expected occurrences
+      // safely ahead of the backend and pet clocks.
+      const friday = new Date();
+      friday.setDate(friday.getDate() + (5 - friday.getDay() + 7) % 7 + 7);
+      friday.setHours(16, 15, 0, 0);
+      const monday = new Date(friday);
+      monday.setDate(monday.getDate() + 3);
+      monday.setHours(8, 45, 0, 0);
+      const tuesday = new Date(monday);
+      tuesday.setDate(tuesday.getDate() + 1);
+      const originalNow = Date.now;
+      window.restoreAcceptanceReminderClock = () => {
+        Date.now = originalNow;
+        delete window.restoreAcceptanceReminderClock;
+      };
+      Date.now = () => friday.getTime();
+      window.dispatchEvent(new Event('focus'));
+      return { first: monday.toISOString(), next: tuesday.toISOString(), timezone: Intl.DateTimeFormat().resolvedOptions().timeZone };
+    })()`)
+    try {
+      await clickEnabled(main, selector('toggle'))
+      await main.input(selector('title'), title)
+      await main.waitForSelector(selector('repeat'))
+      await setControl('repeat', 'weekdays')
+      await main.waitForSelector(selector('repeat-time'))
+      await setControl('repeat-time', clock)
+      await waitFor(async () => Date.parse(await readTime('first')) === Date.parse(schedule.first),
+        { description: 'Today previews Monday at 08:45 in the device zone' })
+      await clickEnabled(main, selector('save'))
+      await main.waitForSelector(`${selector('success')} time`)
+      assert(Date.parse(await readTime('success')) === Date.parse(schedule.first), 'Today confirmed a different first occurrence')
+      await main.screenshot(join(artifacts, 'today-weekday-reminder.png'))
+    } finally {
+      await main.evaluate("window.restoreAcceptanceReminderClock?.(); window.dispatchEvent(new Event('focus'))")
+    }
+
+    const posts = main.diagnostics.network.slice(networkStart).filter(({ request }) => (
+      request?.method === 'POST' && request.url === `${baseUrl()}/reminders`
+    ))
+    assert(posts.length === 1, 'Today did not submit exactly one reminder POST', { count: posts.length })
+    const payload = JSON.parse(posts[0].request.postData || '{}')
+    assert(payload.title === title && payload.pet_type === 'pig' && payload.recurrence_type === 'weekdays'
+      && payload.email_enabled === false && payload.recurrence_timezone === schedule.timezone
+      && Date.parse(payload.remind_at) === Date.parse(schedule.first), 'Today submitted the wrong reminder schedule')
+
+    const [rows, seriesRows] = await Promise.all([
+      api('/reminders?pet_type=pig', tokenA),
+      api('/reminder-series?pet_type=pig', tokenA),
+    ])
+    const matched = rows.filter((row) => row.title === title)
+    assert(matched.length === 1, 'Expected one persisted Today occurrence', { count: matched.length })
+    const [first] = matched
+    assert(first.user_id === identities.a && first.pet_type === 'pig' && first.status === 'pending'
+      && first.series_id && first.recurrence_type === 'weekdays' && first.occurrence_sequence === 1
+      && Date.parse(first.remind_at) === Date.parse(schedule.first), 'Incorrect first recurring occurrence persisted')
+    assert(first.email_enabled === false && first.email_status === 'disabled'
+      && first.email_attempt_count === 0 && first.email_sent_at === null, 'Today enabled email for the first occurrence')
+    const series = seriesRows.find((row) => row.id === first.series_id)
+    assert(series?.user_id === identities.a && series.pet_type === 'pig' && series.title === title
+      && series.status === 'active' && series.recurrence_type === 'weekdays' && series.timezone === schedule.timezone
+      && series.local_hour === 8 && series.local_minute === 45 && series.weekdays.join(',') === '0,1,2,3,4',
+      'The real backend did not persist the selected weekday local-time rule')
+    assert(Date.parse(series.next_occurrence_at) === Date.parse(schedule.next) && series.next_sequence === 2,
+      'The next occurrence did not advance to Tuesday at 08:45')
+    assert(series.email_enabled === false, 'Today enabled email for the recurring series')
+    return { reminderId: first.id, seriesId: series.id, deviceTimeZone: series.timezone, localTime: clock,
+      firstOccurrence: first.remind_at, nextOccurrence: series.next_occurrence_at, emailEnabled: false }
+  })
   await record('relative reminder correction and real persistence', async () => {
     const main = pages['main-panel.html']
     await clickEnabled(main, '[data-e2e="new-chat"]')

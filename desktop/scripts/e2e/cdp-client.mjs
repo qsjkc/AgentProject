@@ -215,25 +215,25 @@ export class CdpClient {
     return selector
   }
 
-  async #nodeId(selector) {
-    const { root } = await this.send('DOM.getDocument', { depth: -1, pierce: true })
-    const { nodeId } = await this.send('DOM.querySelector', { nodeId: root.nodeId, selector })
-    if (!nodeId) throw cdpError(`Selector did not resolve to a DOM node: ${selector}`)
-    return nodeId
-  }
-
   async click(selector) {
     await this.waitForSelector(selector)
     const encoded = JSON.stringify(selector)
-    await this.evaluate(`document.querySelector(${encoded})?.scrollIntoView({block:'center', inline:'center'})`)
-    const nodeId = await this.#nodeId(selector)
-    const { model } = await this.send('DOM.getBoxModel', { nodeId })
-    const quad = model.border || model.content
-    if (!Array.isArray(quad) || quad.length !== 8) {
-      throw cdpError(`Could not determine clickable box for ${selector}`)
-    }
-    const x = (quad[0] + quad[2] + quad[4] + quad[6]) / 4
-    const y = (quad[1] + quad[3] + quad[5] + quad[7]) / 4
+    let previous = null
+    const { x, y } = await waitFor(async () => {
+      const point = await this.evaluate(`(() => {
+        const node = document.querySelector(${encoded})
+        if (!node) return null
+        node.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' })
+        const rect = node.getBoundingClientRect()
+        if (rect.width <= 0 || rect.height <= 0) return null
+        const x = rect.left + rect.width / 2
+        const y = rect.top + rect.height / 2
+        return node.contains(document.elementFromPoint(x, y)) ? { x, y } : null
+      })()`)
+      const stable = point && previous && Math.abs(point.x - previous.x) <= 0.5 && Math.abs(point.y - previous.y) <= 0.5
+      previous = point
+      return stable ? point : null
+    }, { intervalMs: 30, description: `stable clickable point for ${selector}` })
     await this.send('Input.dispatchMouseEvent', {
       type: 'mouseMoved', x, y, button: 'none', buttons: 0,
     })

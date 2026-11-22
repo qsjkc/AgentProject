@@ -40,9 +40,15 @@ async function waitForScope(main, user, petType) {
 }
 
 async function expectStep(main, state, title = null) {
-  await main.waitForSelector(`[data-e2e="daily-step"][data-state="${state}"]`)
-  assertEqual(await main.evaluate(`document.querySelector(${JSON.stringify(STEP_TITLE)})?.textContent.trim() ?? null`), title,
-    `Unexpected step title in the ${state} state`)
+  const panels = await waitFor(() => main.evaluate(`(() => {
+    const panels = [...document.querySelectorAll('[data-e2e="daily-step"]')].map((panel) => ({
+      state: panel.dataset.state,
+      title: panel.querySelector(${JSON.stringify(STEP_TITLE)})?.textContent.trim() ?? null,
+    }))
+    return panels.some((panel) => panel.state === ${JSON.stringify(state)}) ? panels : null
+  })()`), { description: `daily step in the ${state} state` })
+  assertEqual(panels.length, 1, 'Only the active account and pet should have a daily step panel')
+  assertEqual(panels[0].title, title, `Unexpected step title in the ${state} state`)
 }
 
 async function expectTodayLanding(main, source) {
