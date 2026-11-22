@@ -7,6 +7,23 @@ import { getPetOutfitCatalog } from '../src/shared/pet-outfits.js'
 import { createDressedAnimation, DRESSED_ACTIONS, DRESSED_OUTFIT_KEYS, getDressedOutfitKey } from '../src/shared/pet-dressed-animation.js'
 import { getAtlasFrameLayout } from '../src/shared/pet-sprite-animation.js'
 
+const SOURCE_PNG_COMMIT = '41aa5939ffd4b678cecc490ce74f8ab741a40a21'
+
+function assertLosslessWebp(webp, { width, height }) {
+  assert.ok(webp.length >= 25)
+  assert.equal(webp.toString('ascii', 0, 4), 'RIFF')
+  assert.equal(webp.readUInt32LE(4) + 8, webp.length)
+  assert.equal(webp.toString('ascii', 8, 16), 'WEBPVP8L')
+  const chunkSize = webp.readUInt32LE(16)
+  assert.equal(20 + chunkSize + (chunkSize % 2), webp.length)
+  assert.equal(webp[20], 0x2f)
+  const header = webp.readUInt32LE(21)
+  assert.equal((header & 0x3fff) + 1, width)
+  assert.equal(((header >>> 14) & 0x3fff) + 1, height)
+  assert.equal((header >>> 28) & 1, 1, 'costumes must preserve transparency')
+  assert.equal(header >>> 29, 0, 'VP8L format version')
+}
+
 function outfitFor(pet, key) {
   const [neck, head, side] = key.split('__')
   return {
@@ -68,17 +85,22 @@ for (const pet of ['pig', 'cat', 'dog']) {
     const directory = new URL(`../../frontend/src/assets/pets/${pet}/outfits/${pet === 'pig' ? 'dressed/' : ''}`, import.meta.url)
     const manifest = JSON.parse(readFileSync(new URL('manifest.json', directory), 'utf8'))
     assert.equal(manifest.petType, pet)
+    assert.equal(manifest.sourcePngCommit, SOURCE_PNG_COMMIT)
     assert.deepEqual(manifest.actions, DRESSED_ACTIONS)
     assert.deepEqual(Object.keys(manifest.variants).sort(), [...DRESSED_OUTFIT_KEYS].sort())
     assert.deepEqual(Object.keys(manifest.sprites).sort(), [...DRESSED_OUTFIT_KEYS].sort())
     for (const key of DRESSED_OUTFIT_KEYS) {
       const variant = manifest.variants[key]
       const sprite = manifest.sprites[key]
-      const png = readFileSync(new URL(variant.file, directory))
-      assert.equal(createHash('sha256').update(png).digest('hex'), variant.sha256, `${key} image changed after audit`)
-      assert.equal(png.readUInt32BE(16), sprite.width)
-      assert.equal(png.readUInt32BE(20), sprite.height)
-      assert.equal(png[25], 6, 'costumes must preserve RGBA transparency')
+      assert.equal(variant.file, `${key}.png`)
+      assert.match(variant.sha256, /^[0-9a-f]{64}$/)
+      assert.match(variant.rgbaSha256, /^[0-9a-f]{64}$/)
+      assert.equal(sprite.file, `${key}.webp`)
+      const webp = readFileSync(new URL(sprite.file, directory))
+      assert.equal(createHash('sha256').update(webp).digest('hex'), variant.webpSha256, `${key} image changed after pixel verification`)
+      assertLosslessWebp(webp, sprite)
+      assert.equal(sprite.width, variant.width)
+      assert.equal(sprite.height, variant.height)
       assert.equal(sprite.frames.length, 30)
       assert.deepEqual(sprite.frames, variant.frames)
       assert.equal(variant.frameHashes.length, 30)
@@ -98,7 +120,7 @@ for (const pet of ['pig', 'cat', 'dog']) {
         }
       }
       for (const action of Object.values(ANIMATION_ACTIONS)) {
-        const animation = createDressedAnimation({ ...sprite, src: variant.file }, action, key)
+        const animation = createDressedAnimation({ ...sprite, src: sprite.file }, action, key)
         assert.ok(new Set(animation.frameIndices).size >= 3)
         assert.equal(animation.outfitKey, key)
         for (let frame = 0; frame < animation.frameCount; frame++) {

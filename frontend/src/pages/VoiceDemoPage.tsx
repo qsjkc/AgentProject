@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { getErrorMessage } from '../lib/errors'
 import { formatApiDateTime } from '../lib/apiTime'
-import { createVoiceRtcSession, isRtcSupported, type VoiceRtcSessionHandle } from '../lib/voiceRtc'
+import { createVoiceRtcSession, isRtcSupported, VoiceRtcSdkLoadError, type VoiceRtcSessionHandle } from '../lib/voiceRtc'
 import { type OwnedVoiceDemoSession } from '../lib/voiceSessionApi'
 import {
   createVoiceSessionController,
@@ -106,7 +106,7 @@ export default function VoiceDemoPage() {
   const [inputSuppressed, setInputSuppressed] = useState(false)
   const [feedbackProtectionEnabled, setFeedbackProtectionEnabled] = useState(true)
   const [remoteAudioAttached, setRemoteAudioAttached] = useState(false)
-  const [error, setError] = useState('')
+  const [error, setError] = useState<string | VoiceRtcSdkLoadError>('')
   const [logs, setLogs] = useState<EventLogEntry[]>([])
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const rtcSessionRef = useRef<VoiceRtcSessionHandle | null>(null)
@@ -286,7 +286,7 @@ export default function VoiceDemoPage() {
       if (showFailure && mountedRef.current && controller.current() === attempt) {
         const message = getErrorMessage(err, '连接语音 Demo 失败。')
         resetSessionState()
-        setError(message)
+        setError(err instanceof VoiceRtcSdkLoadError ? err : message)
         pushLog(message, 'error')
         setPhase('error')
       }
@@ -429,7 +429,16 @@ export default function VoiceDemoPage() {
           </button>
         </div>
 
-        {error && <div className="mt-6 rounded-2xl bg-rose-50 px-4 py-3 text-sm text-rose-700">{error}</div>}
+        {error && (
+          <div role="alert" className="mt-6 rounded-2xl bg-rose-50 px-4 py-3 text-sm text-rose-700">
+            <p>{typeof error === 'string' ? error : error.message}</p>
+            {error instanceof VoiceRtcSdkLoadError && (
+              <button type="button" onClick={() => window.location.reload()} className="companion-button companion-button-primary mt-3">
+                刷新页面
+              </button>
+            )}
+          </div>
+        )}
         {inputSuppressed && (
           <div className="mt-6 rounded-2xl bg-amber-50 px-4 py-3 text-sm text-amber-700">
             AI 正在说话，页面已临时抑制本地麦克风输入，避免扬声器回采导致 AI 听到自己的声音。需要强制打断时，直接点击“打断 AI”。

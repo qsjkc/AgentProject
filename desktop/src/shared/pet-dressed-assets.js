@@ -7,8 +7,8 @@ const manifests = import.meta.glob([
   '../../../frontend/src/assets/pets/pig/outfits/dressed/manifest.json',
 ], { eager: true, import: 'sprites' })
 const images = import.meta.glob([
-  '../../../frontend/src/assets/pets/{cat,dog}/outfits/*.png',
-  '../../../frontend/src/assets/pets/pig/outfits/dressed/*.png',
+  '../../../frontend/src/assets/pets/{cat,dog}/outfits/*.webp',
+  '../../../frontend/src/assets/pets/pig/outfits/dressed/*.webp',
 ], { eager: true, query: '?url', import: 'default' })
 
 const wardrobe = Object.fromEntries(Object.entries(manifests).map(([path, sprites]) => {
