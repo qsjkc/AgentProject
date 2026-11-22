@@ -25,6 +25,7 @@ let heldMainPanelIntent = null
 let pendingRelationshipCapabilityId = null
 let e2eRelationship = null
 let e2eRelationshipCapabilityAdopted = false
+let e2eFocusReadsUnavailable = false
 const e2eRelationshipRefreshListeners = new Set()
 const e2eReminderPollListeners = new Set()
 const e2eCompanionPollListeners = new Set()
@@ -39,6 +40,7 @@ function resetE2eLocalState() {
   pendingRelationshipCapabilityId = null
   e2eRelationship = null
   e2eRelationshipCapabilityAdopted = false
+  e2eFocusReadsUnavailable = false
 }
 
 async function renewOperationContextForRenderer(capability, requiredScope, semantic) {
@@ -139,6 +141,7 @@ ipcRenderer.on('desktop:e2e-reset-local', () => {
 
 const desktopBridge = {
   getFocusSession: async (expectedContext) => {
+    if (e2eEnabled && e2eFocusReadsUnavailable) return { ok: false, reason: 'e2e-focus-read-unavailable' }
     const renewed = await renewExpectedContext(expectedContext, 'pet')
     if (!renewed) return { ok: false, reason: 'context-expired' }
     return ipcRenderer.invoke('desktop:get-focus-session', renewed)
@@ -429,6 +432,7 @@ if (e2eEnabled) {
     clickFocusCompletionNotification: () => invokeE2eControl('clickFocusCompletionNotification'),
     setReminderNotificationOutcome: (outcome) => invokeE2eControl('setReminderNotificationOutcome', outcome),
     setReminderNotificationReplyHold: (hold) => invokeE2eControl('setReminderNotificationReplyHold', hold),
+    setFocusReadsUnavailable: (unavailable) => { e2eFocusReadsUnavailable = unavailable === true },
     simulateSystemResume: () => invokeE2eControl('simulateSystemResume'),
     prepareOnboarding: (options) => invokeE2eControl('prepareOnboarding', options),
     expireOperationCapabilities: () => invokeE2eControl('expireOperationCapabilities'),
