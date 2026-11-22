@@ -1,5 +1,5 @@
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -956,6 +956,57 @@ async def test_trigger_rejects_late_acknowledgement_after_rescheduling(client: A
     assert [item["id"] for item in waiting.json()] == [reminder_id]
     assert waiting.json()[0]["remind_at"] == rescheduled.json()["remind_at"]
     assert waiting.json()[0]["triggered_at"] is None
+
+
+@pytest.mark.asyncio
+async def test_trigger_rejects_an_old_occurrence_after_the_new_schedule_is_due(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch,
+):
+    from app.api.v1 import reminders as reminders_api
+
+    alice = await register_and_login(client, "trigger-occurrence-owner", "trigger-occurrence-owner@example.com")
+    bob = await register_and_login(client, "trigger-occurrence-other", "trigger-occurrence-other@example.com")
+    now = utc_now().replace(microsecond=123456)
+    monkeypatch.setattr(reminders_api, "utc_now", lambda: now)
+    created = await client.post(
+        "/api/v1/reminders", headers=alice,
+        json={"pet_type": "pig", "title": "改时间后读书", "email_enabled": False,
+              "remind_at": (now - timedelta(minutes=3)).isoformat()},
+    )
+    assert created.status_code == 200
+    reminder_id = created.json()["id"]
+    path = f"/api/v1/reminders/{reminder_id}/trigger"
+    pending_params = {"pet_type": "pig", "status": "pending", "triggered": "false"}
+    captured = await client.get("/api/v1/reminders", headers=alice, params=pending_params)
+    assert [item["id"] for item in captured.json()] == [reminder_id]
+    old_ack = {"expected_remind_at": captured.json()[0]["remind_at"]}
+
+    new_due = now + timedelta(seconds=2)
+    moved = await client.patch(f"/api/v1/reminders/{reminder_id}", headers=alice, json={"remind_at": new_due.isoformat()})
+    assert moved.status_code == 200
+    assert moved.json()["triggered_at"] is None
+    assert (await client.post(path, headers=alice, params=old_ack)).status_code == 409
+
+    now += timedelta(seconds=3)
+    assert (await client.post(path, params=old_ack)).status_code == 401
+    assert (await client.post(path, headers=bob, params=old_ack)).status_code == 404
+    assert (await client.post(path, headers=alice, params=old_ack)).status_code == 409
+    near_ack = {"expected_remind_at": (new_due - timedelta(microseconds=1)).isoformat() + "Z"}
+    assert (await client.post(path, headers=alice, params=near_ack)).status_code == 409
+    waiting = await client.get("/api/v1/reminders", headers=alice, params=pending_params)
+    assert [item["id"] for item in waiting.json()] == [reminder_id]
+    assert waiting.json()[0]["remind_at"] == moved.json()["remind_at"]
+    assert waiting.json()[0]["triggered_at"] is None
+
+    local_due = new_due.replace(tzinfo=timezone.utc).astimezone(timezone(timedelta(hours=5, minutes=30)))
+    current = await client.post(path, headers=alice, params={"expected_remind_at": local_due.isoformat()})
+    assert current.status_code == 200
+    assert current.json()["triggered_at"] == now.isoformat() + "Z"
+    now += timedelta(seconds=3)
+    repeated = await client.post(path, headers=alice, params={"expected_remind_at": moved.json()["remind_at"]})
+    assert repeated.status_code == 200
+    assert repeated.json() == current.json()
+    assert (await client.post(path, headers=alice, params=old_ack)).status_code == 409
 
 
 @pytest.mark.asyncio
