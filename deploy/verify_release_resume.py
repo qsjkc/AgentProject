@@ -1,4 +1,4 @@
-"""Recognize and finish an exact switched release on a rerun of the same CD job."""
+"""Verify staging or finish an exact switched release on a retry of the same CD run."""
 
 import argparse
 import hashlib
@@ -8,6 +8,7 @@ import re
 import shlex
 import subprocess
 import sys
+import tempfile
 from urllib.parse import urlsplit
 from urllib.request import urlopen
 
@@ -103,6 +104,71 @@ sys.exit(not (ready.get('status') == 'ready' and release.get('available') is Tru
             raise ValueError("Running agent server is not ready")
 
 
+def verify_runtime(root, expected):
+    for name in RUNTIME_FILES:
+        if digest(regular_file(root, Path(name))) != expected["runtime"][name]:
+            raise ValueError(f"Runtime configuration differs: {name}")
+
+
+def verify_staging(root, expected, *, record):
+    desktop = desktop_manifest(expected["desktop"])
+    source = desktop["sourceCommit"]
+    run_id = expected["workflowRunId"]
+    if not re.fullmatch(r"[1-9][0-9]*", run_id):
+        raise ValueError("A CD run ID is required")
+    directory = Path(f".server-images-{source}")
+    receipt_path = directory / "staged-release.json"
+    running_receipt = root / directory / "running-images.json"
+    if not record and (running_receipt.exists() or running_receipt.is_symlink()):
+        raise ValueError("A service switch receipt already exists")
+    receipt = {
+        "schemaVersion": 1, "sourceCommit": source, "workflowRunId": run_id,
+        "installerSha256": desktop["sha256"],
+        "desktopManifestSha256": expected["staging"]["desktopManifestSha256"],
+        "imageManifestSha256": expected["staging"]["imageManifestSha256"],
+    }
+    if not record:
+        saved = json.loads(metadata(root, receipt_path))
+        if not isinstance(saved, dict) or any(saved.get(key) != value for key, value in receipt.items()):
+            raise ValueError("Stage receipt differs from this CD run or its artifacts")
+
+    verify_runtime(root, expected)
+    desktop_bytes = metadata(root, f".desktop-release-{source}.json")
+    if hashlib.sha256(desktop_bytes).hexdigest() != receipt["desktopManifestSha256"]:
+        raise ValueError("Staged desktop manifest differs from the verified artifact")
+    image_bytes = metadata(root, directory / "server-images.json")
+    if hashlib.sha256(image_bytes).hexdigest() != receipt["imageManifestSha256"]:
+        raise ValueError("Staged image manifest differs from the verified artifact")
+    for project, (_, services) in PROJECTS.items():
+        if json.loads(metadata(root, directory / f"{project}.compose.json")) != overlay(source, services, managed=False):
+            raise ValueError(f"Staged Compose override differs: {project}")
+
+    staged_name = f".{desktop['filename']}.{source}.upload"
+    installer = regular_file(root, Path("data/downloads") / staged_name)
+    if installer.stat().st_size != desktop["bytes"] or digest(installer) != desktop["sha256"]:
+        raise ValueError("Staged installer differs from the verified artifact")
+    loaded = image_state(root, directory, source)
+    if loaded.get("status") != "passed" or loaded.get("sourceCommit") != source:
+        raise ValueError("Loaded images do not match the staged release")
+    receipt["loadedImageIds"] = {image["service"]: image["loadedId"] for image in loaded["images"]}
+    if record:
+        target = root / receipt_path
+        if target.is_symlink():
+            raise ValueError("Stage receipt cannot be a symlink")
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=target.parent,
+                                         prefix=".staged-release-", delete=False) as stream:
+            temporary = Path(stream.name)
+            try:
+                stream.write(json.dumps(receipt) + "\n")
+                stream.close()
+                temporary.replace(target)
+            finally:
+                temporary.unlink(missing_ok=True)
+    elif saved != receipt:
+        raise ValueError("Loaded images differ from the stage receipt")
+    return {"status": "passed", **receipt}
+
+
 def probe(root, expected):
     desktop = desktop_manifest(expected["desktop"])
     source = desktop["sourceCommit"]
@@ -123,9 +189,7 @@ def probe(root, expected):
         if re.findall(rf"^{key}=([^\r\n]*)$", configured_release, re.MULTILINE) != [desktop[field]]:
             raise ValueError("Runtime desktop release keys differ from the verified installer")
 
-    for name in RUNTIME_FILES:
-        if digest(regular_file(root, Path(name))) != expected["runtime"][name]:
-            raise ValueError(f"Runtime configuration differs: {name}")
+    verify_runtime(root, expected)
     if json.loads(metadata(root, directory / "server-images.json")) != expected["images"]:
         raise ValueError("Remote image manifest differs from the verified build artifact")
     running_receipt = json.loads(metadata(root, directory / "running-images.json"))
@@ -183,8 +247,12 @@ def verify_public_proof(report, desktop, origin):
         raise ValueError("A successful full public download for this exact release is required")
 
 
-def remote(expected, before=None):
+def remote(expected, before=None, stage=None):
     root = Path.cwd()
+    if stage is not None:
+        if stage not in {"record", "verify"} or before is not None:
+            raise ValueError("Invalid stage verification request")
+        return verify_staging(root, expected, record=stage == "record")
     current = probe(root, expected)
     if before is not None:
         if before != current:
@@ -195,15 +263,21 @@ def remote(expected, before=None):
     return current
 
 
-def call_remote(app_dir, source, run_id, *, proof=None, public_download=None):
+def call_remote(app_dir, source, run_id, *, proof=None, public_download=None, stage=None):
     repo = Path(__file__).resolve().parent.parent
-    desktop = desktop_manifest(json.loads(metadata(repo, "desktop-release/desktop-release.json")))
+    desktop_bytes = metadata(repo, "desktop-release/desktop-release.json")
+    image_bytes = metadata(repo, "server-images/server-images.json")
+    desktop = desktop_manifest(json.loads(desktop_bytes))
     if desktop["sourceCommit"] != source:
         raise ValueError("The desktop artifact differs from the current main SHA")
     expected = {"desktop": desktop, "workflowRunId": run_id,
-                "images": json.loads(metadata(repo, "server-images/server-images.json")),
+                "images": json.loads(image_bytes),
                 "runtime": {name: digest(regular_file(repo, Path(name))) for name in RUNTIME_FILES}}
     payload = {"expected": expected}
+    if stage is not None:
+        payload["stage"] = stage
+        expected["staging"] = {"desktopManifestSha256": hashlib.sha256(desktop_bytes).hexdigest(),
+                               "imageManifestSha256": hashlib.sha256(image_bytes).hexdigest()}
     if proof is not None:
         before = json.loads(metadata(repo, proof))
         verify_public_proof(json.loads(metadata(repo, public_download)), desktop, before["origin"])
@@ -229,13 +303,15 @@ def main():
     parser.add_argument("--run-id")
     parser.add_argument("--proof")
     parser.add_argument("--public-download")
+    parser.add_argument("--stage", choices=("record", "verify"))
     args = parser.parse_args()
     if args.remote:
         return remote(**json.loads(args.remote))
-    if not all((args.app_dir, args.source_commit, args.run_id)) or bool(args.proof) != bool(args.public_download):
+    if (not all((args.app_dir, args.source_commit, args.run_id)) or bool(args.proof) != bool(args.public_download)
+            or (args.proof and args.stage)):
         parser.error("App directory, source commit and run ID are required; publication also requires both proofs")
     return call_remote(args.app_dir, args.source_commit, args.run_id,
-                       proof=args.proof, public_download=args.public_download)
+                       proof=args.proof, public_download=args.public_download, stage=args.stage)
 
 
 if __name__ == "__main__":
