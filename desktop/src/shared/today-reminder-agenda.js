@@ -14,11 +14,10 @@ export function getTodayReminderAgenda({ delivered, scheduled, series, accountCo
   const currentDay = new Date(now)
   const items = []
   let earlierUnfinished = 0
-  let earlierDestination = null
   if (
     accountContext?.hasSession === false || userId === null || !['cat', 'dog', 'pig'].includes(petType)
     || !Number.isFinite(now) || !Number.isFinite(currentDay.getTime())
-  ) return { items, earlierUnfinished, earlierDestination }
+  ) return { items, earlierUnfinished, earlierGroups: [] }
 
   const start = currentDay.setHours(0, 0, 0, 0)
   const end = currentDay.setHours(24, 0, 0, 0)
@@ -59,13 +58,16 @@ export function getTodayReminderAgenda({ delivered, scheduled, series, accountCo
   }
 
   const occurrences = new Set()
-  let oldestEarlierTime = Infinity
+  const earlierByDestination = new Map()
   for (const { seriesId, ...item } of actual.values()) {
     if (item.remindAt < start && item.lateDeliveryAt === undefined) {
       earlierUnfinished += 1
-      if (item.remindAt < oldestEarlierTime) {
-        oldestEarlierTime = item.remindAt
-        earlierDestination = item.destination
+      const group = earlierByDestination.get(item.destination)
+      if (group) {
+        group.count += 1
+        group.oldestAt = Math.min(group.oldestAt, item.remindAt)
+      } else {
+        earlierByDestination.set(item.destination, { destination: item.destination, count: 1, oldestAt: item.remindAt })
       }
     } else if (item.remindAt < end) {
       items.push(item)
@@ -86,5 +88,8 @@ export function getTodayReminderAgenda({ delivered, scheduled, series, accountCo
 
   items.sort((left, right) => (left.lateDeliveryAt ?? left.remindAt) - (right.lateDeliveryAt ?? right.remindAt)
     || left.key.localeCompare(right.key))
-  return { items, earlierUnfinished, earlierDestination }
+  const earlierGroups = [...earlierByDestination.values()]
+    .sort((left, right) => left.oldestAt - right.oldestAt || left.destination.localeCompare(right.destination))
+    .map(({ destination, count }) => ({ destination, count }))
+  return { items, earlierUnfinished, earlierGroups }
 }

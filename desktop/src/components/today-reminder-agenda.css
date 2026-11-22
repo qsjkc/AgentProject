@@ -51,5 +51,6 @@
   text-underline-offset: 2px;
 }
 
-.today-agenda-more > summary { display: list-item; list-style-position: inside; }
+.today-agenda-disclosure > summary { display: list-item; list-style-position: inside; }
+.today-agenda-earlier-groups { padding-inline-start: 12px; }
 .today-reminder-agenda :is(button, summary):focus-visible { outline: 2px solid #587553; outline-offset: 2px; }

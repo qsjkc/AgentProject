@@ -6,6 +6,8 @@ const OWNER = { id: 878, username: 'agenda-row-target', email: 'agenda-row-targe
 const AGENDA = '[data-e2e="today-reminder-agenda"]'
 const ITEM = `${AGENDA} [data-e2e="today-agenda-item"]`
 const MORE = `${AGENDA} [data-e2e="today-agenda-more"]`
+const EARLIER = `${AGENDA} [data-e2e="today-agenda-earlier"]`
+const EARLIER_GROUP = `${AGENDA} [data-e2e="today-agenda-earlier-group"]`
 const DELIVERED = '#delivered-reminders'
 const UPCOMING = '#upcoming-reminders'
 const RECURRING = '#recurring-reminders'
@@ -20,9 +22,10 @@ function getSchedule(main) {
     const at = (hour) => new Date(new Date(day).setHours(hour, 0, 0, 0)).toISOString()
     const prior = new Date(day)
     prior.setDate(prior.getDate() - 1)
-    prior.setHours(18, 0, 0, 0)
+    const priorAt = (hour) => new Date(new Date(prior).setHours(hour, 0, 0, 0)).toISOString()
     return { now: Date.parse(at(12)), firstDelivered: at(8), delivered: at(9), nextDelivered: at(10), projected: at(14), later: at(16),
-      earlier: prior.toISOString(), timezone: Intl.DateTimeFormat().resolvedOptions().timeZone }
+      earlierDelivered: priorAt(16), earlierRecurring: priorAt(17), earlier: priorAt(18), anotherEarlier: priorAt(19),
+      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone }
   })()`)
 }
 
@@ -81,15 +84,21 @@ export async function todayAgendaRowTargetScenario(context) {
   nextDelivered.triggered_at = clock.nextDelivered
   const scheduled = record('晚一点整理书桌', clock.later)
   const earlier = record('之前留下的提醒', clock.earlier)
+  const anotherEarlier = record('之前还没收好的书', clock.anotherEarlier)
+  const earlierDelivered = record('昨天已提醒', clock.earlierDelivered)
+  earlierDelivered.triggered_at = clock.earlierDelivered
+  const earlierRecurring = record('昨天读两页', clock.earlierRecurring)
   const series = {
     id: 8781, user_id: OWNER.id, pet_type: 'pig', title: '每天读两页', status: 'active',
     recurrence_type: 'daily', timezone: clock.timezone, local_hour: 14, local_minute: 0, weekdays: [],
     next_occurrence_at: clock.projected,
   }
+  earlierRecurring.series_id = series.id
+  earlierRecurring.recurrence_type = series.recurrence_type
   stub.fixture.accounts.set(OWNER.id, {
     user: OWNER, token: createJwt(OWNER), preferences: createPreferences(OWNER),
     relationshipByPet: new Map([['pig', relationship]]), sessions: [], documents: [],
-    reminders: [first, second, firstDelivered, nextDelivered, scheduled, earlier],
+    reminders: [first, second, firstDelivered, nextDelivered, scheduled, earlier, anotherEarlier, earlierRecurring, earlierDelivered],
   })
   const restoreSeries = stub.overrideResponse('GET', SERIES_API, 200, [series])
   try {
@@ -146,10 +155,29 @@ export async function todayAgendaRowTargetScenario(context) {
       { description: 'the same control collapses the additional reminders' })
     assertEqual((await visibleAgendaIds(main)).join(','), visibleIds.join(','), 'Collapsing changed the three visible reminders')
     await pressKey(main, 'Tab', 9)
-    const earlierControl = `${AGENDA} [data-e2e="today-agenda-earlier"]`
-    await waitFor(() => main.evaluate(`document.activeElement === document.querySelector(${JSON.stringify(earlierControl)})`),
+    await waitFor(() => main.evaluate(`document.activeElement === document.querySelector(${JSON.stringify(EARLIER)})`),
       { description: 'Tab skips closed reminder rows' })
-    await clickAndFocus(main, earlierControl, UPCOMING)
+    assert(await main.evaluate(`document.querySelector(${JSON.stringify(EARLIER)}).textContent.includes('4')`),
+      'Earlier total does not include all unfinished categories')
+    await pressKey(main, 'Enter', 13)
+    await waitFor(() => main.evaluate(`document.querySelector(${JSON.stringify(EARLIER)}).parentElement.open`),
+      { description: 'keyboard expands mixed earlier reminders' })
+    const earlierGroups = await main.evaluate(`Array.from(document.querySelectorAll(${JSON.stringify(EARLIER_GROUP)}))
+      .filter((node) => node.checkVisibility()).map((node) => ({ destination: node.dataset.destination, text: node.textContent }))`)
+    const expectedGroups = [['delivered', DELIVERED, 1], ['recurring', RECURRING, 1], ['upcoming', UPCOMING, 2]]
+    assertEqual(earlierGroups.length, expectedGroups.length, 'The disclosure did not show all earlier categories')
+    for (const [index, [destination, target, count]] of expectedGroups.entries()) {
+      assertEqual(earlierGroups[index].destination, destination, 'Earlier categories are not sorted by their oldest reminder')
+      assert(earlierGroups[index].text.endsWith(`(${count})`), 'The earlier group shows the wrong count', earlierGroups[index])
+      const group = `${EARLIER_GROUP}[data-destination="${destination}"]`
+      await main.evaluate(`document.querySelector(${JSON.stringify(EARLIER)}).focus()`)
+      for (let tab = 0; tab <= index; tab += 1) await pressKey(main, 'Tab', 9)
+      await waitFor(() => main.evaluate(`document.activeElement === document.querySelector(${JSON.stringify(group)})`),
+        { description: `Tab reaches the earlier ${destination} group` })
+      await pressKey(main, 'Enter', 13)
+      await waitFor(() => main.evaluate(`document.activeElement === document.querySelector(${JSON.stringify(target)})`),
+        { description: `earlier group focuses ${target}` })
+    }
 
     const selectedRow = reminderRow(DELIVERED, selected.id)
     await clickAndFocus(main, agendaItem(selected.id, 'delivered'), selectedRow)
@@ -170,7 +198,7 @@ export async function todayAgendaRowTargetScenario(context) {
     assertEqual(writes.length, 1, 'Only the explicit completion may change a reminder')
     assertEqual(writes[0].method, 'POST', 'Completion must use the existing POST action')
     assertEqual(writes[0].pathname, `${REMINDERS_API}/${selected.id}/complete`, 'Completion targeted the wrong reminder ID')
-    return { sameTitleIdentity: true, selectedCompletionOnly: true, projectedSeriesFocus: true, upcomingRowFocus: true, aggregateSectionFocus: true, keyboardDisclosure: true, mixedOverflowOrder: true }
+    return { sameTitleIdentity: true, selectedCompletionOnly: true, projectedSeriesFocus: true, upcomingRowFocus: true, aggregateSectionFocus: true, keyboardDisclosure: true, mixedOverflowOrder: true, mixedEarlierGroups: true }
   } finally {
     restoreSeries()
     await main.evaluate("window.restoreAgendaRowTargetClock?.(); window.dispatchEvent(new Event('focus'))")

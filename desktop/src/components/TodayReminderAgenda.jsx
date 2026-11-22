@@ -21,6 +21,8 @@ const COPY = {
     earlier: (count) => `之前还有 ${count} 项未完成`,
     more: (count) => `还有 ${count} 项`,
     delivered: '已提醒',
+    upcoming: '待提醒',
+    recurring: '重复提醒',
     deliveredToday: '今日送达',
     due: '已到期',
     scheduled: '待提醒',
@@ -35,6 +37,8 @@ const COPY = {
     earlier: (count) => `${count} unfinished from earlier`,
     more: (count) => `${count} more today`,
     delivered: 'Delivered',
+    upcoming: 'Upcoming reminders',
+    recurring: 'Recurring reminders',
     deliveredToday: 'Delivered today',
     due: 'Due',
     scheduled: 'Scheduled',
@@ -173,7 +177,7 @@ export function TodayReminderAgenda({ language, accountContext, onNavigate }) {
   const timeFormat = new Intl.DateTimeFormat(locale, { hour: 'numeric', minute: '2-digit' })
   const day = new Date(now).toDateString()
   const dayIsCurrent = snapshot.day === day
-  const { items, earlierUnfinished, earlierDestination } = getTodayReminderAgenda({
+  const { items, earlierUnfinished, earlierGroups } = getTodayReminderAgenda({
     scheduled: dayIsCurrent ? snapshot.reminders : [],
     series: dayIsCurrent ? snapshot.series : [],
     accountContext, now,
@@ -208,14 +212,27 @@ export function TodayReminderAgenda({ language, accountContext, onNavigate }) {
       )}
       {state !== 'ready' && <p className="today-agenda-status" role="status">{copy[state]}</p>}
       {rows.length > VISIBLE_ITEMS && (
-        <details key={day} className="today-agenda-more">
+        <details key={day} className="today-agenda-disclosure">
           <summary className="today-agenda-link" data-e2e="today-agenda-more">{copy.more(rows.length - VISIBLE_ITEMS)}</summary>
           <ul className="today-agenda-list">{rows.slice(VISIBLE_ITEMS)}</ul>
         </details>
       )}
-      {earlierUnfinished > 0 && (
+      {earlierGroups.length === 1 && (
         <button type="button" className="today-agenda-link" data-e2e="today-agenda-earlier"
-          onClick={() => onNavigate(earlierDestination || 'delivered')}>{copy.earlier(earlierUnfinished)}</button>
+          onClick={() => onNavigate(earlierGroups[0].destination)}>{copy.earlier(earlierUnfinished)}</button>
+      )}
+      {earlierGroups.length > 1 && (
+        <details key={`earlier-${day}`} className="today-agenda-disclosure">
+          <summary className="today-agenda-link" data-e2e="today-agenda-earlier">{copy.earlier(earlierUnfinished)}</summary>
+          <ul className="today-agenda-list today-agenda-earlier-groups">
+            {earlierGroups.map(({ destination, count }) => (
+              <li key={destination}>
+                <button type="button" className="today-agenda-link" data-e2e="today-agenda-earlier-group" data-destination={destination}
+                  onClick={() => onNavigate(destination)}>{copy[destination]} ({count})</button>
+              </li>
+            ))}
+          </ul>
+        </details>
       )}
       {state === 'error' && (
         <button type="button" className="today-agenda-link" data-e2e="today-agenda-retry"
