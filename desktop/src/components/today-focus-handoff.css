@@ -17,6 +17,9 @@
 .today-focus-description svg { flex-shrink: 0; }
 .today-focus-description span { display: block; margin-top: 2px; overflow-wrap: anywhere; }
 
+.today-focus-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; margin-inline-start: auto; }
+.today-focus-time { font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; }
+
 .today-focus-handoff button {
   display: inline-flex;
   align-items: center;

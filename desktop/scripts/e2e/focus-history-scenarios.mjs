@@ -17,23 +17,30 @@ const HISTORY_USERS = Object.freeze({
 })
 const PANEL = '[data-e2e="focus-panel"]'
 const HISTORY = '[data-e2e="focus-history"]'
+const PRESETS = `${PANEL} .focus-durations button`
 const focusState = (status) => `${PANEL}[data-focus-status="${status}"]`
 
 export async function prepareFocusHistoryFixture({ userDataPath, apiBaseUrl, now = Date.now() }) {
   const entry = {
     id: 'e2e-legacy-completed-focus',
     intention: '从旧版本找回的一小段阅读',
-    durationMs: 25 * 60_000,
+    durationMs: 45 * 60_000,
     completedAt: now,
+  }
+  const olderEntry = {
+    id: 'e2e-older-completed-focus',
+    intention: '整理书桌',
+    durationMs: 15 * 60_000,
+    completedAt: now - 2 * 24 * 60 * 60_000,
   }
   const key = JSON.stringify([apiBaseUrl.replace(/\/+$/, ''), HISTORY_USERS.completed.id, 'pig'])
   // createStore() in electron/main.cjs uses electron-store's default name,
   // config.json. This fresh TEMP profile is seeded before Electron starts.
-  // Omit history deliberately: loading a legacy completed session must migrate it.
+  // The current legacy completion has not been added to its saved history yet.
   const storePath = join(userDataPath, 'config.json')
   await writeFile(storePath, `${JSON.stringify({
     focusSessions: {
-      [key]: { ...entry, status: 'completed', revision: 1, remainingMs: 0, endsAt: null },
+      [key]: { ...entry, status: 'completed', revision: 1, remainingMs: 0, endsAt: null, history: [olderEntry] },
     },
   }, null, 2)}\n`, { flag: 'wx' })
   return {
@@ -42,6 +49,7 @@ export async function prepareFocusHistoryFixture({ userDataPath, apiBaseUrl, now
     storePath,
     key,
     entry,
+    olderEntry,
   }
 }
 
@@ -96,17 +104,19 @@ async function selectPet(context, user, petType) {
 
 async function readHistory(main, fixture) {
   return main.evaluate(`(() => {
-    const completed = new Date(${fixture.entry.completedAt})
     const current = new Date()
-    const isToday = completed.getFullYear() === current.getFullYear()
-      && completed.getMonth() === current.getMonth() && completed.getDate() === current.getDate()
+    const today = ${JSON.stringify([fixture.entry, fixture.olderEntry])}.filter(({ completedAt }) => {
+      const completed = new Date(completedAt)
+      return completed.getFullYear() === current.getFullYear()
+        && completed.getMonth() === current.getMonth() && completed.getDate() === current.getDate()
+    })
     const list = document.querySelector('[data-e2e="focus-history-list"]')
     return {
       timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
       todayCount: Number(document.querySelector('[data-e2e="focus-history-today-count"]')?.textContent),
       todayMinutes: Number(document.querySelector('[data-e2e="focus-history-today-minutes"]')?.textContent),
-      expectedTodayCount: isToday ? 1 : 0,
-      expectedTodayMinutes: isToday ? 25 : 0,
+      expectedTodayCount: today.length,
+      expectedTodayMinutes: today.reduce((minutes, entry) => minutes + entry.durationMs / 60000, 0),
       entries: Array.from(list?.querySelectorAll('[data-e2e-focus-history-id]') || [], (node) => ({
         id: node.getAttribute('data-e2e-focus-history-id'),
         text: node.textContent,
@@ -123,10 +133,13 @@ async function assertCompletedHistory(main, fixture, description) {
   const history = await readHistory(main, fixture)
   assertEqual(history.todayCount, history.expectedTodayCount, `${description}: wrong local-day completion count`)
   assertEqual(history.todayMinutes, history.expectedTodayMinutes, `${description}: wrong local-day minutes`)
-  assertEqual(history.entries.length, 1, `${description}: legacy completion was lost or duplicated`)
-  assertEqual(history.entries[0].id, fixture.entry.id, `${description}: wrong completion id`)
-  assertEqual(history.entries[0].completedAt, new Date(fixture.entry.completedAt).toISOString(), `${description}: completion time changed`)
-  assert(history.entries[0].text.includes(fixture.entry.intention), `${description}: completion intention was lost`)
+  const expected = [fixture.entry, fixture.olderEntry]
+  assertEqual(history.entries.length, expected.length, `${description}: a completion was lost or duplicated`)
+  for (const [index, entry] of expected.entries()) {
+    assertEqual(history.entries[index].id, entry.id, `${description}: wrong completion order`)
+    assertEqual(history.entries[index].completedAt, new Date(entry.completedAt).toISOString(), `${description}: completion time changed`)
+    assert(history.entries[index].text.includes(entry.intention), `${description}: completion intention was lost`)
+  }
   assertEqual(history.empty, false, `${description}: populated history shows its empty state`)
   return history
 }
@@ -143,24 +156,42 @@ async function assertStoredHistory(fixture, status) {
   return waitFor(async () => {
     const config = JSON.parse(await readFile(fixture.storePath, 'utf8'))
     const stored = config.focusSessions?.[fixture.key]
-    if (stored?.status !== status || stored.history?.length !== 1) return null
-    const entry = stored.history[0]
-    for (const [field, value] of Object.entries(fixture.entry)) {
-      assertEqual(entry[field], value, `Persisted focus completion changed ${field}`)
+    const expected = [fixture.entry, fixture.olderEntry]
+    if (stored?.status !== status || stored.history?.length !== expected.length) return null
+    for (const [index, entry] of expected.entries()) {
+      for (const [field, value] of Object.entries(entry)) {
+        assertEqual(stored.history[index][field], value, `Persisted focus completion changed ${field}`)
+      }
     }
     return stored
-  }, { description: `focus ${status} and one completion saved together to electron-store` })
+  }, { description: `focus ${status} and both completions saved together to electron-store` })
+}
+
+async function assertSelectedPreset(main, minutes, description) {
+  await main.waitForSelector(`${focusState('idle')}[aria-busy="false"] .focus-durations [aria-pressed="true"]`)
+  const selected = await main.evaluate(`Array.from(document.querySelectorAll(${JSON.stringify(`${PRESETS}[aria-pressed="true"]`)}),
+    (button) => Number.parseInt(button.textContent, 10))`)
+  assertEqual(selected.length, 1, `${description}: expected exactly one selected preset`)
+  assertEqual(selected[0], minutes, `${description}: wrong selected preset`)
+}
+
+async function selectPreset(main, minutes) {
+  const index = await main.evaluate(`Array.from(document.querySelectorAll(${JSON.stringify(PRESETS)}))
+    .findIndex((button) => Number.parseInt(button.textContent, 10) === ${minutes})`)
+  assert(index >= 0, `Focus preset ${minutes} is missing`)
+  await main.click(`${PRESETS}:nth-of-type(${index + 1})`)
 }
 
 export async function focusHistoryScenario(context) {
   const fixture = context.focusHistoryFixture
-  assert(fixture?.entry && fixture?.storePath, 'Focus history requires its pre-start TEMP profile fixture')
+  assert(fixture?.entry && fixture?.olderEntry && fixture?.storePath, 'Focus history requires its pre-start TEMP profile fixture')
   await ensureBaseBridge(context)
   addHistoryAccounts(context)
   await resetToLoggedOut(context)
   await loginAs(context, HISTORY_USERS.completed)
   await waitForAccount(context, HISTORY_USERS.completed)
   const main = context.pages.main
+  const latestMinutes = fixture.entry.durationMs / 60_000
   await main.waitForSelector(focusState('completed'))
   const restored = await assertCompletedHistory(main, fixture, 'completed fixture restoration')
   await assertStoredHistory(fixture, 'completed')
@@ -180,15 +211,22 @@ export async function focusHistoryScenario(context) {
   await main.waitForSelector(focusState('idle'))
   assertEqual(await main.evaluate("document.querySelector('[data-e2e=focus-intention]').value"), nextStep, 'Choosing the next focus did not retain the daily step')
   await assertCompletedHistory(main, fixture, 'reset keeps completed history')
+  await assertSelectedPreset(main, latestMinutes, 'reset after startup from a saved completion')
   await assertStoredHistory(fixture, 'idle')
   await main.reload()
   await waitForAccount(context, HISTORY_USERS.completed)
   await main.waitForSelector(focusState('idle'))
   await assertCompletedHistory(main, fixture, 'renderer reload keeps completed history')
+  await assertSelectedPreset(main, latestMinutes, 'renderer reload after reset')
 
+  const chosenMinutes = 25
+  await selectPreset(main, chosenMinutes)
+  await assertSelectedPreset(main, chosenMinutes, 'explicit duration choice')
   await main.input('[data-e2e="focus-intention"]', '提前结束的专注不能计入成果')
   await main.click('[data-e2e="focus-start"]')
   await main.waitForSelector(focusState('running'))
+  const running = await assertStoredHistory(fixture, 'running')
+  assertEqual(running.durationMs, chosenMinutes * 60_000, 'Starting a session did not use the explicitly selected preset')
   await main.click('[data-e2e="focus-end"]')
   await main.waitForSelector(focusState('idle'))
   await assertCompletedHistory(main, fixture, 'early finish does not increase history')
@@ -197,13 +235,17 @@ export async function focusHistoryScenario(context) {
   await selectPet(context, HISTORY_USERS.completed, 'cat')
   await main.waitForSelector(focusState('idle'))
   await assertEmptyHistory(main, fixture, 'cat history isolation')
+  await assertSelectedPreset(main, 25, 'cat falls back without pig history')
   await selectPet(context, HISTORY_USERS.completed, 'pig')
   await assertCompletedHistory(main, fixture, 'pig history after pet switch')
+  await assertSelectedPreset(main, latestMinutes, 'pig preset restored after pet switch')
   await switchAccount(context, HISTORY_USERS.empty)
   await main.waitForSelector(focusState('idle'))
   await assertEmptyHistory(main, fixture, 'second account history isolation')
+  await assertSelectedPreset(main, 25, 'second account falls back without the first account history')
   await switchAccount(context, HISTORY_USERS.completed)
   const returned = await assertCompletedHistory(main, fixture, 'original account history restored')
+  await assertSelectedPreset(main, latestMinutes, 'original account preset restored')
   await assertStoredHistory(fixture, 'idle')
   await main.evaluate(`document.querySelector(${JSON.stringify(PANEL)}).scrollIntoView({ block: 'center' })`)
   const retainedScreenshot = join(context.artifactPath, 'focus-history-retained.png')
@@ -215,6 +257,9 @@ export async function focusHistoryScenario(context) {
     persistedFixtureMigration: true,
     resetRetainsHistory: true,
     rendererReloadRetainsHistory: true,
+    restoredFocusPresetMinutes: latestMinutes,
+    explicitFocusPresetMinutes: chosenMinutes,
+    otherScopesFallbackPresetMinutes: 25,
     earlyFinishExcluded: true,
     accountIsolation: true,
     petIsolation: true,

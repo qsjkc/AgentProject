@@ -13,7 +13,7 @@ export function FocusSessionPanel({ language, accountContext, stepIntent, onStep
   const languageRef = useRef(zh)
   languageRef.current = zh
   const [snapshot, setSnapshot] = useState(null)
-  const [minutes, setMinutes] = useState(25)
+  const [selectedMinutes, setSelectedMinutes] = useState(null)
   const [intention, setIntention] = useState('')
   const [offeredStep, setOfferedStep] = useState('')
   const [now, setNow] = useState(() => performance.now())
@@ -72,6 +72,7 @@ export function FocusSessionPanel({ language, accountContext, stepIntent, onStep
     mountedRef.current = true
     snapshotRef.current = null
     setSnapshot(null)
+    setSelectedMinutes(null)
     setIntention('')
     setOfferedStep('')
     setError('')
@@ -100,6 +101,8 @@ export function FocusSessionPanel({ language, accountContext, stepIntent, onStep
   const state = isFocusSnapshotCurrent(snapshot, accountContext) ? snapshot.state : null
   const history = useMemo(() => getFocusHistorySummary(snapshot, accountContext, calendarNow), [snapshot, accountContext, calendarNow])
   const historyDate = useMemo(() => new Intl.DateTimeFormat(zh ? 'zh-CN' : 'en', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }), [zh, calendarNow])
+  const latestCompletion = history.recent[0]
+  const minutes = selectedMinutes ?? (latestCompletion ? latestCompletion.durationMs / 60000 : 25)
   const status = state?.status || 'idle'
 
   useEffect(() => {
@@ -172,6 +175,7 @@ export function FocusSessionPanel({ language, accountContext, stepIntent, onStep
 
   if (!['pig', 'cat', 'dog'].includes(accountContext?.petType) || !accountContext?.hasSession) return null
   const remaining = state ? getFocusSnapshotRemainingMs(snapshot, now) : 0
+  const remainingTime = formatFocusTime(remaining)
   const progress = state?.durationMs ? Math.round((1 - remaining / state.durationMs) * 100) : 0
   const active = status === 'running' || status === 'paused'
 
@@ -179,6 +183,7 @@ export function FocusSessionPanel({ language, accountContext, stepIntent, onStep
     <section id="companion-focus" tabIndex={-1} className="focus-panel" data-pet-type={accountContext.petType} aria-label={zh ? '陪我专注' : 'Focus together'} data-e2e="focus-panel" data-focus-status={state ? status : 'loading'} aria-busy={loading || busy}>
       {handoffHost && active && createPortal(<TodayFocusHandoff
         state={state}
+        remainingTime={remainingTime}
         busy={busy}
         language={language}
         onAction={() => {
@@ -193,7 +198,7 @@ export function FocusSessionPanel({ language, accountContext, stepIntent, onStep
         <>
           <p className="focus-copy">{zh ? '选一件小事，我在旁边安静陪你。' : 'Pick one small thing. I will quietly keep you company.'}</p>
           <div className="focus-durations" role="group" aria-label={zh ? '专注时长' : 'Focus duration'}>
-            {[15, 25, 45].map((duration) => <button key={duration} type="button" aria-pressed={minutes === duration} onClick={() => setMinutes(duration)} disabled={busy}>{duration}<span>{zh ? '分钟' : 'min'}</span></button>)}
+            {[15, 25, 45].map((duration) => <button key={duration} type="button" aria-pressed={minutes === duration} onClick={() => setSelectedMinutes(duration)} disabled={busy}>{duration}<span>{zh ? '分钟' : 'min'}</span></button>)}
           </div>
           <label className="focus-intention">
             <span>{zh ? '这次想做什么？（选填）' : 'What is on your mind? (optional)'}</span>
@@ -228,7 +233,7 @@ export function FocusSessionPanel({ language, accountContext, stepIntent, onStep
         </div>
       ) : (
         <>
-          <div className="focus-clock" style={{ '--focus-progress': `${progress}%` }}><div><span className="focus-time" role="timer" aria-live="off" aria-label={zh ? '剩余时间' : 'Time remaining'} data-e2e="focus-time">{formatFocusTime(remaining)}</span><span className="focus-clock-label" role="status">{status === 'paused' ? (zh ? '歇一会儿也没关系' : 'A pause is okay') : (zh ? '我在这里，慢慢来' : 'I’m here. Take your time.')}</span></div></div>
+          <div className="focus-clock" style={{ '--focus-progress': `${progress}%` }}><div><span className="focus-time" role="timer" aria-live="off" aria-label={zh ? '剩余时间' : 'Time remaining'} data-e2e="focus-time">{remainingTime}</span><span className="focus-clock-label" role="status">{status === 'paused' ? (zh ? '歇一会儿也没关系' : 'A pause is okay') : (zh ? '我在这里，慢慢来' : 'I’m here. Take your time.')}</span></div></div>
           {state.intention && <p className="focus-task">{state.intention}</p>}
           <div className="focus-actions">
             <button type="button" className="focus-primary" disabled={busy} onClick={() => void act(status === 'paused' ? 'resume' : 'pause')} data-e2e="focus-toggle">{status === 'paused' ? <Play size={14} aria-hidden="true" /> : <Pause size={14} aria-hidden="true" />}{status === 'paused' ? (zh ? '继续' : 'Continue') : (zh ? '暂停' : 'Pause')}</button>

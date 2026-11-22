@@ -33,6 +33,21 @@ async function expectActive(main, status, intention) {
     { description: `Today shows the ${status} focus intention` })
 }
 
+async function expectPausedTimers(main) {
+  const timers = await waitFor(() => main.evaluate(`(() => {
+    const today = document.querySelector(${JSON.stringify(`${ACTIVE}[data-focus-status="paused"] [data-e2e="today-focus-time"]`)})
+    const focus = document.querySelector(${JSON.stringify(`${FOCUS_PANEL}[data-focus-status="paused"] [data-e2e="focus-time"]`)})
+    if (!today || !focus) return null
+    return { today: today.textContent.trim(), focus: focus.textContent.trim(),
+      role: today.getAttribute('role'), live: today.getAttribute('aria-live') }
+  })()`), { description: 'the paused Today and focus timers are both rendered' })
+  assert(/^\d{2}:[0-5]\d$/.test(timers.today), 'Today should show the remaining focus time as MM:SS')
+  assertEqual(timers.today, timers.focus, 'The Today clock differs from the paused focus timer')
+  assertEqual(timers.role, 'timer', 'The Today clock should expose a timer role')
+  assertEqual(timers.live, 'off', 'The Today clock should keep live announcements off')
+  return timers.today
+}
+
 function expectNoActive(main, petType) {
   return waitFor(() => main.evaluate(`(() => {
     const panel = document.querySelector(${JSON.stringify(FOCUS_PANEL)})
@@ -107,6 +122,7 @@ async function verifyFocusHandoff(context, relationships) {
   await expectActive(main, 'paused', intention)
   const paused = await readFocusState(main)
   assertEqual(paused.status, 'paused', 'Focus did not pause')
+  const pausedClock = await expectPausedTimers(main)
   await main.input(CHAT_DRAFT, draft)
   await main.click(REQUIRED_SELECTORS.mainTabKnowledge)
   await main.waitForSelector(`${REQUIRED_SELECTORS.mainTabKnowledge}[aria-pressed="true"]`)
@@ -122,6 +138,7 @@ async function verifyFocusHandoff(context, relationships) {
   assertEqual(reopened.id, paused.id, 'Opening Today replaced paused focus')
   assertEqual(reopened.revision, paused.revision, 'Opening Today mutated paused focus')
   assertEqual(reopened.remainingMs, paused.remainingMs, 'Opening Today advanced paused focus')
+  assertEqual(await expectPausedTimers(main), pausedClock, 'Reopening Today changed the displayed paused time')
   assertEqual(await main.evaluate(`document.querySelector(${JSON.stringify(CHAT_DRAFT)})?.value`), draft, 'Opening Today lost the chat draft')
   const screenshot = await main.screenshot(join(context.artifactPath, 'today-focus-paused.png'))
 
@@ -145,5 +162,5 @@ async function verifyFocusHandoff(context, relationships) {
 
   await main.click('[data-e2e="focus-end"]')
   await expectNoActive(main, 'pig')
-  return { runningNavigation: true, hiddenPanelPreservesPause: true, sameSessionResumes: true, petIsolation: true, clearsAfterEnd: true, screenshot }
+  return { runningNavigation: true, hiddenPanelPreservesPause: true, pausedTimersMatch: true, sameSessionResumes: true, petIsolation: true, clearsAfterEnd: true, screenshot }
 }
