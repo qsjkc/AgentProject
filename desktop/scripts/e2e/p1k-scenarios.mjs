@@ -342,13 +342,32 @@ export async function mainReloadDuringIntentScenario(context) {
 }
 
 export async function accountSwitchRaceScenario(context) {
+  const { main } = context.pages
   await ensureBaseBridge(context)
   await resetAuthenticated(context, USERS.A)
+  // The dashboard appears before the initial relationship load replaces its operation capability.
+  await main.waitForSelector(`${REQUIRED_SELECTORS.relationshipSummary}[aria-busy="false"]`)
+  await expectSnapshot(main, (value) => (
+    value.account?.userId === USERS.A.id
+    && value.account?.petType === 'pig'
+    && value.renderer?.[0]?.userId === USERS.A.id
+    && value.renderer?.[0]?.relationshipId === createRelationship(USERS.A).id
+  ), 'account A relationship ready before the delayed refresh')
+
+  const requestsBeforeRefresh = context.stub.requests.length
   const hold = context.stub.holdNext('GET', '/api/v1/pets/pig/relationship')
-  const request = callE2e(context.pages.main, 'triggerRelationshipRefresh')
-  await withTimeout(hold.arrived, 10_000, 'delayed account A relationship request')
-  await switchAccountViaUi(context, USERS.B)
-  hold.release()
+  const request = callE2e(main, 'triggerRelationshipRefresh')
+  let held
+  try {
+    held = await withTimeout(Promise.race([
+      hold.arrived,
+      request.then((result) => assert(false, 'Account A refresh finished before the held request arrived', { result })),
+    ]), 10_000, 'delayed account A relationship request')
+    assert(held.sequence > requestsBeforeRefresh && held.authorization, 'Expected a new authenticated relationship request from account A')
+    await switchAccountViaUi(context, USERS.B)
+  } finally {
+    hold.release()
+  }
   await request
   const snapshot = await expectSnapshot(
     context.pages.main,
@@ -396,6 +415,7 @@ export async function accountSwitchRaceScenario(context) {
     account: intentSnapshot.account,
     relationship: intentSnapshot.relationship,
     activityJournal: intentSnapshot.activityJournal,
+    delayedAccountARequestSequence: held.sequence,
   }
 }
 
