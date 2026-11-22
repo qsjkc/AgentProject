@@ -4,8 +4,10 @@ import base64
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
+import textwrap
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -17,6 +19,131 @@ REQUESTED = "a" * 40
 PUBLISHED = "b" * 40
 PRIOR = "c" * 40
 STALE = "d" * 40
+
+
+class BackupVisibilityTests(unittest.TestCase):
+    ARTIFACT_REQUEST = "api --include repos/test/project/actions/artifacts/123"
+    MAIN_REQUEST = "api repos/test/project/git/ref/heads/main --jq .object.sha"
+
+    def confirm_backup(self, statuses, metadata_changes=None, main_sha=REQUESTED):
+        bash = shutil.which("bash")
+        if os.name == "nt" and shutil.which("git"):
+            git_bash = Path(shutil.which("git")).resolve().parents[1] / "bin/bash.exe"
+            if git_bash.is_file():
+                bash = str(git_bash)
+        if not bash:
+            self.skipTest("Bash is required to execute the backup gate")
+
+        path = Path(__file__).resolve().parents[1] / ".github/workflows/deployment-storage.yml"
+        step = path.read_text(encoding="utf-8").split(
+            "      - name: Confirm the backup and current main before retirement\n", 1
+        )[1].split("\n      - name:", 1)[0]
+        run_block = textwrap.dedent(step.split("        run: |\n", 1)[1])
+        metadata = {
+            "id": 123, "name": "retired-server-images-backup-attempt-1", "expired": False,
+            "size_in_bytes": 100, "digest": f"sha256:{'1' * 64}",
+            "expires_at": "2026-12-22T00:00:00Z",
+            "workflow_run": {"id": 321, "head_sha": REQUESTED, "head_branch": "main"},
+        }
+        metadata.update(metadata_changes or {})
+        mocks = r'''
+gh() {
+  printf '%s\n' "$*" >> "$TEST_CALLS"
+  case "$*" in
+    "$TEST_ARTIFACT_REQUEST")
+      local requests statuses status
+      mapfile -t requests < "$TEST_CALLS"
+      read -r -a statuses <<< "$TEST_STATUSES"
+      status="${statuses[${#requests[@]}-1]}"
+      if [[ "$status" != transport ]]; then
+        printf 'HTTP/2.0 %s Test\nContent-Type: application/json\r\n\r\n%s\n' "$status" "$TEST_METADATA"
+      fi
+      if [[ "$status" != 200 ]]; then
+        echo 'fake private diagnostic (HTTP 404)' >&2
+        return 1
+      fi
+      ;;
+    "$TEST_MAIN_REQUEST") printf '%s\n' "$TEST_MAIN_SHA" ;;
+    *) return 2 ;;
+  esac
+}
+sleep() { printf '%s\n' "$1" >> "$TEST_WAITS"; }
+jq() {
+  local input
+  input="$(cat)"
+  printf '%s\n' "$input" > "$TEST_VALIDATOR_INPUT"
+  if type -P jq > /dev/null; then
+    command jq "$@" <<< "$input"
+  elif [[ "$TEST_VALIDATOR_REJECTS" == no ]]; then
+    printf '{"status":"passed","backupArtifactId":"%s"}\n' "$BACKUP_ARTIFACT_ID"
+  else
+    return 1
+  fi
+}
+'''
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            evidence = root / "deployment-storage-retire/evidence/backup.json"
+            evidence.parent.mkdir(parents=True)
+            calls = root / "calls"
+            waits = root / "waits"
+            validator_input = root / "validator-input"
+            env = {
+                **os.environ, "GITHUB_REPOSITORY": "test/project", "BACKUP_OUTCOME": "success",
+                "BACKUP_ARTIFACT_ID": "123", "GITHUB_RUN_ID": "321", "GITHUB_RUN_ATTEMPT": "1",
+                "GITHUB_SHA": REQUESTED, "RUNNER_TEMP": root.as_posix(),
+                "TEST_CALLS": calls.as_posix(), "TEST_WAITS": waits.as_posix(),
+                "TEST_ARTIFACT_REQUEST": self.ARTIFACT_REQUEST, "TEST_MAIN_REQUEST": self.MAIN_REQUEST,
+                "TEST_STATUSES": " ".join(map(str, statuses)), "TEST_MAIN_SHA": main_sha,
+                "TEST_METADATA": json.dumps(metadata),
+                "TEST_VALIDATOR_INPUT": validator_input.as_posix(),
+                "TEST_VALIDATOR_REJECTS": "yes" if metadata_changes else "no",
+            }
+            result = subprocess.run([bash, "--noprofile", "--norc"], input=mocks + run_block,
+                                    text=True, capture_output=True, env=env, timeout=10)
+            self.assertEqual(validator_input.exists(), 200 in statuses)
+            if validator_input.exists():
+                self.assertEqual(json.loads(validator_input.read_text()), metadata)
+            return (result, calls.read_text().splitlines(), waits.read_text().splitlines() if waits.exists() else [],
+                    evidence.read_text() if evidence.exists() else "")
+
+    def test_404_retries_the_exact_artifact_before_rechecking_main(self):
+        result, calls, waits, evidence = self.confirm_backup((404, 200))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(calls, [self.ARTIFACT_REQUEST, self.ARTIFACT_REQUEST, self.MAIN_REQUEST])
+        self.assertEqual(waits, ["1"])
+        self.assertEqual(json.loads(evidence)["backupArtifactId"], "123")
+        self.assertEqual(json.loads(evidence)["status"], "passed")
+
+    def test_persistent_404_is_bounded_and_other_errors_do_not_retry(self):
+        cases = (
+            ((404,) * 5, ["1", "2", "3", "4"], "(HTTP 404)"),
+            ((403,), [], "(HTTP 403)"),
+            ((500,), [], "(HTTP 500)"),
+            (("transport",), [], "from GitHub"),
+        )
+        for statuses, expected_waits, expected_error in cases:
+            with self.subTest(statuses=statuses):
+                result, calls, waits, evidence = self.confirm_backup(statuses)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(calls, [self.ARTIFACT_REQUEST] * len(statuses))
+                self.assertEqual(waits, expected_waits)
+                self.assertEqual(evidence, "")
+                self.assertIn(expected_error, result.stderr)
+                self.assertNotIn("fake private diagnostic", result.stderr)
+
+    def test_visible_backup_must_match_and_main_must_still_be_current(self):
+        result, calls, waits, evidence = self.confirm_backup((404, 200), {"digest": "invalid"})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(calls, [self.ARTIFACT_REQUEST, self.ARTIFACT_REQUEST])
+        self.assertEqual(waits, ["1"])
+        self.assertEqual(evidence, "")
+
+        result, calls, waits, evidence = self.confirm_backup((200,), main_sha=STALE)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(calls, [self.ARTIFACT_REQUEST, self.MAIN_REQUEST])
+        self.assertEqual(waits, [])
+        self.assertEqual(json.loads(evidence)["status"], "passed")
 
 
 class DeploymentStorageTests(unittest.TestCase):

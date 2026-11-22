@@ -167,7 +167,26 @@ jobs:
             echo 'Retirement requires a successful immutable archive backup' >&2
             exit 1
           fi
-          backup="$(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$BACKUP_ARTIFACT_ID")"
+          # A newly uploaded backup can reach the artifact API a few seconds later.
+          for attempt in 1 2 3 4 5; do
+            if response="$(gh api --include "repos/$GITHUB_REPOSITORY/actions/artifacts/$BACKUP_ARTIFACT_ID" 2>/dev/null)"; then
+              response="${response//$'\r\n'/$'\n'}"
+              backup="${response#*$'\n\n'}"
+              break
+            fi
+            status_line="${response%%$'\n'*}"
+            if [[ "$status_line" =~ ^HTTP/[0-9.]+[[:space:]]+([0-9]{3})([[:space:]]|$) ]]; then
+              status="${BASH_REMATCH[1]}"
+              if [[ "$status" == 404 && "$attempt" -lt 5 ]]; then
+                sleep "$attempt"
+                continue
+              fi
+              printf 'Could not read archive backup metadata (HTTP %s)\n' "$status" >&2
+            else
+              echo 'Could not read archive backup metadata from GitHub' >&2
+            fi
+            exit 1
+          done
           jq -e --arg id "$BACKUP_ARTIFACT_ID" --arg run "$GITHUB_RUN_ID" --arg sha "$GITHUB_SHA" \
             --arg name "retired-server-images-backup-attempt-$GITHUB_RUN_ATTEMPT" '
             select((.id | tostring) == $id and .name == $name and .expired == false and .size_in_bytes > 0
