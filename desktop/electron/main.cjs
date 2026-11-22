@@ -151,14 +151,17 @@ const e2eRuntime = {
   lastCompletedRequest: null,
   activityJournal: [],
   reminderNotification: { outcome: 'show', attempts: 0 },
+  trayMenu: null,
 }
 
+const TRAY_OPEN_TODAY_ID = 'tray-open-today'
 const trayMessages = {
   'zh-CN': {
     trayTooltip: 'Detachym 桌宠',
     showPet: '显示桌宠',
     resetPetPosition: '重置桌宠位置',
     openMainPanel: '打开主面板',
+    openToday: '今天一起',
     toggleQuickChat: '切换快捷聊天',
     autoLaunch: '开机启动',
     muteNotifications: '静音通知',
@@ -169,6 +172,7 @@ const trayMessages = {
     showPet: 'Show Desktop Pet',
     resetPetPosition: 'Reset Pet Position',
     openMainPanel: 'Open Main Panel',
+    openToday: 'Today together',
     toggleQuickChat: 'Toggle Quick Chat',
     autoLaunch: 'Launch at Startup',
     muteNotifications: 'Mute Notifications',
@@ -2405,6 +2409,11 @@ function buildTrayMenu() {
     { label: messages.showPet, click: () => showPetWindow() },
     { label: messages.resetPetPosition, click: () => resetPetPosition() },
     { label: messages.openMainPanel, click: openMainPanel },
+    {
+      id: TRAY_OPEN_TODAY_ID,
+      label: messages.openToday,
+      click: () => void openTodayForContext(getTodayNavigationContext()),
+    },
     { label: messages.toggleQuickChat, click: toggleQuickChat },
     {
       label: messages.autoLaunch,
@@ -2439,8 +2448,7 @@ function createTray() {
     return
   }
   tray = new Tray(getTrayIcon())
-  tray.setToolTip(getLanguageMessages().trayTooltip)
-  tray.setContextMenu(buildTrayMenu())
+  refreshTray()
   tray.on('double-click', openMainPanel)
 }
 
@@ -2450,7 +2458,9 @@ function refreshTray() {
   }
 
   tray.setToolTip(getLanguageMessages().trayTooltip)
-  tray.setContextMenu(buildTrayMenu())
+  const menu = buildTrayMenu()
+  tray.setContextMenu(menu)
+  if (isE2e) e2eRuntime.trayMenu = menu
 }
 
 function switchPetFromMainPanel(payload = {}) {
@@ -2865,6 +2875,12 @@ async function handleE2eControl(event, method, ...args) {
   if (method === 'simulateSystemResume') return powerMonitor.emit('resume')
   if (method === 'showWindow') return showE2eWindow(args[0])
   if (method === 'hideWindow') return hideE2eWindow(args[0])
+  if (method === 'clickTrayToday') {
+    const item = e2eRuntime.trayMenu?.getMenuItemById(TRAY_OPEN_TODAY_ID)
+    if (!item?.enabled || !item.visible) return false
+    item.click({}, null, null)
+    return item.label
+  }
   if (method === 'setReminderNotificationOutcome') {
     if (!['show', 'failed'].includes(args[0])) return false
     e2eRuntime.reminderNotification.outcome = args[0]
