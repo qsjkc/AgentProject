@@ -12,6 +12,7 @@ import { PetWeeklySummaryPanel } from './components/PetWeeklySummaryPanel'
 import { FocusSessionPanel } from './components/FocusSessionPanel'
 import { DailyStepPanel } from './components/DailyStepPanel'
 import { TodayReminderComposer } from './components/TodayReminderComposer'
+import { TodayReminderAgenda } from './components/TodayReminderAgenda'
 import { ChatMessageStream } from './components/ChatMessageStream'
 import { DesktopReleasePanel } from './components/DesktopReleasePanel'
 import { normalizeApiBaseUrl } from './shared/api-base-url'
@@ -208,6 +209,23 @@ function focusTodaySection() {
   const today = document.getElementById('companion-today')
   today?.scrollIntoView({ block: 'start' })
   today?.focus({ preventScroll: true })
+}
+
+const REMINDER_AGENDA_TARGETS = {
+  delivered: 'delivered-reminders',
+  upcoming: 'upcoming-reminders',
+  recurring: 'recurring-reminders',
+}
+
+function openReminderAgendaTarget(destination) {
+  const target = document.getElementById(REMINDER_AGENDA_TARGETS[destination])
+  target?.scrollIntoView({ block: 'start' })
+  target?.focus({ preventScroll: true })
+}
+
+function refreshReminderAgenda() {
+  window.dispatchEvent(new Event('detachym:reminders-changed'))
+  window.dispatchEvent(new Event('detachym:reminder-series-changed'))
 }
 
 function PetDailySummaryPanel({ language, petType, summary, loading, onRetry }) {
@@ -745,6 +763,7 @@ function MainPanelApp() {
   const [focusStepIntent, setFocusStepIntent] = useState(null)
   const [todayNavigation, setTodayNavigation] = useState(null)
   const [todayReminderPrefill, setTodayReminderPrefill] = useState(null)
+  const [reminderAgendaSources, setReminderAgendaSources] = useState(null)
   const pendingFocusNavigationRef = useRef(false)
   const tabRef = useRef('chat')
   const intentOverrideRef = useRef(null)
@@ -824,6 +843,27 @@ function MainPanelApp() {
   const todayContextKey = JSON.stringify([
     apiBaseUrl, user?.id, currentPetType, activeSessionSnapshotRef.current?.generation, accountRequestEpochRef.current,
   ])
+  const todayContextKeyRef = useRef(todayContextKey)
+  todayContextKeyRef.current = todayContextKey
+  const reminderAgendaObservers = useMemo(() => {
+    const update = (source, snapshot) => {
+      setReminderAgendaSources((current) => {
+        if (todayContextKeyRef.current !== todayContextKey) return current
+        return {
+          ...(current?.contextKey === todayContextKey ? current : { contextKey: todayContextKey }),
+          [source]: snapshot,
+        }
+      })
+    }
+    return {
+      delivered: (snapshot) => update('delivered', snapshot),
+      scheduled: (snapshot) => update('scheduled', snapshot),
+      series: (snapshot) => update('series', snapshot),
+    }
+  }, [todayContextKey])
+  useEffect(() => {
+    setReminderAgendaSources((current) => current?.contextKey === todayContextKey ? current : null)
+  }, [todayContextKey])
   const handleFocusStepIntent = useCallback((handled) => {
     setFocusStepIntent((current) => current === handled ? null : current)
   }, [])
@@ -3157,7 +3197,7 @@ function MainPanelApp() {
     <section key="companion-today" className="main-today" id="companion-today" tabIndex={-1} aria-labelledby="companion-today-heading" data-e2e="companion-today">
       <h2 id="companion-today-heading"><Sprout size={17} aria-hidden="true" />{language === 'zh-CN' ? '今天一起' : 'Today together'}</h2>
       <DailyStepPanel
-        key={todayContextKey}
+        key={`daily-step-${todayContextKey}`}
         language={language}
         accountContext={{ hasSession: authenticated, server: apiBaseUrl, userId: user?.id, petType: currentPetType }}
         onFocus={petDataReady ? handleFocusTodayStep : undefined}
@@ -3171,6 +3211,14 @@ function MainPanelApp() {
         prefill={todayReminderPrefill?.contextKey === todayContextKey ? todayReminderPrefill : null}
         onPrefillHandled={handleTodayReminderPrefill}
       />
+      {petDataReady && <TodayReminderAgenda
+        key={`today-agenda-${todayContextKey}`}
+        language={language}
+        sources={reminderAgendaSources?.contextKey === todayContextKey ? reminderAgendaSources : null}
+        accountContext={{ userId: user?.id, petType: currentPetType }}
+        onNavigate={openReminderAgendaTarget}
+        onRefresh={refreshReminderAgenda}
+      />}
       <PetDailySummaryPanel
         language={language}
         petType={currentPetType}
@@ -3370,28 +3418,33 @@ function MainPanelApp() {
                 }}
               />
               <PendingReminderPanel
-                key={`${user?.id || 'anonymous'}:${currentPetType}:${activeSessionSnapshotRef.current?.generation ?? 'none'}`}
+                key={`reminders-${todayContextKey}`}
                 language={language}
                 petType={currentPetType}
                 accountContext={{
                   ...getCurrentMainPanelAccountContext(),
+                  server: apiBaseUrl,
                   relationshipId: petRelationship?.id ?? null,
                   epoch: accountRequestEpochRef.current,
                 }}
                 onCompleted={handleReminderCompleted}
+                onDeliveredAgenda={reminderAgendaObservers.delivered}
+                onScheduledAgenda={reminderAgendaObservers.scheduled}
                 highlightReminderId={petOnboardingIsCurrent
                   ? petOnboardingState?.reminder_id
                   : null}
               />
               <RecurringReminderPanel
-                key={`recurring-${user?.id || 'anonymous'}:${currentPetType}:${activeSessionSnapshotRef.current?.generation ?? 'none'}:${accountRequestEpochRef.current}`}
+                key={`recurring-${todayContextKey}`}
                 language={language}
                 petType={currentPetType}
                 accountContext={{
                   ...getCurrentMainPanelAccountContext(),
+                  server: apiBaseUrl,
                   relationshipId: petRelationship?.id ?? null,
                   epoch: accountRequestEpochRef.current,
                 }}
+                onAgendaSnapshot={reminderAgendaObservers.series}
               />
               </>}
               <VoiceSettingsPanel

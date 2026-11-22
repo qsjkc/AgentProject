@@ -121,36 +121,54 @@ export function PendingReminderPanel({
   petType,
   accountContext,
   onCompleted,
+  onDeliveredAgenda,
+  onScheduledAgenda,
   highlightReminderId = null,
 }) {
-  const [reminders, setReminders] = useState([])
+  const [agenda, setAgenda] = useState({ status: 'loading', rows: [] })
+  const reminders = agenda.rows
   const [loading, setLoading] = useState(true)
   const [savingId, setSavingId] = useState(null)
   const [retryingId, setRetryingId] = useState(null)
   const [skippingId, setSkippingId] = useState(null)
   const [error, setError] = useState('')
   const currentContextRef = useRef(accountContext)
+  const queuedRefreshRef = useRef(false)
+  const loadRef = useRef(null)
   const operationsRef = useRef(null)
   if (!operationsRef.current) operationsRef.current = createReminderPanelOperations()
   const { loadGate, actionGate } = operationsRef.current
   currentContextRef.current = accountContext
   const copy = getCopy(language, petType)
 
-  const loadReminders = useCallback(async ({ silent = false } = {}) => {
+  useEffect(() => { onDeliveredAgenda?.(agenda) }, [agenda, onDeliveredAgenda])
+
+  const refreshQueued = useCallback(() => {
+    if (!queuedRefreshRef.current) return
+    queuedRefreshRef.current = false
+    void loadRef.current({ silent: true, queue: true })
+  }, [])
+
+  const loadReminders = useCallback(async ({ silent = false, queue = false } = {}) => {
     const requestContext = operationsRef.current.beginLoad(currentContextRef.current)
-    if (!requestContext) return
+    if (!requestContext) {
+      if (queue) queuedRefreshRef.current = true
+      return
+    }
+    queuedRefreshRef.current = false
     if (!silent) {
       setLoading(true)
     }
     try {
       const operationContext = await captureApiOperationContext(requestContext, 'pet')
       const items = await getPendingReminders(petType, null, true, operationContext)
+      if (!Array.isArray(items)) throw new Error('invalid_reminder_list')
       commitAccountOperation(
         loadGate,
         requestContext,
         currentContextRef.current,
         () => {
-          setReminders(items)
+          setAgenda({ status: 'ready', rows: items })
           setError('')
         },
       )
@@ -159,18 +177,23 @@ export function PendingReminderPanel({
         loadGate,
         requestContext,
         currentContextRef.current,
-        () => setError(copy.loadFailed),
+        () => {
+          setAgenda((current) => ({ ...current, status: 'error' }))
+          setError(copy.loadFailed)
+        },
       )
     } finally {
-      commitAccountOperation(
+      const current = commitAccountOperation(
         loadGate,
         requestContext,
         currentContextRef.current,
         () => setLoading(false),
       )
       operationsRef.current.finishLoad(requestContext)
+      if (current) refreshQueued()
     }
   }, [
+    accountContext?.server,
     accountContext?.session?.generation,
     accountContext?.session?.token,
     accountContext?.userId,
@@ -178,11 +201,13 @@ export function PendingReminderPanel({
     copy.loadFailed,
     loadGate,
     petType,
+    refreshQueued,
   ])
+  loadRef.current = loadReminders
 
   useEffect(() => {
     void loadReminders()
-    const refresh = () => { void loadReminders({ silent: true }) }
+    const refresh = () => { void loadReminders({ silent: true, queue: true }) }
     window.addEventListener('detachym:reminders-changed', refresh)
     const timer = window.setInterval(() => {
       void loadReminders({ silent: true })
@@ -194,14 +219,21 @@ export function PendingReminderPanel({
   }, [loadReminders])
 
   useEffect(() => () => {
+    queuedRefreshRef.current = false
     operationsRef.current.invalidate()
   }, [
+    accountContext?.server,
     accountContext?.session?.generation,
     accountContext?.session?.token,
     accountContext?.userId,
     accountContext?.epoch,
     petType,
   ])
+
+  const finishAction = (requestContext) => {
+    operationsRef.current.finishAction(requestContext)
+    if (actionGate.isCurrent(requestContext, currentContextRef.current)) refreshQueued()
+  }
 
   const handleComplete = async (reminder) => {
     if (savingId !== null || retryingId !== null || skippingId !== null) {
@@ -219,10 +251,11 @@ export function PendingReminderPanel({
         actionGate,
         requestContext,
         currentContextRef.current,
-        () => setReminders((current) => current.filter((item) => item.id !== reminder.id)),
+        () => setAgenda((current) => ({ ...current, rows: current.rows.filter((item) => item.id !== reminder.id) })),
       )) {
         return
       }
+      window.dispatchEvent(new Event('detachym:reminders-changed'))
       await onCompleted?.(completed, requestContext)
     } catch {
       commitAccountOperation(
@@ -238,7 +271,7 @@ export function PendingReminderPanel({
         currentContextRef.current,
         () => setSavingId(null),
       )
-      operationsRef.current.finishAction(requestContext)
+      finishAction(requestContext)
     }
   }
 
@@ -258,9 +291,10 @@ export function PendingReminderPanel({
         actionGate,
         requestContext,
         currentContextRef.current,
-        () => setReminders((current) => current.map((item) => (
-          item.id === reminder.id ? updated : item
-        ))),
+        () => setAgenda((current) => ({
+          ...current,
+          rows: current.rows.map((item) => item.id === reminder.id ? updated : item),
+        })),
       )
     } catch {
       commitAccountOperation(
@@ -276,7 +310,7 @@ export function PendingReminderPanel({
         currentContextRef.current,
         () => setRetryingId(null),
       )
-      operationsRef.current.finishAction(requestContext)
+      finishAction(requestContext)
     }
   }
 
@@ -292,12 +326,13 @@ export function PendingReminderPanel({
     try {
       const operationContext = await captureApiOperationContext(requestContext, 'pet')
       await skipReminderOccurrence(reminder.id, operationContext)
-      commitAccountOperation(
+      const committed = commitAccountOperation(
         actionGate,
         requestContext,
         currentContextRef.current,
-        () => setReminders((current) => current.filter((item) => item.id !== reminder.id)),
+        () => setAgenda((current) => ({ ...current, rows: current.rows.filter((item) => item.id !== reminder.id) })),
       )
+      if (committed) window.dispatchEvent(new Event('detachym:reminders-changed'))
     } catch {
       commitAccountOperation(
         actionGate,
@@ -312,14 +347,14 @@ export function PendingReminderPanel({
         currentContextRef.current,
         () => setSkippingId(null),
       )
-      operationsRef.current.finishAction(requestContext)
+      finishAction(requestContext)
     }
   }
 
   return (
     <>
-    <UpcomingReminderPanel language={language} petType={petType} accountContext={accountContext} />
-    <section className="pending-reminder-panel" aria-label={copy.title}>
+    <UpcomingReminderPanel language={language} petType={petType} accountContext={accountContext} onAgendaSnapshot={onScheduledAgenda} />
+    <section id="delivered-reminders" tabIndex={-1} className="pending-reminder-panel" aria-label={copy.title}>
       <div className="pending-reminder-header">
         <div className="sidebar-title">{copy.title}</div>
         <button

@@ -1,0 +1,54 @@
+.today-reminder-agenda {
+  min-width: 0;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid #dce3d6;
+  color: #32493e;
+}
+
+.today-reminder-agenda h3 { margin: 0; font-size: 13px; line-height: 1.5; }
+.today-agenda-list { display: grid; gap: 4px; margin: 5px 0 0; padding: 0; list-style: none; }
+
+.today-agenda-item {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+  padding: 5px 6px;
+  border: 1px solid #d5e1d2;
+  border-radius: 7px;
+  background: #edf4e9;
+  color: inherit;
+  cursor: pointer;
+  text-align: start;
+}
+
+.today-agenda-item:hover { background: #e1eddd; }
+.today-agenda-item time { font-size: 11px; line-height: 1.5; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.today-agenda-item-copy { display: grid; gap: 1px; }
+.today-agenda-item-title { font-size: 12px; line-height: 1.4; overflow-wrap: anywhere; }
+.today-agenda-item-status { color: #52644e; font-size: 10px; line-height: 1.4; }
+.today-agenda-item[data-status='due'] .today-agenda-item-status { color: #884334; font-weight: 600; }
+.today-agenda-status { margin: 5px 0 0; color: #52644e; font-size: 11px; line-height: 1.5; }
+.today-reminder-agenda[data-state='error'] .today-agenda-status { color: #884334; }
+
+.today-agenda-link {
+  display: block;
+  width: fit-content;
+  min-height: 24px;
+  padding: 2px 0;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: #405b3d;
+  cursor: pointer;
+  font-size: 11px;
+  line-height: 1.4;
+  text-align: start;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.today-reminder-agenda button:focus-visible { outline: 2px solid #587553; outline-offset: 2px; }

@@ -5,6 +5,7 @@ import './focus-session.test.mjs'
 import './focus-history.test.mjs'
 import './daily-step.test.mjs'
 import './today-reminder.test.mjs'
+import './today-reminder-agenda.test.mjs'
 import './pet-species-parity.test.mjs'
 import './voice-auth.test.mjs'
 import './voice-rtc-loading.test.mjs'
@@ -1800,11 +1801,13 @@ assert.equal(normalizePetOnboardingMainStateResponse({
 let latestBroadcastState = { ...onboardingCreated.state, revision: 7 }
 let broadcastLoading = true
 const broadcastListeners = []
+const removedBroadcastListeners = []
 const onboardingBroadcastPayloads = []
 const broadcastSender = {
   isDestroyed: () => false,
   isLoading: () => broadcastLoading,
   once: (event, listener) => broadcastListeners.push({ event, listener }),
+  removeListener: (event, listener) => removedBroadcastListeners.push({ event, listener }),
 }
 const petBroadcastWindow = {
   __role: 'pet',
@@ -1831,6 +1834,23 @@ assert.equal(onboardingBroadcaster.sendLatest({
   __role: 'quick-chat',
 }), false)
 assert.equal(onboardingBroadcastPayloads.length, 1)
+
+// A send inside did-finish-load can still see isLoading and queue a callback
+// after that event has begun. The next send must recover without a second load.
+const mainBroadcastWindow = { ...petBroadcastWindow, __role: 'main-panel' }
+broadcastLoading = true
+assert.equal(onboardingBroadcaster.sendLatest(mainBroadcastWindow), true)
+assert.equal(onboardingBroadcaster.isPending(mainBroadcastWindow), true)
+const staleBroadcast = broadcastListeners[1]
+broadcastLoading = false
+latestBroadcastState = { ...latestBroadcastState, revision: 9 }
+assert.equal(onboardingBroadcaster.sendLatest(mainBroadcastWindow), true)
+assert.equal(onboardingBroadcaster.isPending(mainBroadcastWindow), false)
+assert.deepEqual(removedBroadcastListeners, [staleBroadcast])
+assert.equal(onboardingBroadcastPayloads.length, 2)
+assert.equal(onboardingBroadcastPayloads[1].revision, 9)
+staleBroadcast.listener()
+assert.equal(onboardingBroadcastPayloads.length, 2)
 
 const circularTelemetry = {
   event: 'spoofed-event',

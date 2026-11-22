@@ -3,7 +3,7 @@ function createPetOnboardingStateBroadcaster({
   projectStateForRole,
   send,
 } = {}) {
-  const pendingSenders = new WeakSet()
+  const pendingLoads = new WeakMap()
 
   const getTarget = (windowInstance) => {
     if (
@@ -37,26 +37,34 @@ function createPetOnboardingStateBroadcaster({
     if (!target || target.sender.isDestroyed?.()) {
       return false
     }
-    if (pendingSenders.has(target.sender)) {
-      return true
-    }
-    if (!target.sender.isLoading?.()) {
+    const { sender } = target
+    const pendingLoad = pendingLoads.get(sender)
+    if (!sender.isLoading?.()) {
+      if (pendingLoad) {
+        pendingLoads.delete(sender)
+        sender.removeListener?.('did-finish-load', pendingLoad)
+      }
       return deliverLatest(windowInstance)
     }
-    if (typeof target.sender.once !== 'function') {
+    if (pendingLoad) {
+      return true
+    }
+    if (typeof sender.once !== 'function') {
       return false
     }
-    pendingSenders.add(target.sender)
-    target.sender.once('did-finish-load', () => {
-      pendingSenders.delete(target.sender)
+    const onFinishLoad = () => {
+      if (pendingLoads.get(sender) !== onFinishLoad) return
+      pendingLoads.delete(sender)
       deliverLatest(windowInstance)
-    })
+    }
+    pendingLoads.set(sender, onFinishLoad)
+    sender.once('did-finish-load', onFinishLoad)
     return true
   }
 
   const isPending = (windowInstance) => {
     const sender = windowInstance?.webContents
-    return Boolean(sender && pendingSenders.has(sender))
+    return Boolean(sender && pendingLoads.has(sender))
   }
 
   return { isPending, sendLatest }
