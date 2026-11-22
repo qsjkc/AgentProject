@@ -750,7 +750,7 @@ function MainPanelApp() {
   const [petRelationship, setPetRelationship] = useState(null)
   const [petRelationshipLoading, setPetRelationshipLoading] = useState(false)
   const [petRelationshipError, setPetRelationshipError] = useState(false)
-  const [readyRelationshipContext, setReadyRelationshipContext] = useState(null)
+  const [settledCompanionContext, setSettledCompanionContext] = useState(null)
   const [petDailySummary, setPetDailySummary] = useState(null)
   const [petDailySummaryLoading, setPetDailySummaryLoading] = useState(false)
   const [petOnboardingState, setPetOnboardingState] = useState(null)
@@ -830,14 +830,15 @@ function MainPanelApp() {
     && Number(intentOverride.semantic?.relationshipId) === Number(petRelationship?.id)
   )
   const effectiveTab = intentOverrideIsCurrent ? 'chat' : tab
-  const petDataReady = Boolean(
+  const localFocusReady = Boolean(
     authenticated
-    && readyRelationshipContext
-    && readyRelationshipContext.epoch === accountRequestEpochRef.current
-    && Number(readyRelationshipContext.userId) === Number(user?.id)
-    && readyRelationshipContext.petType === currentPetType
-    && isSessionSnapshotCurrent(readyRelationshipContext.session, activeSessionSnapshotRef.current)
+    && settledCompanionContext
+    && settledCompanionContext.epoch === accountRequestEpochRef.current
+    && Number(settledCompanionContext.userId) === Number(user?.id)
+    && settledCompanionContext.petType === currentPetType
+    && isSessionSnapshotCurrent(settledCompanionContext.session, activeSessionSnapshotRef.current)
   )
+  const petDataReady = localFocusReady && settledCompanionContext.relationshipReady
   const petSelectionPending = savingPet || petRelationshipLoading
     || (!petDataReady && !petRelationshipError)
   const todayContextKey = JSON.stringify([
@@ -893,7 +894,7 @@ function MainPanelApp() {
       }
     })
     return () => window.cancelAnimationFrame(frame)
-  }, [authenticated, currentPetType, effectiveTab, focusNavigationVersion, petDataReady, petRelationshipError])
+  }, [authenticated, currentPetType, effectiveTab, focusNavigationVersion, localFocusReady, petRelationshipError])
 
   useEffect(() => {
     pendingFocusNavigationRef.current = false
@@ -1133,8 +1134,9 @@ function MainPanelApp() {
     setPetRelationshipError(false)
 
     let cachedRelationship = null
+    let operationContext = null
     try {
-      const operationContext = await captureApiOperationContext(requestContext, 'pet')
+      operationContext = await captureApiOperationContext(requestContext, 'pet')
       if (
         relationshipRequestRef.current !== requestId
         || !isMainPanelAccountRequestCurrent(requestContext)
@@ -1185,7 +1187,7 @@ function MainPanelApp() {
         || Number(cacheResult.relationship?.user_id) !== Number(requestContext.userId)
       ) throw new Error('relationship_cache_unavailable')
       activeAuthoritativeContextRef.current = cacheResult.authoritative
-      setReadyRelationshipContext(requestContext)
+      setSettledCompanionContext({ ...requestContext, relationshipReady: true })
       setPetRelationshipError(false)
       return true
     } catch (error) {
@@ -1194,6 +1196,11 @@ function MainPanelApp() {
         && isMainPanelAccountRequestCurrent(requestContext)
       ) {
         if (!cachedRelationship) setPetRelationship(null)
+        // An optional relationship read can fail after the pet scope is already validated.
+        if (operationContext) setSettledCompanionContext((previous) => {
+          if (!isMainPanelAccountRequestCurrent(requestContext) || isMainPanelAccountRequestCurrent(previous)) return previous
+          return { ...requestContext, relationshipReady: false }
+        })
         setPetRelationshipError(true)
       }
       await logDesktopDebug({
@@ -1265,7 +1272,7 @@ function MainPanelApp() {
         || document.visibilityState !== 'visible'
         || petDailySummaryLoading
         || isPetDailySummaryCurrent(petDailySummary)
-        || !isMainPanelAccountRequestCurrent(readyRelationshipContext)
+        || !isMainPanelAccountRequestCurrent(settledCompanionContext)
       ) return
       refreshing = true
       try {
@@ -1286,7 +1293,7 @@ function MainPanelApp() {
       unsubscribeResume?.()
       window.clearInterval(timer)
     }
-  }, [petDataReady, readyRelationshipContext, currentPetType, petDailySummary, petDailySummaryLoading])
+  }, [petDataReady, settledCompanionContext, currentPetType, petDailySummary, petDailySummaryLoading])
 
   const loadSessions = async ({ restoreLatest = false } = {}) => {
     if (sessionListLoadRef.current) return
@@ -1676,7 +1683,7 @@ function MainPanelApp() {
         setPetOnboardingBusy(runtimeReset.petOnboardingBusy)
         setPetOnboardingError(runtimeReset.petOnboardingError)
         setCompanionState(DEFAULT_COMPANION_STATE)
-        setReadyRelationshipContext(null)
+        setSettledCompanionContext(null)
         setPetRelationshipError(false)
         setPetRelationship(null)
         setPetDailySummary(null)
@@ -1698,9 +1705,10 @@ function MainPanelApp() {
         if (!adopted || !isMainPanelAccountRequestCurrent(requestContext)) return
         const relationship = normalizePetRelationship(adopted.relationship, currentPetType)
         activeAuthoritativeContextRef.current = adopted.authoritative
-        setReadyRelationshipContext({
+        setSettledCompanionContext({
           ...getCurrentMainPanelAccountContext(),
           epoch: accountRequestEpochRef.current,
+          relationshipReady: true,
         })
         setPetRelationshipError(false)
         setPetRelationship(relationship)
@@ -2630,7 +2638,7 @@ function MainPanelApp() {
         throw new Error('account-context-changed')
       }
       activeAuthoritativeContextRef.current = switchedCapability
-      setReadyRelationshipContext(null)
+      setSettledCompanionContext(null)
       setPetRelationship(null)
       setPetDailySummary(null)
       setUser((current) => (current ? { ...current, preferences: nextPreferences } : current))
@@ -2986,7 +2994,7 @@ function MainPanelApp() {
     setKnowledgeStatusText('')
     setKnowledgeSources([])
     setPetRelationship(null)
-    setReadyRelationshipContext(null)
+    setSettledCompanionContext(null)
     setPetRelationshipError(false)
     setPetDailySummary(null)
     setPetOnboardingState(null)
@@ -3038,7 +3046,7 @@ function MainPanelApp() {
     setKnowledgeStatusText('')
     setKnowledgeSources([])
     setPetRelationship(null)
-    setReadyRelationshipContext(null)
+    setSettledCompanionContext(null)
     setPetRelationshipError(false)
     setPetDailySummary(null)
     setPetOnboardingState(null)
@@ -3181,7 +3189,7 @@ function MainPanelApp() {
         key={`daily-step-${todayContextKey}`}
         language={language}
         accountContext={{ hasSession: authenticated, server: apiBaseUrl, userId: user?.id, petType: currentPetType }}
-        onFocus={petDataReady ? handleFocusTodayStep : undefined}
+        onFocus={localFocusReady ? handleFocusTodayStep : undefined}
         onRemind={canCreateTodayReminder ? (title) => setTodayReminderPrefill({ title, contextKey: todayContextKey }) : undefined}
       />
       <TodayReminderComposer
@@ -3360,8 +3368,7 @@ function MainPanelApp() {
                   )}
                 </section>
               )}
-              {petDataReady && <>
-              <FocusSessionPanel
+              {localFocusReady && <FocusSessionPanel
                 key={todayContextKey}
                 language={language}
                 accountContext={{
@@ -3374,7 +3381,8 @@ function MainPanelApp() {
                 onOpenToday={focusTodaySection}
                 handoffHost={focusHandoffHost}
                 onOpenFocus={handleOpenFocus}
-              />
+              />}
+              {petDataReady && <>
               <PetWeeklySummaryPanel
                 key={`weekly-${user?.id || 'anonymous'}:${currentPetType}:${activeSessionSnapshotRef.current?.generation ?? 'none'}:${accountRequestEpochRef.current}`}
                 language={language}
