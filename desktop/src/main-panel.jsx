@@ -744,6 +744,7 @@ function MainPanelApp() {
   const [focusNavigationVersion, setFocusNavigationVersion] = useState(0)
   const [focusStepIntent, setFocusStepIntent] = useState(null)
   const [todayNavigation, setTodayNavigation] = useState(null)
+  const [todayReminderPrefill, setTodayReminderPrefill] = useState(null)
   const pendingFocusNavigationRef = useRef(false)
   const tabRef = useRef('chat')
   const intentOverrideRef = useRef(null)
@@ -825,6 +826,9 @@ function MainPanelApp() {
   ])
   const handleFocusStepIntent = useCallback((handled) => {
     setFocusStepIntent((current) => current === handled ? null : current)
+  }, [])
+  const handleTodayReminderPrefill = useCallback((handled) => {
+    setTodayReminderPrefill((current) => current === handled ? null : current)
   }, [])
   const requestTodayNavigation = useCallback(() => {
     intentConsumerRef.current.cancel()
@@ -1073,6 +1077,7 @@ function MainPanelApp() {
   )
 
   const reminderSavePending = Boolean(reminderSaveContext && isMainPanelAccountRequestCurrent(reminderSaveContext))
+  const canCreateTodayReminder = petDataReady && !savingOutfit && !petOnboardingBusy && !reminderSavePending
   const reminderDraftBlocked = (savingOutfit || petOnboardingBusy || reminderSavePending) && parseReminder(prompt.trim()).ok
 
   const syncReminderRelationship = async (requestContext) => {
@@ -1872,7 +1877,7 @@ function MainPanelApp() {
   }
 
   const createTodayReminder = async ({ title, remindAt }) => {
-    if (!petDataReady || savingOutfit || petOnboardingBusy || reminderSavePending) return null
+    if (!canCreateTodayReminder) return null
     const request = {
       ...getCurrentMainPanelAccountContext(),
       relationshipId: petOnboardingContextRef.current.relationshipId,
@@ -3156,12 +3161,15 @@ function MainPanelApp() {
         language={language}
         accountContext={{ hasSession: authenticated, server: apiBaseUrl, userId: user?.id, petType: currentPetType }}
         onFocus={petDataReady ? handleFocusTodayStep : undefined}
+        onRemind={canCreateTodayReminder ? (title) => setTodayReminderPrefill({ title, contextKey: todayContextKey }) : undefined}
       />
       <TodayReminderComposer
         key={`today-reminder-${todayContextKey}`}
         language={language}
-        canSave={petDataReady && !savingOutfit && !petOnboardingBusy && !reminderSavePending}
+        canSave={canCreateTodayReminder}
         onCreate={createTodayReminder}
+        prefill={todayReminderPrefill?.contextKey === todayContextKey ? todayReminderPrefill : null}
+        onPrefillHandled={handleTodayReminderPrefill}
       />
       <PetDailySummaryPanel
         language={language}

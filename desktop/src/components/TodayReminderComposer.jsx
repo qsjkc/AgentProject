@@ -46,7 +46,7 @@ const COPY = {
   },
 }
 
-export function TodayReminderComposer({ language, canSave, onCreate }) {
+export function TodayReminderComposer({ language, canSave, onCreate, prefill, onPrefillHandled }) {
   const [open, setOpen] = useState(false)
   const [draft, setDraft] = useState(EMPTY_DRAFT)
   const [busy, setBusy] = useState(false)
@@ -60,6 +60,7 @@ export function TodayReminderComposer({ language, canSave, onCreate }) {
   const localTimeRef = useRef(null)
   const submittingRef = useRef(false)
   const restoreFocusRef = useRef(false)
+  const handledPrefillRef = useRef(null)
   const locale = language === 'zh-CN' ? 'zh-CN' : 'en'
   const copy = COPY[locale]
   const isCustom = draft.minutes === null
@@ -75,6 +76,20 @@ export function TodayReminderComposer({ language, canSave, onCreate }) {
       target?.focus()
     }
   }, [open])
+
+  useEffect(() => {
+    if (!prefill || handledPrefillRef.current === prefill) return
+    handledPrefillRef.current = prefill
+    if (canSave && !submittingRef.current && typeof prefill.title === 'string' && prefill.title) {
+      if (!titleRef.current?.value) {
+        setDraft((current) => current.title ? current : { ...current, title: prefill.title })
+      }
+      setSaved(null)
+      setOpen(true)
+      titleRef.current?.focus()
+    }
+    onPrefillHandled?.(prefill)
+  }, [canSave, onPrefillHandled, prefill])
 
   const updateDraft = (changes) => {
     setDraft((current) => ({ ...current, ...changes }))
@@ -195,7 +210,7 @@ export function TodayReminderComposer({ language, canSave, onCreate }) {
                 disabled={!canSave || busy || !draft.title.trim() || (isCustom && !draft.localTime)}>
                 {busy ? copy.saving : copy.save}
               </button>
-              <button type="button" disabled={busy} onClick={close}>{copy.cancel}</button>
+              <button type="button" data-e2e="today-reminder-cancel" disabled={busy} onClick={close}>{copy.cancel}</button>
             </div>
           </form>
         )}

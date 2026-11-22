@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react'
-import { Check, Play } from 'lucide-react'
+import { BellPlus, Check, Play } from 'lucide-react'
 
 import {
   DAILY_STEP_TITLE_LENGTH,
@@ -23,6 +23,7 @@ const COPY = {
     cancel: '取消',
     remove: '移除',
     focus: '陪我做',
+    remind: '设提醒',
     complete: '做完了',
     completed: '已完成',
     undo: '撤销完成',
@@ -40,6 +41,7 @@ const COPY = {
     cancel: 'Cancel',
     remove: 'Remove',
     focus: 'Focus together',
+    remind: 'Set reminder',
     complete: 'Done',
     completed: 'Completed',
     undo: 'Undo completion',
@@ -50,7 +52,7 @@ const COPY = {
   },
 }
 
-function DailyStep({ copy, storageKey, date, isToday, onFocus }) {
+function DailyStep({ copy, storageKey, date, isToday, onFocus, onRemind }) {
   const [step, setStep] = useState(() => readDailyStep(storageKey, date))
   const [carryOver, setCarryOver] = useState(() => readDailyStepCarryOver(storageKey, date))
   const [editing, setEditing] = useState(false)
@@ -152,6 +154,13 @@ function DailyStep({ copy, storageKey, date, isToday, onFocus }) {
             {!step.completed && onFocus && <button type="button" className="daily-step-primary" data-e2e="daily-step-focus" onClick={() => {
               if (isToday(date)) onFocus(step.title)
             }}><Play size={12} aria-hidden="true" />{copy.focus}</button>}
+            {!step.completed && onRemind && (
+              <button type="button" data-e2e="daily-step-remind" onClick={() => {
+                if (isToday(date)) onRemind(step.title)
+              }}>
+                <BellPlus size={12} aria-hidden="true" />{copy.remind}
+              </button>
+            )}
             <button
               ref={statusActionRef}
               type="button"
@@ -179,7 +188,7 @@ function DailyStep({ copy, storageKey, date, isToday, onFocus }) {
   )
 }
 
-export function DailyStepPanel({ language, accountContext, onFocus }) {
+export function DailyStepPanel({ language, accountContext, onFocus, onRemind }) {
   const [date, setDate] = useState(getDailyStepDate)
   const storageKey = getDailyStepStorageKey(accountContext)
 
@@ -218,5 +227,6 @@ export function DailyStepPanel({ language, accountContext, onFocus }) {
     date={date}
     isToday={isToday}
     onFocus={onFocus}
+    onRemind={onRemind}
   />
 }

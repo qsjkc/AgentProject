@@ -8,11 +8,15 @@ const OWNER = Object.freeze({ id: 873, username: 'today-reminder-owner', email: 
 const PET = 'dog'
 const REMINDERS = '/api/v1/reminders'
 const LANGUAGE = '.main-header-language select'
+const STEP_INPUT = '[data-e2e="daily-step-input"]'
+const STEP_SAVE = '[data-e2e="daily-step-save"]'
+const STEP_REMIND = '[data-e2e="daily-step-remind"]'
 const TOGGLE = '[data-e2e="today-reminder-toggle"]'
 const FORM = '[data-e2e="today-reminder-form"]'
 const TITLE = '[data-e2e="today-reminder-title"]'
 const TIME = '[data-e2e="today-reminder-custom-time"]'
 const SAVE = '[data-e2e="today-reminder-save"]'
+const CANCEL = '[data-e2e="today-reminder-cancel"]'
 const ERROR = '[data-e2e="today-reminder-error"]'
 const SUCCESS = '[data-e2e="today-reminder-success"]'
 
@@ -66,12 +70,23 @@ export async function todayReminderScenario(context) {
   const initialLanguage = await readControl(main, LANGUAGE, 'value')
   const requestStart = stub.requests.length
   const posts = () => stub.requests.slice(requestStart).filter((request) => request.method === 'POST' && request.pathname === REMINDERS)
+  const stepTitle = '整理散步要带的东西'
   const title = '散步前带上水杯'
   try {
     await setLanguage(main, 'zh-CN')
     await waitFor(async () => (await readControl(main, TOGGLE, 'textContent'))?.trim() === '添加提醒', { description: 'Chinese Today reminder action' })
+
+    await main.input(STEP_INPUT, stepTitle)
+    await main.click(STEP_SAVE)
+    await main.click(STEP_REMIND)
+    await main.waitForSelector(`#companion-today ${FORM}`)
+    await waitFor(async () => (await readControl(main, TITLE, 'value')) === stepTitle, { description: 'saved step prefills the reminder title' })
+    assertEqual(posts().length, 0, 'Turning a daily step into a reminder immediately submitted it')
+    await main.click(CANCEL)
+
     await main.click(TOGGLE)
     await main.waitForSelector(`#companion-today ${FORM}`)
+    assertEqual(await readControl(main, TITLE, 'value'), '', 'Canceled step suggestion leaked into a new reminder draft')
     assertEqual((await readControl(main, SAVE, 'textContent')).trim(), '保存提醒', 'Missing Chinese save label')
     assertEqual(await readControl(main, '[data-e2e="today-reminder-delay-15"]', 'checked'), true, 'Default delay is not fifteen minutes')
     assert(await main.evaluate(`document.querySelector(${JSON.stringify(TITLE)})?.labels?.length > 0`), 'Reminder title input has no associated label')
@@ -83,6 +98,10 @@ export async function todayReminderScenario(context) {
     await main.click('[data-e2e="today-reminder-delay-custom"]')
     await main.waitForSelector(TIME)
     const time = await setFutureTime(main)
+    await main.click(STEP_REMIND)
+    await waitFor(() => main.evaluate(`document.activeElement?.matches(${JSON.stringify(TITLE)})`), { description: 'step action focuses the existing reminder draft' })
+    assertEqual(await readControl(main, TITLE, 'value'), title, 'Step action replaced the existing reminder title')
+    assertEqual(await readControl(main, TIME, 'value'), time.local, 'Step action replaced the existing reminder time')
     assertEqual(posts().length, 0, 'Opening or editing a reminder submitted it')
 
     const restoreFailure = stub.overrideResponse('POST', REMINDERS, 503, { detail: 'Temporary reminder service outage' })
@@ -137,7 +156,7 @@ export async function todayReminderScenario(context) {
     assert(!stub.requests.slice(requestStart).some((request) => request.method === 'POST' && request.pathname === '/api/v1/chat/message'), 'Today reminder was sent to model chat')
 
     const screenshot = await main.screenshot(join(context.artifactPath, 'today-reminder-saved.png'))
-    return { bilingual: true, explicitSave: true, accountScoped: true, retriedDraft: true, duplicateBlocked: true, listUpdated: true, petScheduleRefreshed: true, reminderId: reminder.id, screenshot }
+    return { stepPrefilled: true, preservesExistingReminderDraft: true, bilingual: true, explicitSave: true, accountScoped: true, retriedDraft: true, duplicateBlocked: true, listUpdated: true, petScheduleRefreshed: true, reminderId: reminder.id, screenshot }
   } finally {
     await setLanguage(main, initialLanguage)
   }
