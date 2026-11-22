@@ -129,13 +129,30 @@ export async function sessionRecoveryScenario(context) {
     await main.screenshot(recoveredScreenshot)
     screenshots.push(recoveredScreenshot)
 
+    const interrupted = context.stub.holdNext('GET', ME, {
+      statusCode: 503, payload: { detail: 'Recovery response from before reconnect' },
+    })
+    held.push(interrupted)
+    const beforeReconnect = context.stub.requests.length
+    await main.reload()
+    await heldArrival(interrupted, 'the startup recovery request before reconnect')
+    await main.waitForSelector(RECOVERING)
+    await main.evaluate(`(() => {
+      for (let i = 0; i < 3; i += 1) window.dispatchEvent(new Event('online'))
+    })()`)
+    interrupted.release()
+    await main.waitForSelector(DASHBOARD, { timeoutMs: 5000 })
+    assertEqual(context.stub.requests.slice(beforeReconnect).filter((request) => request.pathname === ME).length, 2,
+      'Reconnect during a failing restore should retry the saved account exactly once')
+    assertEqual(JSON.stringify(await session(main)), JSON.stringify(saved), 'Queued reconnect changed credentials')
+
     // Automatic event recovery uses the same saved token and obeys its cooldown.
     for (const event of ['online', 'focus', 'resume']) {
       restore = context.stub.overrideResponse('GET', ME, 503, { detail: `Temporary ${event} outage` })
       await main.reload()
       await main.waitForSelector(RETRYABLE)
       restore()
-      await new Promise((resolve) => setTimeout(resolve, 1600))
+      if (event !== 'online') await new Promise((resolve) => setTimeout(resolve, 1600))
       if (event === 'resume') {
         assert(await callE2e(main, 'simulateSystemResume'), 'Electron accepted the simulated system resume')
       } else {
@@ -145,7 +162,7 @@ export async function sessionRecoveryScenario(context) {
       assertEqual(JSON.stringify(await session(main)), JSON.stringify(saved), `${event} recovery changed credentials`)
     }
     assertEqual(context.stub.requests.slice(firstRequest).filter((request) => request.pathname === '/api/v1/auth/login').length, 0, 'Recovery unexpectedly performed password login')
-    return { offlineSessionRetained: true, service503SessionRetained: true, manualRetry: true, onlineRetry: true, focusRetry: true, nativeResumeRetry: true, singleFlight: true, passwordLoginsDuringRecovery: 0, screenshots }
+    return { offlineSessionRetained: true, service503SessionRetained: true, manualRetry: true, onlineRetry: true, queuedOnlineRetry: true, focusRetry: true, nativeResumeRetry: true, singleFlight: true, passwordLoginsDuringRecovery: 0, screenshots }
   } finally {
     restore()
     for (const hold of held) hold.release()
