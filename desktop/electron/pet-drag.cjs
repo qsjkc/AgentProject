@@ -27,11 +27,7 @@ function createPetDragController({ getWindow, screen, windowSize }) {
     return true
   }
 
-  function move({ id, screenX, screenY } = {}) {
-    if (!current(id) || !Number.isFinite(screenX) || !Number.isFinite(screenY)) return false
-    // BrowserWindow bounds and Electron's native cursor are both in DIPs.
-    // Touch and pen can move independently of the system mouse cursor.
-    const cursor = active.pointerType === 'mouse' ? screen.getCursorScreenPoint() : { x: screenX, y: screenY }
+  function positionAt(cursor) {
     if (!Number.isFinite(cursor?.x) || !Number.isFinite(cursor?.y)) return false
     const { window, offsetX, offsetY } = active
     const bounds = window.getBounds()
@@ -42,10 +38,18 @@ function createPetDragController({ getWindow, screen, windowSize }) {
     return true
   }
 
-  function end(payload = {}) {
-    if (!current(payload.id)) return false
+  function move({ id, screenX, screenY } = {}) {
+    if (!current(id) || !Number.isFinite(screenX) || !Number.isFinite(screenY)) return false
+    // BrowserWindow bounds and Electron's native cursor are both in DIPs.
+    // Touch and pen can move independently of the system mouse cursor.
+    return positionAt(active.pointerType === 'mouse' ? screen.getCursorScreenPoint() : { x: screenX, y: screenY })
+  }
+
+  function end({ id, screenX, screenY, cancelled } = {}) {
+    if (!current(id)) return false
     try {
-      if (payload.cancelled !== true) move(payload)
+      // The mouse may already have moved away by the time the IPC arrives.
+      if (cancelled !== true) positionAt({ x: screenX, y: screenY })
       return true
     } finally {
       active = null

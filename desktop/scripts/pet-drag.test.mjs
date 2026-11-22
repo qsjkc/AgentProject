@@ -63,10 +63,25 @@ test('a sustained mouse drag follows a fixed grab point across both directions o
     assert.equal(window.bounds.y, 250)
   }
   assert.equal(window.moves.length, rightward.length + leftward.length)
-  screen.cursor = { x: -130, y: 410 }
-  assert.equal(drag.end({ id, screenX: 0, screenY: 0, cancelled: false }), true)
+  assert.equal(drag.end({ id, screenX: -130, screenY: 410, cancelled: false }), true)
   assert.deepEqual(window.bounds, { x: -220, y: 250, ...size })
   assert.equal(drag.move({ id, screenX: 0, screenY: 0 }), false)
+})
+
+test('a mouse release stays at its captured point when the live cursor moves before processing', () => {
+  const screen = makeScreen([display(0, 0, 1800, 1040)])
+  const window = makeWindow(400, 200)
+  const drag = createPetDragController({ getWindow: () => window, screen, windowSize: size })
+  const id = 'release-race'
+  assert.equal(drag.begin({ id, offsetX: 90, offsetY: 120, pointerType: 'mouse' }), true)
+  screen.cursor = { x: 610, y: 390 }
+  assert.equal(drag.move({ id, screenX: 0, screenY: 0 }), true)
+  assert.deepEqual(window.bounds, { x: 520, y: 270, ...size })
+
+  screen.cursor = { x: 1300, y: 750 }
+  assert.equal(drag.end({ id, screenX: 620, screenY: 400, cancelled: false }), true)
+  assert.deepEqual(window.bounds, { x: 530, y: 280, ...size })
+  assert.equal(drag.move({ id, screenX: 1300, screenY: 750 }), false)
 })
 
 test('preserves a covered vertical or horizontal seam while clamping uncovered work-area gaps', () => {
@@ -150,8 +165,7 @@ test('repeated fractional-DPI reports cannot grow the fixed pet or shrink its dr
   }
   assert.equal(window.writes.length, 240)
   assert.equal(window.writes.every(({ width, height }) => width === size.width && height === size.height), true)
-  screen.cursor = { x: 1799, y: 999 }
-  assert.equal(drag.end({ id, screenX: 0, screenY: 0, cancelled: false }), true)
+  assert.equal(drag.end({ id, screenX: 1799, screenY: 999, cancelled: false }), true)
   assert.deepEqual(window.bounds, { x: 1580, y: 760, ...size })
 })
 
