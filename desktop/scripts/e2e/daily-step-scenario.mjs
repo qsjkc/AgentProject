@@ -15,6 +15,8 @@ const STEP_INPUT = '[data-e2e="daily-step-input"]'
 const STEP_TITLE = '[data-e2e="daily-step-title"]'
 const CARRY_OVER = '[data-e2e="daily-step-carry-over"]'
 const CARRY_OVER_TITLE = '[data-e2e="daily-step-carry-over-title"]'
+const STEP_HISTORY = '[data-e2e="daily-step-history"]'
+const STEP_HISTORY_ROW = '[data-e2e="daily-step-history-row"]'
 
 function addDailyStepAccounts(stub) {
   for (const user of [OWNER, OTHER]) {
@@ -35,6 +37,7 @@ async function waitForScope(main, user, petType) {
     snapshot.account?.userId === user.id
     && snapshot.account?.petType === petType
     && snapshot.renderer?.[0]?.userId === user.id
+    && snapshot.renderer?.[0]?.petType === petType
     && snapshot.renderer?.[0]?.relationshipId === createRelationship(user, petType).id
   ), `daily step account ${user.id}/${petType} ready`)
 }
@@ -49,6 +52,24 @@ async function expectStep(main, state, title = null) {
   })()`), { description: `daily step in the ${state} state` })
   assertEqual(panels.length, 1, 'Only the active account and pet should have a daily step panel')
   assertEqual(panels[0].title, title, `Unexpected step title in the ${state} state`)
+}
+
+function expectNoStepHistory(main, description) {
+  return waitFor(() => main.evaluate(`document.querySelector(${JSON.stringify(STEP_HISTORY)}) === null`), { description })
+}
+
+async function expectStepHistoryRow(main, title, date) {
+  await main.waitForSelector(`details${STEP_HISTORY} > summary`)
+  assertEqual(await main.evaluate(`document.querySelector(${JSON.stringify(STEP_HISTORY)})?.open`), false,
+    'Recent completed steps should be collapsed by default')
+  await main.click(`${STEP_HISTORY} > summary`)
+  await main.waitForSelector(`${STEP_HISTORY}[open] ${STEP_HISTORY_ROW}`)
+  const rows = await main.evaluate(`Array.from(document.querySelectorAll(${JSON.stringify(`${STEP_HISTORY} ${STEP_HISTORY_ROW}`)}), (row) => ({
+    date: row.querySelector('time')?.dateTime, text: row.textContent,
+  }))`)
+  assertEqual(rows.length, 1, 'Recent completed steps should contain only the earlier completed plan')
+  assertEqual(rows[0].date, date, 'Recent completed steps used the wrong device-local date')
+  assertEqual(rows[0].text.includes(title), true, 'Recent completed steps lost the completed title')
 }
 
 async function expectTodayLanding(main, source) {
@@ -181,6 +202,7 @@ export async function dailyStepScenario(context) {
   await expectStep(main, 'planned', title)
   await main.click('[data-e2e="daily-step-complete"]')
   await expectStep(main, 'completed', title)
+  await expectNoStepHistory(main, 'history disclosure absent with only today’s completion')
   await main.evaluate(`document.querySelector('[data-e2e="daily-step"]').scrollIntoView({ block: 'center' })`)
   const screenshot = join(context.artifactPath, 'daily-step-completed.png')
   await main.screenshot(screenshot)
@@ -194,26 +216,52 @@ export async function dailyStepScenario(context) {
   await switchAccount(context, OWNER)
   await expectStep(main, 'completed', title)
 
-  const alternate = await startStubServer({ fixture: context.stub.fixture })
-  try {
-    await switchAccount(context, OWNER, alternate)
-    await expectStep(main, 'empty')
-    await switchAccount(context, OWNER)
-    await expectStep(main, 'completed', title)
-  } finally {
-    await alternate.close()
-  }
-
-  const tomorrow = await main.evaluate(`(() => {
+  const { tomorrow, completedDate } = await main.evaluate(`(() => {
     const date = new Date()
+    const month = String(date.getMonth() + 1).padStart(2, '0')
+    const day = String(date.getDate()).padStart(2, '0')
+    const completedDate = date.getFullYear() + '-' + month + '-' + day
     date.setDate(date.getDate() + 1)
-    return date.setHours(12, 0, 0, 0)
+    return { tomorrow: date.setHours(12, 0, 0, 0), completedDate }
   })()`)
   try {
     await showDailyStepDate(main, tomorrow)
     await expectStep(main, 'empty')
     assertEqual(await main.evaluate(`document.querySelector(${JSON.stringify(CARRY_OVER)}) === null`), true,
       'A completed yesterday step was offered for carry-over')
+    await expectStepHistoryRow(main, title, completedDate)
+
+    await selectPet(main, 'cat')
+    await expectStep(main, 'empty')
+    await expectNoStepHistory(main, 'no completed step history for the other pet')
+    await selectPet(main, 'pig')
+    await switchAccount(context, OTHER)
+    await expectStep(main, 'empty')
+    await expectNoStepHistory(main, 'no completed step history for the other account')
+    const alternate = await startStubServer({ fixture: context.stub.fixture })
+    try {
+      await switchAccount(context, OWNER, alternate)
+      await expectStep(main, 'empty')
+      await expectNoStepHistory(main, 'no completed step history for the same account on a different service')
+      await switchAccount(context, OWNER)
+    } finally {
+      await alternate.close()
+    }
+    await expectStep(main, 'empty')
+    await expectStepHistoryRow(main, title, completedDate)
+
+    const nextStep = '整理一下书桌'
+    await main.input(STEP_INPUT, nextStep)
+    await main.click('[data-e2e="daily-step-save"]')
+    await expectStep(main, 'planned', nextStep)
+    await main.reload()
+    await waitForScope(main, OWNER, 'pig')
+    await showDailyStepDate(main, tomorrow)
+    await expectStep(main, 'planned', nextStep)
+    await expectStepHistoryRow(main, title, completedDate)
+    await main.click('[data-e2e="daily-step-edit"]')
+    await main.click('[data-e2e="daily-step-remove"]')
+    await expectStep(main, 'empty')
   } finally {
     await restoreDailyStepDate(main)
   }
@@ -225,6 +273,7 @@ export async function dailyStepScenario(context) {
     await showDailyStepDate(main, tomorrow)
     await expectStep(main, 'empty')
     await main.waitForSelector(CARRY_OVER)
+    await expectNoStepHistory(main, 'no completed history after undoing the earlier completion')
     assertEqual(await main.evaluate(`document.querySelector(${JSON.stringify(CARRY_OVER_TITLE)})?.textContent.trim()`), title,
       'Carry-over did not show the unfinished yesterday step')
     const newDraft = '今天自己的计划草稿'
@@ -269,6 +318,8 @@ export async function dailyStepScenario(context) {
     accountIsolation: true,
     serverIsolation: true,
     simulatedCalendarChange: true,
+    completedStepHistory: true,
+    stepHistoryScopeIsolation: true,
     carriesUnfinishedStepOnRequest: true,
     protectsTodayStepDraft: true,
     localTitle: true,

@@ -6,6 +6,7 @@ import {
   getDailyStepDate,
   getDailyStepStorageKey,
   getDailyStepTitle,
+  readCompletedDailySteps,
   readDailyStep,
   readDailyStepCarryOver,
   writeDailyStep,
@@ -29,6 +30,7 @@ const COPY = {
     undo: '撤销完成',
     yesterday: '昨天还没做完',
     carryOver: '今天继续',
+    history: (count) => `近 7 天完成了 ${count} 个小步骤`,
     local: '仅保存在这台设备，按本机日期更新。',
     error: '没能在这台设备上保存这次更改，请重试。',
   },
@@ -47,14 +49,17 @@ const COPY = {
     undo: 'Undo completion',
     yesterday: 'Unfinished yesterday',
     carryOver: 'Continue today',
+    history: (count) => `Completed ${count} ${count === 1 ? 'small step' : 'small steps'} in the last 7 days`,
     local: 'Saved on this device. A new day starts with a blank step.',
     error: 'This change could not be saved on this device. Please try again.',
   },
 }
 
-function DailyStep({ copy, storageKey, date, isToday, onFocus, onRemind }) {
+function DailyStep({ language, storageKey, date, isToday, onFocus, onRemind }) {
+  const copy = COPY[language]
   const [step, setStep] = useState(() => readDailyStep(storageKey, date))
   const [carryOver, setCarryOver] = useState(() => readDailyStepCarryOver(storageKey, date))
+  const [history, setHistory] = useState(() => readCompletedDailySteps(storageKey, date))
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState('')
   const [error, setError] = useState(false)
@@ -64,6 +69,9 @@ function DailyStep({ copy, storageKey, date, isToday, onFocus, onRemind }) {
   const statusActionRef = useRef(null)
   const restoreFocusRef = useRef(null)
   const title = getDailyStepTitle(draft)
+  const historyDateFormat = history.some((entry) => entry.date !== date)
+    ? new Intl.DateTimeFormat(language, { timeZone: 'UTC', month: 'short', day: 'numeric' })
+    : null
 
   useEffect(() => {
     restoreFocusRef.current?.current?.focus()
@@ -80,6 +88,7 @@ function DailyStep({ copy, storageKey, date, isToday, onFocus, onRemind }) {
     setError(false)
     setStep(nextStep)
     setCarryOver(null)
+    setHistory(readCompletedDailySteps(storageKey, date))
     setEditing(false)
     setDraft('')
   }
@@ -182,6 +191,19 @@ function DailyStep({ copy, storageKey, date, isToday, onFocus, onRemind }) {
           </div>
         </div>
       )}
+      {historyDateFormat && (
+        <details className="daily-step-history" data-e2e="daily-step-history">
+          <summary>{copy.history(history.length)}</summary>
+          <ul>
+            {history.map((entry) => (
+              <li key={entry.date} data-e2e="daily-step-history-row">
+                <time dateTime={entry.date}>{historyDateFormat.format(new Date(`${entry.date}T00:00:00Z`))}</time>
+                <span>{entry.title}</span>
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
       <p className="daily-step-local">{copy.local}</p>
       {error && <p className="daily-step-error" role="alert">{copy.error}</p>}
     </section>
@@ -222,7 +244,7 @@ export function DailyStepPanel({ language, accountContext, onFocus, onRemind }) 
   if (!storageKey || !date) return null
   return <DailyStep
     key={`${storageKey}:${date}`}
-    copy={COPY[language] || COPY.en}
+    language={language === 'zh-CN' ? 'zh-CN' : 'en'}
     storageKey={storageKey}
     date={date}
     isToday={isToday}
