@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { CalendarClock, RefreshCw, Trash2 } from 'lucide-react'
 
 import { captureApiOperationContext, desktopApiRequest } from '../shared/api'
@@ -72,10 +72,8 @@ export function UpcomingReminderPanel(props) {
   return <UpcomingReminderList key={identity} {...props} />
 }
 
-function UpcomingReminderList({ language, petType, accountContext, onAgendaSnapshot }) {
-  const [agenda, setAgenda] = useState({ status: 'loading', rows: [] })
-  const userId = accountContext?.userId
-  const reminders = useMemo(() => getUpcomingOneTimeReminders(agenda.rows, { userId, petType }), [agenda.rows, userId, petType])
+function UpcomingReminderList({ language, petType, accountContext }) {
+  const [reminders, setReminders] = useState([])
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(null)
   const [editing, setEditing] = useState(null)
@@ -95,8 +93,6 @@ function UpcomingReminderList({ language, petType, accountContext, onAgendaSnaps
   contextRef.current = accountContext
   editingRef.current = editing
   const copy = getCopy(language)
-
-  useEffect(() => { onAgendaSnapshot?.(agenda) }, [agenda, onAgendaSnapshot])
 
   useEffect(() => {
     mountedRef.current = true
@@ -122,7 +118,7 @@ function UpcomingReminderList({ language, petType, accountContext, onAgendaSnaps
       if (!Array.isArray(items)) throw new Error('invalid_reminder_list')
       commitAccountOperation(loadGate, request, contextRef.current, () => {
         const upcoming = getUpcomingOneTimeReminders(items, { userId: request.userId, petType })
-        setAgenda({ status: 'ready', rows: items })
+        setReminders(upcoming)
         setLoadError('')
         if (editingRef.current && !upcoming.some((item) => item.id === editingRef.current.id)) {
           setEditing(null)
@@ -131,10 +127,7 @@ function UpcomingReminderList({ language, petType, accountContext, onAgendaSnaps
         }
       })
     } catch {
-      commitAccountOperation(loadGate, request, contextRef.current, () => {
-        setAgenda((current) => ({ ...current, status: 'error' }))
-        setLoadError(copy.loadFailed)
-      })
+      commitAccountOperation(loadGate, request, contextRef.current, () => setLoadError(copy.loadFailed))
     } finally {
       commitAccountOperation(loadGate, request, contextRef.current, () => setLoading(false))
       operationsRef.current.finishLoad(request)
@@ -199,10 +192,9 @@ function UpcomingReminderList({ language, petType, accountContext, onAgendaSnaps
         }, operationContext)
       committed = commitAccountOperation(actionGate, request, contextRef.current, () => {
         const updatedRows = getUpcomingOneTimeReminders([updated], { userId: request.userId, petType })
-        setAgenda((current) => ({
-          ...current,
-          rows: [...current.rows.filter((item) => item.id !== reminder.id), ...updatedRows],
-        }))
+        setReminders((current) => getUpcomingOneTimeReminders([
+          ...current.filter((item) => item.id !== reminder.id), ...updatedRows,
+        ], { userId: request.userId, petType }))
         if (editingRef.current?.id === reminder.id) setEditing(null)
         setFeedback(action === 'cancel'
           ? copy.canceled(reminder.title)

@@ -223,11 +223,6 @@ function openReminderAgendaTarget(destination) {
   target?.focus({ preventScroll: true })
 }
 
-function refreshReminderAgenda() {
-  window.dispatchEvent(new Event('detachym:reminders-changed'))
-  window.dispatchEvent(new Event('detachym:reminder-series-changed'))
-}
-
 function PetDailySummaryPanel({ language, petType, summary, loading, onRetry }) {
   if (!PET_OPTIONS.includes(petType)) {
     return null
@@ -764,7 +759,6 @@ function MainPanelApp() {
   const [focusHandoffHost, setFocusHandoffHost] = useState(null)
   const [todayNavigation, setTodayNavigation] = useState(null)
   const [todayReminderPrefill, setTodayReminderPrefill] = useState(null)
-  const [reminderAgendaSources, setReminderAgendaSources] = useState(null)
   const pendingFocusNavigationRef = useRef(false)
   const tabRef = useRef('chat')
   const intentOverrideRef = useRef(null)
@@ -844,27 +838,6 @@ function MainPanelApp() {
   const todayContextKey = JSON.stringify([
     apiBaseUrl, user?.id, currentPetType, activeSessionSnapshotRef.current?.generation, accountRequestEpochRef.current,
   ])
-  const todayContextKeyRef = useRef(todayContextKey)
-  todayContextKeyRef.current = todayContextKey
-  const reminderAgendaObservers = useMemo(() => {
-    const update = (source, snapshot) => {
-      setReminderAgendaSources((current) => {
-        if (todayContextKeyRef.current !== todayContextKey) return current
-        return {
-          ...(current?.contextKey === todayContextKey ? current : { contextKey: todayContextKey }),
-          [source]: snapshot,
-        }
-      })
-    }
-    return {
-      delivered: (snapshot) => update('delivered', snapshot),
-      scheduled: (snapshot) => update('scheduled', snapshot),
-      series: (snapshot) => update('series', snapshot),
-    }
-  }, [todayContextKey])
-  useEffect(() => {
-    setReminderAgendaSources((current) => current?.contextKey === todayContextKey ? current : null)
-  }, [todayContextKey])
   const handleFocusStepIntent = useCallback((handled) => {
     setFocusStepIntent((current) => current === handled ? null : current)
   }, [])
@@ -3217,10 +3190,13 @@ function MainPanelApp() {
       {petDataReady && <TodayReminderAgenda
         key={`today-agenda-${todayContextKey}`}
         language={language}
-        sources={reminderAgendaSources?.contextKey === todayContextKey ? reminderAgendaSources : null}
-        accountContext={{ userId: user?.id, petType: currentPetType }}
+        accountContext={{
+          ...getCurrentMainPanelAccountContext(),
+          server: apiBaseUrl,
+          relationshipId: petRelationship?.id ?? null,
+          epoch: accountRequestEpochRef.current,
+        }}
         onNavigate={openReminderAgendaTarget}
-        onRefresh={refreshReminderAgenda}
       />}
       <PetDailySummaryPanel
         language={language}
@@ -3433,8 +3409,6 @@ function MainPanelApp() {
                   epoch: accountRequestEpochRef.current,
                 }}
                 onCompleted={handleReminderCompleted}
-                onDeliveredAgenda={reminderAgendaObservers.delivered}
-                onScheduledAgenda={reminderAgendaObservers.scheduled}
                 highlightReminderId={petOnboardingIsCurrent
                   ? petOnboardingState?.reminder_id
                   : null}
@@ -3449,7 +3423,6 @@ function MainPanelApp() {
                   relationshipId: petRelationship?.id ?? null,
                   epoch: accountRequestEpochRef.current,
                 }}
-                onAgendaSnapshot={reminderAgendaObservers.series}
               />
               </>}
               <VoiceSettingsPanel
