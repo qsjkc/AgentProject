@@ -108,6 +108,7 @@ import {
   PET_ONBOARDING_STATUS,
   PET_ONBOARDING_STEPS,
   shouldRecordPetOnboardingInteraction,
+  shouldSamplePetOnboardingIdle,
 } from './shared/pet-onboarding-state'
 import { PET_ONBOARDING_MAIN_PANEL_INTENT } from './shared/pet-onboarding-main'
 import { getPetLabelKey } from './shared/pet-labels'
@@ -232,7 +233,7 @@ function PetApp() {
   const milestonePumpTimerRef = useRef(null)
   const onboardingPumpTimerRef = useRef(null)
   const onboardingGuideTimerRef = useRef(null)
-  const onboardingEngagementTickRef = useRef(null)
+  const onboardingEngagementClockRef = useRef(null)
   const onboardingEngagementInFlightRef = useRef(false)
   const previousSessionRef = useRef(null)
   const voiceIntroPendingRef = useRef(true)
@@ -1048,6 +1049,9 @@ function PetApp() {
     ) {
       return current
     }
+    if (current?.status !== nextState?.status || current?.snoozed_until !== nextState?.snoozed_until) {
+      onboardingEngagementClockRef.current = { lastTickMs: Date.now() }
+    }
     onboardingStateRef.current = nextState
     setOnboardingState(nextState)
     const guide = onboardingGuideRef.current
@@ -1394,6 +1398,7 @@ function PetApp() {
       || !onboardingStateLoadedRef.current
       || !isOnboardingContextCurrent(context)
       || onboardingGuideRef.current
+      || !shouldSamplePetOnboardingIdle(onboardingStateRef.current, document.visibilityState === 'visible')
     ) {
       return
     }
@@ -1456,9 +1461,14 @@ function PetApp() {
         return
       }
 
-      const postClaimIdleSeconds = await window.desktopBridge?.getSystemIdleSeconds?.()
+      const postClaimIdleSeconds = shouldSamplePetOnboardingIdle(claimedState, document.visibilityState === 'visible')
+        ? await window.desktopBridge?.getSystemIdleSeconds?.()
+        : undefined
+      const latestState = onboardingStateRef.current
       if (
         !isOnboardingContextCurrent(context)
+        || latestState?.presentation?.step_id !== stepId
+        || latestState.presentation?.token !== token
         || !isPetOnboardingSafe({
           petType: petTypeRef.current,
           hasSession: hasSessionRef.current,
@@ -1474,7 +1484,7 @@ function PetApp() {
           milestonePlayback: milestonePlaybackRef.current,
           milestoneRequestInFlight: milestoneRequestInFlightRef.current,
           companionRequestInFlight: companionRequestInFlightRef.current,
-          onboardingState: claimedState,
+          onboardingState: latestState,
           activeGuide: null,
         })
       ) {
@@ -1805,7 +1815,7 @@ function PetApp() {
     onboardingGuideCooldownRef.current = {}
     onboardingStateLoadedRef.current = false
     setOnboardingStateLoaded(false)
-    onboardingEngagementTickRef.current = Date.now()
+    onboardingEngagementClockRef.current = { lastTickMs: Date.now() }
     void interruptOnboardingGuide('context-change')
     replaceOnboardingRuntimeState(null)
 
@@ -1916,26 +1926,34 @@ function PetApp() {
   }, [hasSession, petType])
 
   useEffect(() => {
-    onboardingEngagementTickRef.current = Date.now()
+    onboardingEngagementClockRef.current = { lastTickMs: Date.now() }
     if (!PET_TYPES.includes(petType) || !hasSession) {
       return undefined
     }
     const tick = async () => {
+      const clock = onboardingEngagementClockRef.current
       const currentTickMs = Date.now()
-      const previousTickMs = onboardingEngagementTickRef.current
-      onboardingEngagementTickRef.current = currentTickMs
+      const previousTickMs = clock.lastTickMs
+      clock.lastTickMs = currentTickMs
       const context = getOnboardingContext()
       if (
         onboardingEngagementInFlightRef.current
         || !onboardingStateLoadedRef.current
         || !isOnboardingContextCurrent(context)
+        || currentTickMs <= previousTickMs
+        || !shouldSamplePetOnboardingIdle(
+          onboardingStateRef.current,
+          document.visibilityState === 'visible',
+          currentTickMs,
+        )
       ) {
         return
       }
       onboardingEngagementInFlightRef.current = true
       try {
         const idleSeconds = await window.desktopBridge?.getSystemIdleSeconds?.()
-        if (!isOnboardingContextCurrent(context)) {
+        // A visibility or onboarding eligibility change invalidates this sample.
+        if (onboardingEngagementClockRef.current !== clock || !isOnboardingContextCurrent(context)) {
           return
         }
         const deltaMs = getPetOnboardingEngagementDelta({
@@ -2088,6 +2106,7 @@ function PetApp() {
 
   useEffect(() => {
     const handleVisibilityChange = () => {
+      onboardingEngagementClockRef.current = { lastTickMs: Date.now() }
       if (document.visibilityState !== 'visible') {
         void interruptOnboardingGuide('window-hidden')
         void interruptMilestonePlayback('window-hidden')
