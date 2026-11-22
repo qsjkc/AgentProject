@@ -349,81 +349,7 @@ jobs:
         shell: bash
         env:
           SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
-        run: |
-          set -euo pipefail
-          install -m 700 -d ~/.ssh
-          printf '%s' "$SERVER_SSH_KEY" > ~/.ssh/id_ed25519
-          chmod 600 ~/.ssh/id_ed25519
-          ssh-keygen -lf ~/.ssh/id_ed25519
-          touch ~/.ssh/known_hosts
-          chmod 600 ~/.ssh/known_hosts
-
-      - name: Resolve deploy target
-        shell: bash
-        run: |
-          set -euo pipefail
-          HOST_INPUT="$(printf '%s' "${SERVER_HOST_RAW:-}" | tr -d '\r\n[:space:]')"
-          USERNAME="$(printf '%s' "${SERVER_USERNAME_RAW:-}" | tr -d '\r\n[:space:]')"
-          APP_DIR="$(printf '%s' "${SERVER_APP_DIR_RAW:-}" | tr -d '\r')"
-          APP_DIR="${APP_DIR:-/root/PersonalSpace/AgentProject}"
-          PORT="$(printf '%s' "${SERVER_PORT_RAW:-22}" | tr -d '\r\n[:space:]')"
-          PORT="${PORT#:}"
-          PORT="${PORT:-22}"
-
-          HOST_INPUT="${HOST_INPUT#ssh://}"
-          HOST_INPUT="${HOST_INPUT#http://}"
-          HOST_INPUT="${HOST_INPUT#https://}"
-          HOST_INPUT="${HOST_INPUT%%/*}"
-          HOST_INPUT="${HOST_INPUT##*@}"
-
-          if [[ "$HOST_INPUT" =~ ^\[(.+)\]:(.+)$ ]]; then
-            if [[ -z "${SERVER_PORT_RAW:-}" ]]; then
-              PORT="${BASH_REMATCH[2]}"
-            fi
-            HOST="${BASH_REMATCH[1]}"
-          elif [[ "$HOST_INPUT" =~ ^([^:]+):([0-9]+)$ ]]; then
-            if [[ -z "${SERVER_PORT_RAW:-}" ]]; then
-              PORT="${BASH_REMATCH[2]}"
-            fi
-            HOST="${BASH_REMATCH[1]}"
-          else
-            HOST="$HOST_INPUT"
-          fi
-
-          if [[ -z "$HOST" ]]; then
-            echo "SERVER_HOST is empty" >&2
-            exit 1
-          fi
-          if [[ -z "$USERNAME" ]]; then
-            echo "SERVER_USERNAME is empty" >&2
-            exit 1
-          fi
-          if [[ ! "$PORT" =~ ^[0-9]+$ ]]; then
-            echo "Invalid SERVER_PORT: '${SERVER_PORT_RAW:-}'" >&2
-            exit 1
-          fi
-
-          echo "DEPLOY_HOST=$HOST" >> "$GITHUB_ENV"
-          echo "DEPLOY_USER=$USERNAME" >> "$GITHUB_ENV"
-          echo "DEPLOY_PORT=$PORT" >> "$GITHUB_ENV"
-          echo "DEPLOY_APP_DIR=$APP_DIR" >> "$GITHUB_ENV"
-
-          cat > ~/.ssh/config <<EOF
-          Host deploy-target
-            HostName $HOST
-            User $USERNAME
-            Port $PORT
-            IdentityFile ~/.ssh/id_ed25519
-            IdentitiesOnly yes
-            StrictHostKeyChecking accept-new
-            BatchMode yes
-            ConnectTimeout 30
-            ServerAliveInterval 60
-            ServerAliveCountMax 10
-          EOF
-          chmod 600 ~/.ssh/config
-
-          printf 'Deploy target: %s@%s:%s%s\n' "$USERNAME" "$HOST" "$PORT" "$APP_DIR"
+        run: bash deploy/configure_ssh_target.sh
 
       - name: Recheck main before remote changes
         shell: bash
@@ -468,8 +394,13 @@ jobs:
           DOCKER_ROOT="$(docker info --format '{{.DockerRootDir}}')"
           # Reserve space for the uploaded archive and unpacked layers without pruning old images.
           REQUIRED_KIB=$(( (ARCHIVE_BYTES * 5 + 2147483648) / 1024 ))
-          for directory in . "$DOCKER_ROOT"; do
+          for filesystem in app docker; do
+            directory=.
+            if [ "$filesystem" = docker ]; then
+              directory="$DOCKER_ROOT"
+            fi
             AVAILABLE_KIB="$(df -Pk "$directory" | awk 'NR==2 {print $4}')"
+            printf '%s filesystem: %s KiB available, %s KiB required\n' "$filesystem" "$AVAILABLE_KIB" "$REQUIRED_KIB"
             if [ "$AVAILABLE_KIB" -lt "$REQUIRED_KIB" ]; then
               echo 'Insufficient disk space for a verified image load; existing releases were retained' >&2
               exit 1
