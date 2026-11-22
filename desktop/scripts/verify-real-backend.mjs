@@ -1,9 +1,10 @@
 // Real Electron UI -> real FastAPI -> disposable SQLite. No production writes.
 import { spawn, execFile } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
+import { once } from 'node:events'
 import { mkdir, mkdtemp, readFile, writeFile, rm, access, readdir } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, isAbsolute, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import { assert, waitFor, serializeError } from './e2e/assertions.mjs'
@@ -15,6 +16,15 @@ const root = fileURLToPath(new URL('../..', import.meta.url))
 const desktop = join(root, 'desktop')
 const packaged = process.argv.includes('--packaged')
 const registrationOnly = process.argv.includes('--registration-only')
+const ciPrepare = process.argv.includes('--ci-prepare')
+const npmCli = process.env.npm_execpath
+if (ciPrepare) {
+  assert(process.platform === 'win32' && packaged && !registrationOnly,
+    '--ci-prepare requires Windows packaged acceptance')
+  assert(npmCli && isAbsolute(npmCli) && basename(npmCli) === 'npm-cli.js',
+    '--ci-prepare must be started through npm')
+  await access(npmCli)
+}
 const timeZoneOverride = process.argv.find((value) => value.startsWith('--timezone='))?.slice('--timezone='.length)
 if (timeZoneOverride) new Intl.DateTimeFormat('en', { timeZone: timeZoneOverride })
 const expectedVersion = JSON.parse(await readFile(join(desktop, 'package.json'), 'utf8')).version
@@ -31,6 +41,7 @@ let backend
 let electron
 let browser
 let registrationPage
+let preparationChild
 let expiringMessage
 let backendPort
 let pages = {}
@@ -64,6 +75,39 @@ async function stopProcess(child) {
     }
   }
   await waitFor(() => child.exitCode !== null || child.signalCode !== null, { description: 'owned process exit' })
+}
+
+async function prepareWindowsAcceptance() {
+  const interrupt = new AbortController()
+  const abortPreparation = (signal) => interrupt.abort(new Error(`Windows acceptance preparation interrupted by ${signal}`))
+  process.on('SIGINT', abortPreparation)
+  process.on('SIGTERM', abortPreparation)
+  report.ciPreparation = []
+  try {
+    for (const script of ['test:e2e', 'pack', 'test:packaged']) {
+      interrupt.signal.throwIfAborted()
+      const step = { script, status: 'failed' }
+      report.ciPreparation.push(step)
+      const startedAt = performance.now()
+      console.log(`[real-backend] CI preparation: npm run ${script}`)
+      try {
+        preparationChild = launchProcess(process.execPath, [npmCli, 'run', script], {
+          cwd: desktop, env: processEnv, stdio: ['ignore', 'inherit', 'inherit'],
+        })
+        const [code, signal] = await once(preparationChild, 'close', { signal: interrupt.signal })
+        preparationChild = null
+        assert(code === 0, `npm run ${script} exited with ${signal ?? code}`)
+        step.status = 'passed'
+      } finally {
+        step.elapsedMs = Math.round(performance.now() - startedAt)
+      }
+    }
+    await access(join(desktop, 'dist/releases/win-unpacked/resources/app.asar'))
+    interrupt.signal.throwIfAborted()
+  } finally {
+    process.off('SIGINT', abortPreparation)
+    process.off('SIGTERM', abortPreparation)
+  }
 }
 
 async function startBackend() {
@@ -434,6 +478,7 @@ try {
     expiringMessage = await receivedCode('accept-expired@example.com')
     return { accountsSeeded: false, smtpStartTls: true, smtpAuthenticated: true, expiryClock: 'natural five-minute server TTL' }
   })
+  if (ciPrepare) await prepareWindowsAcceptance()
   await launchRegistrationBrowser()
   await record('Web registration A with received code, wrong-code rejection and auto-login', () => registerViaWeb('a'))
   await record('Web registration B independently with received code', () => registerViaWeb('b'))
@@ -802,7 +847,7 @@ try {
   const cleanupErrors = []
   report.contextEvents = await collectContextEvents().catch(() => [])
   report.onboardingStates = await readOnboardingFacts().catch(() => [])
-  for (const cleanup of [stopRegistrationBrowser, stopDesktop, () => stopProcess(backend),
+  for (const cleanup of [() => stopProcess(preparationChild), stopRegistrationBrowser, stopDesktop, () => stopProcess(backend),
     () => removeSafeUserDataPath(userData), () => removeSafeUserDataPath(runtime)]) {
     try { await cleanup() } catch (error) { cleanupErrors.push(serializeError(error)) }
   }
