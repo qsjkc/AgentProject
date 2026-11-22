@@ -1,5 +1,6 @@
 const fs = require('node:fs')
 const path = require('node:path')
+const { EventEmitter } = require('node:events')
 const { performance } = require('node:perf_hooks')
 const { randomUUID } = require('node:crypto')
 const { pathToFileURL } = require('node:url')
@@ -52,6 +53,7 @@ const {
   createMainPanelIntentCoordinator,
   createReminderNotificationNavigation,
   isSameTodayNavigationContext,
+  showWindowsReminderNotification,
 } = require('./main-panel-intent.cjs')
 const { createFocusSessionController } = require('./focus-session.cjs')
 const { getDesktopDownloadPage } = require('./desktop-release.cjs')
@@ -148,6 +150,7 @@ const e2eRuntime = {
   intent: { contextUserId: null, lastResult: null },
   lastCompletedRequest: null,
   activityJournal: [],
+  reminderNotification: { outcome: 'show', attempts: 0 },
 }
 
 const trayMessages = {
@@ -2675,6 +2678,7 @@ function getE2eSnapshot() {
       ? { ...e2eRuntime.lastCompletedRequest }
       : null,
     activityJournal: e2eRuntime.activityJournal.map((entry) => ({ ...entry })),
+    reminderNotificationAttempts: e2eRuntime.reminderNotification.attempts,
   }
 }
 
@@ -2704,6 +2708,7 @@ function applyE2eAccountFixture(fixture = {}, { reset = false } = {}) {
     e2eRuntime.intent = { contextUserId: null, lastResult: null }
     e2eRuntime.lastCompletedRequest = null
     e2eRuntime.activityJournal = []
+    e2eRuntime.reminderNotification = { outcome: 'show', attempts: 0 }
     getStore().set('petOnboardingStates', {})
     getStore().set('apiBaseUrl', defaultApiBaseUrl)
   }
@@ -2792,6 +2797,15 @@ function showE2eWindow(role) {
   return false
 }
 
+function createE2eReminderNotification() {
+  const notification = new EventEmitter()
+  notification.show = () => {
+    e2eRuntime.reminderNotification.attempts += 1
+    notification.emit(e2eRuntime.reminderNotification.outcome)
+  }
+  return notification
+}
+
 function hideE2eWindow(role) {
   const windowInstance = getWindowForRole(role)
   if (!windowInstance || windowInstance.isDestroyed()) return false
@@ -2844,6 +2858,11 @@ async function handleE2eControl(event, method, ...args) {
   if (method === 'simulateSystemResume') return powerMonitor.emit('resume')
   if (method === 'showWindow') return showE2eWindow(args[0])
   if (method === 'hideWindow') return hideE2eWindow(args[0])
+  if (method === 'setReminderNotificationOutcome') {
+    if (!['show', 'failed'].includes(args[0])) return false
+    e2eRuntime.reminderNotification.outcome = args[0]
+    return true
+  }
   if (method === 'prepareOnboarding') return prepareE2ePetOnboarding(args[0])
   if (method === 'expireOperationCapabilities') {
     return { expired: operationCapabilities.expireAll() }
@@ -3178,13 +3197,22 @@ function registerIpc() {
       return false
     }
 
-    const notification = new Notification({
+    const isPetReminder = senderRole === 'pet' && payload?.reminderServer !== undefined
+    const requiresConfirmation = isPetReminder && (process.platform === 'win32' || isE2e)
+    const options = {
       title: payload?.title || 'Detachym',
       body: payload?.body || '',
-    })
-    if (senderRole === 'pet' && payload?.reminderServer !== undefined) {
-      bindReminderNotificationNavigation(notification)
     }
+    let notification
+    try {
+      notification = isPetReminder && isE2e ? createE2eReminderNotification() : new Notification(options)
+    } catch (error) {
+      if (requiresConfirmation) return false
+      throw error
+    }
+    if (requiresConfirmation) return showWindowsReminderNotification(notification, bindReminderNotificationNavigation)
+
+    if (isPetReminder) bindReminderNotificationNavigation(notification)
     notification.show()
     return true
   })
