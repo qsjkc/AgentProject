@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import './desktop-release.test.mjs'
 import './window-bounds.test.mjs'
+import './pet-drag.test.mjs'
 import './focus-session.test.mjs'
 import './focus-history.test.mjs'
 import './daily-step.test.mjs'
@@ -1542,6 +1543,10 @@ assert.equal(
 
 const draggingAnimation = petAnimationReducer(initialPetAnimation, { type: 'PET_DRAG_START' })
 assert.equal(draggingAnimation.action, ANIMATION_ACTIONS.DRAG)
+assert.equal(isLoopingPetAnimation(draggingAnimation.action), true)
+assert.equal(petAnimationReducer(draggingAnimation, { type: 'PET_DRAG_CANCEL' }).action, ANIMATION_ACTIONS.IDLE)
+const reminderDuringDrag = petAnimationReducer(draggingAnimation, { type: 'REMINDER_DUE', message: 'priority reminder' })
+assert.equal(petAnimationReducer(reminderDuringDrag, { type: 'PET_DRAG_CANCEL' }), reminderDuringDrag)
 const dragReleasedAnimation = petAnimationReducer(draggingAnimation, { type: 'PET_DRAG_RELEASE' })
 assert.equal(dragReleasedAnimation.action, ANIMATION_ACTIONS.HAPPY)
 

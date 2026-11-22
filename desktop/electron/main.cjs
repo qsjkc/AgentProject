@@ -60,6 +60,7 @@ const { createFocusAccountKey, createFocusSessionController } = require('./focus
 const { getDesktopDownloadPage } = require('./desktop-release.cjs')
 const { createReminderWakeupController } = require('./reminder-wakeup.cjs')
 const { createLoginAttemptController } = require('./login-attempt.cjs')
+const { createPetDragController } = require('./pet-drag.cjs')
 const {
   createBoundsPersistence,
   fitWindowBounds,
@@ -85,6 +86,7 @@ let store
 let petWindow
 let quickChatWindow
 let mainPanelWindow
+const petDrag = createPetDragController({ getWindow: () => petWindow, screen })
 let tray
 let quitting = false
 let debugLogPath = null
@@ -818,13 +820,14 @@ function clampWindowPosition(x, y, width, height, displayOverride = null) {
 }
 
 function recoverDesktopWindowPositions() {
-  recoverWindowBounds(petWindow, screen, { resizeToFit: false })
+  recoverWindowBounds(petWindow, screen, { resizeToFit: false, allowAcrossDisplays: true })
   recoverWindowBounds(quickChatWindow, screen, { resizeToFit: false })
   recoverWindowBounds(mainPanelWindow, screen)
   syncQuickChatPosition()
 }
 
 function scheduleDisplayRecovery() {
+  petDrag.cancel()
   if (displayRecoveryTimer !== null) clearTimeout(displayRecoveryTimer)
   displayRecoveryTimer = setTimeout(() => {
     displayRecoveryTimer = null
@@ -840,7 +843,7 @@ function getPetBounds() {
     x: Number.isFinite(petBounds.x) ? petBounds.x : 90,
     y: Number.isFinite(petBounds.y) ? petBounds.y : 90,
   }
-  return restoreWindowBounds(screen, bounds, bounds, { resizeToFit: false })
+  return restoreWindowBounds(screen, bounds, bounds, { resizeToFit: false, allowAcrossDisplays: true })
 }
 
 function getPetState() {
@@ -1261,17 +1264,20 @@ function attachRendererCapabilityLifecycle(windowInstance) {
   if (!sender) return
   sender.on('did-start-navigation', (_event, _url, _isInPlace, isMainFrame) => {
     if (isMainFrame !== false) {
+      if (windowInstance === petWindow) petDrag.cancel()
       loginAttempts.cancelOwner(sender)
       operationCapabilities.revokeSender(sender)
       reminderWakeupController?.cancelOwner(sender)
     }
   })
   sender.on('render-process-gone', () => {
+    if (windowInstance === petWindow) petDrag.cancel()
     loginAttempts.cancelOwner(sender)
     operationCapabilities.revokeSender(sender)
     reminderWakeupController?.cancelOwner(sender)
   })
   sender.once('destroyed', () => {
+    if (windowInstance === petWindow) petDrag.cancel()
     loginAttempts.cancelOwner(sender)
     operationCapabilities.revokeSender(sender)
     reminderWakeupController?.cancelOwner(sender)
@@ -1938,18 +1944,6 @@ function broadcastPetState(payload = {}) {
   return nextState
 }
 
-function setPetPosition(x, y) {
-  if (!petWindow || petWindow.isDestroyed()) {
-    return null
-  }
-
-  const currentBounds = petWindow.getBounds()
-  const nextPosition = clampWindowPosition(x, y, currentBounds.width, currentBounds.height)
-  petWindow.setPosition(nextPosition.x, nextPosition.y)
-  syncQuickChatPosition()
-  return nextPosition
-}
-
 function getQuickChatAnchorPosition(width, height) {
   if (!petWindow || petWindow.isDestroyed()) {
     return clampWindowPosition(120, 120, width, height)
@@ -1986,7 +1980,9 @@ function syncQuickChatPosition() {
 
   const quickBounds = quickChatWindow.getBounds()
   const nextPosition = getQuickChatAnchorPosition(quickBounds.width, quickBounds.height)
-  quickChatWindow.setPosition(nextPosition.x, nextPosition.y)
+  if (nextPosition.x !== quickBounds.x || nextPosition.y !== quickBounds.y) {
+    quickChatWindow.setPosition(nextPosition.x, nextPosition.y)
+  }
   return nextPosition
 }
 
@@ -1999,9 +1995,12 @@ function showPetWindow({ focus = false } = {}) {
   }
 
   const bounds = petWindow.getBounds()
-  const nextPosition = clampWindowPosition(bounds.x, bounds.y, bounds.width, bounds.height)
-  petWindow.setBounds({ ...bounds, ...nextPosition })
-  getStore().set('petBounds', { ...bounds, ...nextPosition })
+  const restoredBounds = restoreWindowBounds(screen, bounds, bounds, { resizeToFit: false, allowAcrossDisplays: true })
+  if (restoredBounds.x !== bounds.x || restoredBounds.y !== bounds.y) {
+    petDrag.cancel()
+    petWindow.setPosition(restoredBounds.x, restoredBounds.y)
+  }
+  getStore().set('petBounds', restoredBounds)
 
   if (!petWindow.isVisible()) {
     petWindow.show()
@@ -2082,6 +2081,7 @@ function registerVoiceGlobalShortcut() {
 }
 
 function resetPetPosition() {
+  petDrag.cancel()
   const nextPosition = restoreWindowBounds(screen, {
     width: PET_WINDOW_WIDTH, height: PET_WINDOW_HEIGHT, x: 90, y: 90,
   }, {}, { resizeToFit: false })
@@ -2131,11 +2131,14 @@ function createPetWindow() {
   petWindow.setAlwaysOnTop(true, 'screen-saver')
   persistBounds('petBounds', petWindow, { saveSize: false })
   petWindow.on('close', (event) => {
+    petDrag.cancel()
     if (!quitting) {
       event.preventDefault()
       petWindow.hide()
     }
   })
+  petWindow.on('hide', petDrag.cancel)
+  petWindow.once('closed', petDrag.cancel)
   petWindow.on('move', () => {
     syncQuickChatPosition()
   })
@@ -3247,11 +3250,12 @@ function registerIpc() {
       return 0
     }
   })
-  ipcMain.handle('desktop:set-pet-position', async (_event, position) => {
-    if (!position || typeof position !== 'object') {
-      return null
-    }
-    return setPetPosition(position.x, position.y)
+  ipcMain.on('desktop:pet-drag', (event, phase, payload, rendererInstanceNonce) => {
+    if (quitting || getCurrentRendererRole(event, rendererInstanceNonce) !== 'pet'
+      || event.senderFrame !== event.sender.mainFrame || !payload || typeof payload !== 'object') return
+    if (phase === 'begin') petDrag.begin(payload)
+    if (phase === 'move') petDrag.move(payload)
+    if (phase === 'end') petDrag.end(payload)
   })
 
   ipcMain.handle('desktop:show-notification', async (event, payload, expectedContext) => {

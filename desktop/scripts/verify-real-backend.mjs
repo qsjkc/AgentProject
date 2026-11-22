@@ -780,6 +780,8 @@ try {
     const beforeRows = await api('/reminders?pet_type=pig', tokenA)
     const draft = '十七分钟后提醒我伸个懒腰'
     await main.input('[data-e2e="main-chat-input"]', draft)
+    assert(await main.evaluate(`document.querySelector('[data-e2e="main-chat-input"]').value === ${JSON.stringify(draft)}`),
+      'Relative reminder input changed before submission')
     const beforeTime = Date.now()
     await clickEnabled(main, '[data-e2e="main-chat-send"]')
     const relative = await waitFor(async () => (await api('/reminders?pet_type=pig', tokenA)).find((row) => row.source_text === draft), { description: 'real relative reminder' })

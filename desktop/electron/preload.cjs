@@ -14,6 +14,12 @@ async function invokeForRendererInstance(channel, ...args) {
   return ipcRenderer.invoke(channel, ...args, rendererInstanceNonce)
 }
 
+function sendPetDrag(phase, payload) {
+  void rendererInstanceReady.then((ready) => {
+    if (ready) ipcRenderer.send('desktop:pet-drag', phase, payload, rendererInstanceNonce)
+  }).catch(() => {})
+}
+
 let e2eIntentAckMode = 'normal'
 let heldMainPanelIntent = null
 let pendingRelationshipCapabilityId = null
@@ -381,7 +387,9 @@ const desktopBridge = {
     )
   ),
   getPetBounds: () => ipcRenderer.invoke('desktop:get-pet-bounds'),
-  setPetPosition: (position) => ipcRenderer.invoke('desktop:set-pet-position', position),
+  beginPetDrag: (payload) => sendPetDrag('begin', payload),
+  movePetDrag: (payload) => sendPetDrag('move', payload),
+  endPetDrag: (payload) => sendPetDrag('end', payload),
   getSessionToken: () => ipcRenderer.invoke('desktop:get-session-token'),
   getSessionSnapshot: () => ipcRenderer.invoke('desktop:get-session-snapshot'),
   setSessionToken: (token, attempt) => invokeForRendererInstance('desktop:set-session-token', token, attempt),

@@ -277,7 +277,6 @@ function PetApp() {
   if (!companionLoadGateRef.current) companionLoadGateRef.current = createAccountOperationGate()
   const petAnimationStateRef = useRef(petAnimationState)
   const activeCareActionRef = useRef('')
-  const petPositionRef = useRef({ x: 90, y: 90 })
   const loggerRef = useRef(
     createVoiceDebugLogger((payload) => {
       void window.desktopBridge?.logDebug?.({
@@ -287,23 +286,9 @@ function PetApp() {
     }),
   )
   const suppressClickRef = useRef(false)
-  const settlingPointerRef = useRef(false)
-  const sendingPositionRef = useRef(false)
-  const rafRef = useRef(null)
-  const flushPromiseRef = useRef(null)
-  const dragRef = useRef({
-    pointerId: null,
-    thresholdScreenX: 0,
-    thresholdScreenY: 0,
-    baseScreenX: 0,
-    baseScreenY: 0,
-    latestScreenX: 0,
-    latestScreenY: 0,
-    baseWindowX: 0,
-    baseWindowY: 0,
-    moved: false,
-    wokeFromSleep: false,
-  })
+  const dragRef = useRef(null)
+  const dragIdRef = useRef(0)
+  const finishDragRef = useRef(null)
 
   const clearTransientBubbleTimer = useCallback(() => {
     if (transientBubbleTimerRef.current) {
@@ -356,9 +341,8 @@ function PetApp() {
     sleepTimerRef.current = window.setTimeout(() => {
       if (
         phaseRef.current === VOICE_PHASES.IDLE &&
-        dragRef.current.pointerId === null &&
+        !dragRef.current &&
         !transientBubbleRef.current &&
-        !settlingPointerRef.current &&
         !onboardingGuideRef.current &&
         !onboardingRequestInFlightRef.current
       ) {
@@ -576,8 +560,7 @@ function PetApp() {
     hasSession: hasSessionRef.current,
     visibilityState: document.visibilityState,
     voicePhase: phaseRef.current,
-    pointerActive: dragRef.current.pointerId !== null,
-    settlingPointer: settlingPointerRef.current,
+    pointerActive: Boolean(dragRef.current),
     activeCareAction: activeCareActionRef.current,
     transientBubble: transientBubbleRef.current,
     animationState: petAnimationStateRef.current,
@@ -1438,8 +1421,7 @@ function PetApp() {
           visibilityState: document.visibilityState,
           systemIdleSeconds: idleSeconds,
           voicePhase: phaseRef.current,
-          pointerActive: dragRef.current.pointerId !== null,
-          settlingPointer: settlingPointerRef.current,
+          pointerActive: Boolean(dragRef.current),
           activeCareAction: activeCareActionRef.current,
           transientBubble: transientBubbleRef.current,
           animationState: petAnimationStateRef.current,
@@ -1485,8 +1467,7 @@ function PetApp() {
           visibilityState: document.visibilityState,
           systemIdleSeconds: postClaimIdleSeconds,
           voicePhase: phaseRef.current,
-          pointerActive: dragRef.current.pointerId !== null,
-          settlingPointer: settlingPointerRef.current,
+          pointerActive: Boolean(dragRef.current),
           activeCareAction: activeCareActionRef.current,
           transientBubble: transientBubbleRef.current,
           animationState: petAnimationStateRef.current,
@@ -1565,8 +1546,7 @@ function PetApp() {
     voicePhase: phaseRef.current,
     animation: petAnimationStateRef.current.action,
     animationLocked: petAnimationStateRef.current.locked,
-    pointerActive: dragRef.current.pointerId !== null,
-    settlingPointer: settlingPointerRef.current,
+    pointerActive: Boolean(dragRef.current),
     careAction: activeCareActionRef.current,
     transientBubble: Boolean(transientBubbleRef.current),
     milestonePending: Boolean(milestoneRequestInFlightRef.current),
@@ -2151,10 +2131,9 @@ function PetApp() {
 
     const syncState = async ({ refreshRemote = false } = {}) => {
       try {
-        const [savedLanguage, session, bounds, storedPetState, storedVoiceSettings] = await Promise.all([
+        const [savedLanguage, session, storedPetState, storedVoiceSettings] = await Promise.all([
           getLanguage(),
           getSessionSnapshot(),
-          window.desktopBridge?.getPetBounds?.(),
           window.desktopBridge?.getPetState?.(),
           getVoiceSettings(),
         ])
@@ -2186,10 +2165,6 @@ function PetApp() {
         setHasSession(nextHasSession)
         setUserId(nextUserId)
         setVoiceSettings(normalizeVoiceSettings(storedVoiceSettings))
-
-        if (bounds?.x !== undefined && bounds?.y !== undefined) {
-          petPositionRef.current = bounds
-        }
 
         if (storedPetState?.petType) {
           setPetType(nextPetType)
@@ -2613,9 +2588,8 @@ function PetApp() {
         !companionStateReadyRef.current ||
         document.visibilityState !== 'visible' ||
         phaseRef.current !== VOICE_PHASES.IDLE ||
-        dragRef.current.pointerId !== null ||
+        dragRef.current ||
         transientBubbleRef.current ||
-        settlingPointerRef.current ||
         activeCareActionRef.current ||
         petAnimationStateRef.current.locked ||
         !canCommitPetCompanionResult({
@@ -2692,9 +2666,8 @@ function PetApp() {
             || !hasSessionRef.current
             || document.visibilityState !== 'visible'
             || phaseRef.current !== VOICE_PHASES.IDLE
-            || dragRef.current.pointerId !== null
+            || dragRef.current
             || transientBubbleRef.current
-            || settlingPointerRef.current
             || activeCareActionRef.current
             || petAnimationStateRef.current.locked
             || milestonePlaybackRef.current?.status === PET_MILESTONE_PLAYBACK_STATUS.PLAYING
@@ -2945,9 +2918,8 @@ function PetApp() {
     const timer = window.setInterval(() => {
       if (
         phaseRef.current !== VOICE_PHASES.IDLE ||
-        dragRef.current.pointerId !== null ||
+        dragRef.current ||
         transientBubbleRef.current ||
-        settlingPointerRef.current ||
         onboardingGuideRef.current ||
         onboardingRequestInFlightRef.current
       ) {
@@ -3218,9 +3190,6 @@ function PetApp() {
 
   useEffect(
     () => () => {
-      if (rafRef.current) {
-        window.cancelAnimationFrame(rafRef.current)
-      }
       if (intimacyFeedbackTimerRef.current) {
         window.clearTimeout(intimacyFeedbackTimerRef.current)
       }
@@ -3358,111 +3327,64 @@ function PetApp() {
     ],
   )
 
-  const schedulePositionFlush = () => {
-    if (rafRef.current) {
+  const finishDrag = ({ cancelled, screenX, screenY, unmounting = false }) => {
+    const drag = dragRef.current
+    if (!drag) return
+    dragRef.current = null
+    if (drag.frame !== null) window.cancelAnimationFrame(drag.frame)
+    if (cancelled || drag.moved) suppressClickRef.current = true
+
+    if (drag.moved) {
+      window.desktopBridge?.endPetDrag?.({
+        id: drag.id,
+        screenX: cancelled ? drag.screenX : screenX,
+        screenY: cancelled ? drag.screenY : screenY,
+        cancelled,
+      })
+    }
+
+    try {
+      drag.target.releasePointerCapture?.(drag.pointerId)
+    } catch {
+      // Capture can already have been released by the browser.
+    }
+
+    if (unmounting) return
+    resetPetActivityTimer()
+    if (!drag.moved) return
+    if (cancelled) {
+      dispatchPetAnimation({ type: 'PET_DRAG_CANCEL' })
       return
     }
-
-    rafRef.current = window.requestAnimationFrame(() => {
-      rafRef.current = null
-      flushPetPosition()
-    })
+    dispatchPetAnimation({ type: 'PET_DRAG_RELEASE' })
+    void recordOnboardingInteraction('drag-release')
+    void rewardInteraction('drag_release')
+    setTransientBubbleForDuration(t(languageRef.current, 'dragSaved'), 1500)
   }
+  finishDragRef.current = finishDrag
 
-  const flushPetPosition = ({ force = false } = {}) => {
-    if (sendingPositionRef.current) {
-      return flushPromiseRef.current ?? Promise.resolve(false)
+  useEffect(() => {
+    const cancel = () => finishDragRef.current?.({ cancelled: true })
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') cancel()
     }
-
-    if (dragRef.current.pointerId === null || (!force && !dragRef.current.moved)) {
-      return Promise.resolve(false)
+    window.addEventListener('blur', cancel)
+    document.addEventListener('visibilitychange', onVisibilityChange)
+    return () => {
+      window.removeEventListener('blur', cancel)
+      document.removeEventListener('visibilitychange', onVisibilityChange)
+      finishDragRef.current?.({ cancelled: true, unmounting: true })
     }
-
-    const sentScreenX = dragRef.current.latestScreenX
-    const sentScreenY = dragRef.current.latestScreenY
-    const baseScreenX = dragRef.current.baseScreenX
-    const baseScreenY = dragRef.current.baseScreenY
-    const baseWindowX = dragRef.current.baseWindowX
-    const baseWindowY = dragRef.current.baseWindowY
-
-    const deltaX = sentScreenX - baseScreenX
-    const deltaY = sentScreenY - baseScreenY
-    if (deltaX === 0 && deltaY === 0) {
-      return Promise.resolve(false)
-    }
-
-    sendingPositionRef.current = true
-    const requestedPosition = {
-      x: baseWindowX + deltaX,
-      y: baseWindowY + deltaY,
-    }
-
-    const flushPromise = window.desktopBridge
-      ?.setPetPosition?.(requestedPosition)
-      .then((bounds) => {
-        const nextBounds = bounds?.x !== undefined && bounds?.y !== undefined ? bounds : requestedPosition
-        petPositionRef.current = nextBounds
-        dragRef.current.baseWindowX = nextBounds.x
-        dragRef.current.baseWindowY = nextBounds.y
-        dragRef.current.baseScreenX = sentScreenX
-        dragRef.current.baseScreenY = sentScreenY
-        return true
-      })
-      .catch(() => {
-        dragRef.current.baseWindowX = petPositionRef.current.x ?? dragRef.current.baseWindowX
-        dragRef.current.baseWindowY = petPositionRef.current.y ?? dragRef.current.baseWindowY
-        dragRef.current.baseScreenX = sentScreenX
-        dragRef.current.baseScreenY = sentScreenY
-        return false
-      })
-      .finally(() => {
-        sendingPositionRef.current = false
-        flushPromiseRef.current = null
-        if (
-          !settlingPointerRef.current &&
-          dragRef.current.pointerId !== null &&
-          (dragRef.current.latestScreenX !== dragRef.current.baseScreenX ||
-            dragRef.current.latestScreenY !== dragRef.current.baseScreenY)
-        ) {
-          schedulePositionFlush()
-        }
-      })
-
-    flushPromiseRef.current = flushPromise
-    return flushPromise
-  }
-
-  const settlePendingDrag = async () => {
-    if (rafRef.current) {
-      window.cancelAnimationFrame(rafRef.current)
-      rafRef.current = null
-    }
-
-    while (true) {
-      if (sendingPositionRef.current) {
-        await (flushPromiseRef.current ?? Promise.resolve(false))
-        continue
-      }
-
-      if (
-        dragRef.current.latestScreenX === dragRef.current.baseScreenX &&
-        dragRef.current.latestScreenY === dragRef.current.baseScreenY
-      ) {
-        break
-      }
-
-      await flushPetPosition({ force: true })
-    }
-  }
+  }, [])
 
   const handlePointerDown = (event) => {
-    if (event.button !== 0) {
-      return
-    }
+    if (event.button !== 0 || event.isPrimary === false) return
+    if (dragRef.current) finishDrag({ cancelled: true })
 
     void interruptMilestonePlayback('pointer-down')
     void interruptOnboardingGuide('pointer-down')
     const wasSleeping = petAnimationState.action === ANIMATION_ACTIONS.SLEEPING
+    suppressClickRef.current = wasSleeping
     resetPetActivityTimer()
     if (wasSleeping) {
       const message = getPetRelationshipEventCopy(
@@ -3482,96 +3404,67 @@ function PetApp() {
     }
 
     dragRef.current = {
+      id: ++dragIdRef.current,
       pointerId: event.pointerId,
-      thresholdScreenX: event.screenX,
-      thresholdScreenY: event.screenY,
-      baseScreenX: event.screenX,
-      baseScreenY: event.screenY,
-      latestScreenX: event.screenX,
-      latestScreenY: event.screenY,
-      baseWindowX: petPositionRef.current.x ?? 90,
-      baseWindowY: petPositionRef.current.y ?? 90,
+      pointerType: event.pointerType || 'mouse',
+      target: event.currentTarget,
+      offsetX: event.clientX,
+      offsetY: event.clientY,
+      startScreenX: event.screenX,
+      startScreenY: event.screenY,
+      screenX: event.screenX,
+      screenY: event.screenY,
+      frame: null,
       moved: false,
-      wokeFromSleep: wasSleeping,
     }
   }
 
   const handlePointerMove = (event) => {
-    if (dragRef.current.pointerId !== event.pointerId) {
+    const drag = dragRef.current
+    if (!drag || drag.pointerId !== event.pointerId) return
+    if (drag.pointerType === 'mouse' && !(event.buttons & 1)) {
+      finishDrag({ cancelled: true })
       return
     }
-
     event.preventDefault()
-    dragRef.current.latestScreenX = event.screenX
-    dragRef.current.latestScreenY = event.screenY
+    drag.screenX = event.screenX
+    drag.screenY = event.screenY
 
-    const deltaX = event.screenX - dragRef.current.thresholdScreenX
-    const deltaY = event.screenY - dragRef.current.thresholdScreenY
-    if (!dragRef.current.moved && (Math.abs(deltaX) >= DRAG_THRESHOLD || Math.abs(deltaY) >= DRAG_THRESHOLD)) {
-      dragRef.current.moved = true
+    const deltaX = event.screenX - drag.startScreenX
+    const deltaY = event.screenY - drag.startScreenY
+    if (!drag.moved && (Math.abs(deltaX) >= DRAG_THRESHOLD || Math.abs(deltaY) >= DRAG_THRESHOLD)) {
+      drag.moved = true
+      suppressClickRef.current = true
+      window.desktopBridge?.beginPetDrag?.({
+        id: drag.id, offsetX: drag.offsetX, offsetY: drag.offsetY, pointerType: drag.pointerType,
+      })
       dispatchPetAnimation({ type: 'PET_DRAG_START' })
     }
 
-    if (dragRef.current.moved) {
-      schedulePositionFlush()
-    }
+    if (!drag.moved || drag.frame !== null) return
+    drag.frame = window.requestAnimationFrame(() => {
+      drag.frame = null
+      if (dragRef.current !== drag) return
+      window.desktopBridge?.movePetDrag?.({ id: drag.id, screenX: drag.screenX, screenY: drag.screenY })
+    })
   }
 
-  const finishPointerInteraction = async (event) => {
-    if (dragRef.current.pointerId !== event.pointerId) {
-      return
-    }
-
-    resetPetActivityTimer()
-    try {
-      event.currentTarget.releasePointerCapture?.(event.pointerId)
-    } catch {
-      // ignore pointer capture mismatch
-    }
-
-    dragRef.current.latestScreenX = event.screenX
-    dragRef.current.latestScreenY = event.screenY
-
-    const didMove = dragRef.current.moved
-    const wokeFromSleep = dragRef.current.wokeFromSleep
-    settlingPointerRef.current = true
-
-    if (didMove) {
-      await settlePendingDrag()
-    }
-
-    dragRef.current = {
-      pointerId: null,
-      thresholdScreenX: 0,
-      thresholdScreenY: 0,
-      baseScreenX: 0,
-      baseScreenY: 0,
-      latestScreenX: 0,
-      latestScreenY: 0,
-      baseWindowX: 0,
-      baseWindowY: 0,
-      moved: false,
-      wokeFromSleep: false,
-    }
-    settlingPointerRef.current = false
-
-    if (didMove || wokeFromSleep) {
-      suppressClickRef.current = true
-      window.setTimeout(() => {
-        suppressClickRef.current = false
-      }, 240)
-    }
-
-    if (didMove) {
-      dispatchPetAnimation({ type: 'PET_DRAG_RELEASE' })
-      void recordOnboardingInteraction('drag-release')
-      void rewardInteraction('drag_release')
-      setTransientBubbleForDuration(t(languageRef.current, 'dragSaved'), 1500)
-    }
+  const handlePointerUp = (event) => {
+    if (dragRef.current?.pointerId !== event.pointerId) return
+    finishDrag({ cancelled: false, screenX: event.screenX, screenY: event.screenY })
   }
 
-  const handleClick = () => {
-    if (suppressClickRef.current) {
+  const handlePointerCancel = (event) => {
+    if (dragRef.current?.pointerId !== event.pointerId) return
+    finishDrag({ cancelled: true })
+  }
+
+  const handleLostPointerCapture = (event) => {
+    if (!event.currentTarget.hasPointerCapture?.(event.pointerId)) handlePointerCancel(event)
+  }
+
+  const handleClick = (event) => {
+    if (suppressClickRef.current && event.detail !== 0) {
       return
     }
     resetPetActivityTimer()
@@ -3844,8 +3737,9 @@ function PetApp() {
           onClick={handleClick}
           onPointerDown={handlePointerDown}
           onPointerMove={handlePointerMove}
-          onPointerUp={finishPointerInteraction}
-          onPointerCancel={finishPointerInteraction}
+          onPointerUp={handlePointerUp}
+          onPointerCancel={handlePointerCancel}
+          onLostPointerCapture={handleLostPointerCapture}
           aria-label={t(language, 'desktopPetAlt', { pet: petLabel })}
         >
           <div className="pet-button-inner">
