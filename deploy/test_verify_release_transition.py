@@ -155,6 +155,57 @@ gh() {
         self.assertLess(self.workflow.index("- name: Stage verified desktop download"), guard)
         self.assertLess(guard, self.workflow.index("- name: Deploy on server"))
 
+    def test_release_upload_failure_stops_before_image_load_or_desktop_manifest(self):
+        if not self.bash:
+            self.skipTest("Bash is required to execute release staging")
+        installer = "Detachym-1.0.0-x64.exe"
+        mocks = '''
+ssh() { echo 'opened SSH command'; }
+timeout() {
+  printf '%s\\n' "$*" >> "$TEST_UPLOAD_LOG"
+  echo 'simulated SCP failure' >&2
+  return "$TEST_UPLOAD_EXIT"
+}
+export -f timeout
+'''
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for filename in ("server-images/server-images.tar.gz", "server-images/server-images.json",
+                             f"desktop-release/{installer}", "desktop-release/desktop-release.json"):
+                artifact = root / filename
+                artifact.parent.mkdir(exist_ok=True)
+                artifact.write_bytes(b"release")
+            (root / "deploy").mkdir()
+            shutil.copyfile(Path(__file__).with_name("transfer_release_files.sh"),
+                            root / "deploy/transfer_release_files.sh")
+            log = root / "upload.log"
+            env = {**os.environ, "DEPLOY_APP_DIR": "/release", "DEPLOY_SOURCE_SHA": self.SOURCE_SHA,
+                   "DESKTOP_ARTIFACT_FILENAME": installer, "TEST_UPLOAD_LOG": log.as_posix()}
+            cases = (
+                ("Stage and load verified server images", "server-images.tar.gz",
+                 f"/release/.server-images-{self.SOURCE_SHA}/", 1),
+                ("Stage verified desktop download", installer,
+                 f"/release/data/downloads/.{installer}.{self.SOURCE_SHA}.upload", 0),
+            )
+            for step, filename, destination, ssh_calls in cases:
+                for exit_code, hint in ((1, "failed (exit 1)"), (124, "exceeded its 12m limit")):
+                    with self.subTest(step=step, exit_code=exit_code):
+                        log.write_text("")
+                        result = subprocess.run([self.bash, "--noprofile", "--norc"],
+                                                input=mocks + self.run_block(step), cwd=root,
+                                                env={**env, "TEST_UPLOAD_EXIT": str(exit_code)},
+                                                text=True, capture_output=True, timeout=10)
+                        self.assertEqual(result.returncode, exit_code, result.stderr)
+                        self.assertIn(f"Staging {filename} (7 bytes)", result.stdout)
+                        self.assertEqual(result.stdout.count("opened SSH command"), ssh_calls)
+                        self.assertIn(hint, result.stderr)
+                        self.assertIn("Service switch has not started", result.stderr)
+                        self.assertIn("simulated SCP failure", result.stderr)
+                        calls = log.read_text().splitlines()
+                        self.assertEqual(len(calls), 1)
+                        self.assertTrue(calls[0].startswith("--kill-after=15s 12m scp -B -- "), calls)
+                        self.assertTrue(calls[0].endswith(f" deploy-target:{destination}"), calls)
+
 
 if __name__ == "__main__":
     unittest.main()

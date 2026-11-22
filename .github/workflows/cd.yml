@@ -519,8 +519,9 @@ jobs:
         run: |
           set -euo pipefail
           ssh deploy-target "mkdir -p '$DEPLOY_APP_DIR/.server-images-$DEPLOY_SOURCE_SHA'"
-          scp server-images/server-images.tar.gz server-images/server-images.json \
-            "deploy-target:$DEPLOY_APP_DIR/.server-images-$DEPLOY_SOURCE_SHA/"
+          # Healthy uploads took under two minutes. Leave ample transfer time without using the 45-minute job budget.
+          bash deploy/transfer_release_files.sh 12m "deploy-target:$DEPLOY_APP_DIR/.server-images-$DEPLOY_SOURCE_SHA/" \
+            server-images/server-images.tar.gz server-images/server-images.json
           ssh deploy-target "cd '$DEPLOY_APP_DIR' && DEPLOY_SOURCE_SHA='$DEPLOY_SOURCE_SHA' bash -s" <<'REMOTE_IMAGES'
           set -euo pipefail
           RELEASE_DIR=".server-images-$DEPLOY_SOURCE_SHA"
@@ -535,10 +536,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          scp "desktop-release/$DESKTOP_ARTIFACT_FILENAME" \
-            "deploy-target:$DEPLOY_APP_DIR/data/downloads/.$DESKTOP_ARTIFACT_FILENAME.$DEPLOY_SOURCE_SHA.upload"
-          scp desktop-release/desktop-release.json \
-            "deploy-target:$DEPLOY_APP_DIR/.desktop-release-$DEPLOY_SOURCE_SHA.json"
+          bash deploy/transfer_release_files.sh 12m \
+            "deploy-target:$DEPLOY_APP_DIR/data/downloads/.$DESKTOP_ARTIFACT_FILENAME.$DEPLOY_SOURCE_SHA.upload" \
+            "desktop-release/$DESKTOP_ARTIFACT_FILENAME"
+          bash deploy/transfer_release_files.sh 1m \
+            "deploy-target:$DEPLOY_APP_DIR/.desktop-release-$DEPLOY_SOURCE_SHA.json" desktop-release/desktop-release.json
 
       - name: Recheck main before service switch
         shell: bash
