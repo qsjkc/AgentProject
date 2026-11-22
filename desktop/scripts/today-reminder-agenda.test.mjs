@@ -36,6 +36,33 @@ test('today agenda distinguishes receipt, due time, next reminder and prior-day 
   assert.deepEqual(scheduled, original)
 })
 
+test('today agenda orders a prior-day reminder by its receipt while keeping the original occurrence', () => {
+  const originalDue = localTime(21, 23, 55)
+  const lateReceipt = localTime(22, 0, 5)
+  const currentTime = Date.parse(localTime(22, 0, 10))
+  const delivered = [
+    reminder(1, originalDue, { series_id: 10, triggered_at: lateReceipt }),
+    reminder(6, originalDue, { status: 'completed', triggered_at: lateReceipt }),
+    reminder(7, originalDue, { status: 'canceled', triggered_at: lateReceipt }),
+    reminder(8, originalDue, { user_id: 18, triggered_at: lateReceipt }),
+    reminder(9, originalDue, { pet_type: 'cat', triggered_at: lateReceipt }),
+  ]
+  const scheduled = [
+    reminder(1, originalDue, { series_id: 10 }), reminder(2, localTime(22, 0, 1)),
+    reminder(3, originalDue), reminder(4, originalDue, { triggered_at: localTime(22, 0, 11) }),
+    reminder(5, originalDue, { triggered_at: 'invalid' }),
+    reminder(11, originalDue, { triggered_at: localTime(21, 23, 59) }),
+  ]
+  const series = [recurrence(10, localTime(22, 0, 15))]
+  const result = getTodayReminderAgenda({ scheduled, delivered, series, accountContext, now: currentTime })
+  assert.deepEqual(result.items.map(({ key }) => key), ['reminder:2', 'reminder:1', `series:10:${Date.parse(localTime(22, 0, 15))}`])
+  assert.deepEqual(result.items[1], {
+    key: 'reminder:1', title: 'Reminder 1', remindAt: Date.parse(originalDue),
+    lateDeliveryAt: Date.parse(lateReceipt), status: 'delivered', destination: 'delivered', targetId: 1,
+  })
+  assert.equal(result.earlierUnfinished, 4)
+})
+
 test('today agenda keeps only pending rows and series from the active user and pet', () => {
   const scheduled = [reminder(1, localTime(22, 15), { user_id: 18 }), reminder(2, localTime(22, 12), { pet_type: 'cat' }),
     reminder(3, 'invalid'), reminder(4, localTime(21), { user_id: 18 }), reminder(5, localTime(22, 13))]
@@ -105,6 +132,13 @@ test('today agenda uses local calendar bounds on both DST clock changes', () => 
       const { items, earlierUnfinished } = getTodayReminderAgenda({ scheduled, accountContext, now: Date.parse(current) })
       assert.deepEqual(items.map((item) => item.key), ['reminder:2', 'reminder:3'])
       assert.equal(earlierUnfinished, 1)
+      const delivered = [{ ...scheduled[0], triggered_at: boundaries[1] }]
+      const withReceipt = getTodayReminderAgenda({ scheduled, delivered, accountContext, now: Date.parse(current) })
+      assert.equal(withReceipt.earlierUnfinished, 0)
+      assert.equal(withReceipt.items.length, 3)
+      const late = withReceipt.items.find(({ key }) => key === 'reminder:1')
+      assert.equal(late.remindAt, Date.parse(boundaries[0]))
+      assert.equal(late.lateDeliveryAt, Date.parse(boundaries[1]))
     }
   `], { encoding: 'utf8', env: { ...process.env, TZ: 'America/New_York' } })
   assert.equal(result.status, 0, result.stderr || result.stdout)

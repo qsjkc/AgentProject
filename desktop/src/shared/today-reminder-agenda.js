@@ -37,12 +37,15 @@ export function getTodayReminderAgenda({ delivered, scheduled, series, accountCo
     const id = normalizeId(row.id)
     const remindAt = Date.parse(row.remind_at)
     if (id === null || !Number.isFinite(remindAt) || typeof row.title !== 'string') continue
-    const received = Number.isFinite(Date.parse(row.triggered_at))
+    const triggeredAt = Date.parse(row.triggered_at)
+    const received = Number.isFinite(triggeredAt)
     const previous = actual.get(id)
     if (previous && (previous.status === 'delivered' || !received)) continue
     const seriesId = normalizeId(row.series_id)
     const seriesStatus = seriesById.get(seriesId)?.status
     if (!received && (seriesStatus === 'paused' || seriesStatus === 'canceled')) continue
+    // A receipt can bring an older reminder into today without changing its scheduled occurrence.
+    const deliveredToday = remindAt < start && triggeredAt >= start && triggeredAt <= now
     actual.set(id, {
       key: `reminder:${id}`,
       title: row.title,
@@ -51,13 +54,14 @@ export function getTodayReminderAgenda({ delivered, scheduled, series, accountCo
       destination: received ? 'delivered' : seriesId !== null ? 'recurring' : 'upcoming',
       targetId: !received && seriesId !== null ? seriesId : id,
       seriesId,
+      ...(deliveredToday ? { lateDeliveryAt: triggeredAt } : {}),
     })
   }
 
   const occurrences = new Set()
   let oldestEarlierTime = Infinity
   for (const { seriesId, ...item } of actual.values()) {
-    if (item.remindAt < start) {
+    if (item.remindAt < start && item.lateDeliveryAt === undefined) {
       earlierUnfinished += 1
       if (item.remindAt < oldestEarlierTime) {
         oldestEarlierTime = item.remindAt
@@ -80,6 +84,7 @@ export function getTodayReminderAgenda({ delivered, scheduled, series, accountCo
     items.push({ key: `series:${occurrence}`, title: row.title, remindAt, status: 'projected', destination: 'recurring', targetId: id })
   }
 
-  items.sort((left, right) => left.remindAt - right.remindAt || left.key.localeCompare(right.key))
+  items.sort((left, right) => (left.lateDeliveryAt ?? left.remindAt) - (right.lateDeliveryAt ?? right.remindAt)
+    || left.key.localeCompare(right.key))
   return { items, earlierUnfinished, earlierDestination }
 }

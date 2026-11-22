@@ -19,8 +19,10 @@ function getFixtureSchedule(main) {
     const prior = new Date(day)
     prior.setDate(prior.getDate() - 1)
     prior.setHours(18, 0, 0, 0)
+    const lateDue = new Date(prior).setHours(23, 55, 0, 0)
     return {
-      now: Date.parse(at(12)), delivered: at(9), scheduled: at(14), projected: at(16), earlier: prior.toISOString(),
+      now: Date.parse(at(12)), lateDue: new Date(lateDue).toISOString(),
+      delivered: at(9), scheduled: at(14), projected: at(16), earlier: prior.toISOString(),
       timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
     }
   })()`)
@@ -50,7 +52,7 @@ export async function todayAgendaScenario(context) {
   const record = (title, remindAt, petType = 'pig') => createReminderRecord({
     user: OWNER, petType, id: stub.fixture.nextReminderId++, title, remindAt: new Date(remindAt),
   })
-  const delivered = record('已提醒待完成', clock.delivered)
+  const delivered = record('跨夜送达待完成', clock.lateDue)
   delivered.triggered_at = clock.delivered
   const scheduled = record('下午记得喝水', clock.scheduled)
   const earlier = record('昨天还没有做完', clock.earlier)
@@ -87,9 +89,12 @@ export async function todayAgendaScenario(context) {
       assertEqual(rows[index].status, item.status, 'Unexpected today status or sort order')
       assertEqual(rows[index].destination, item.destination, 'Today row points to the wrong manager')
       assertEqual(rows[index].targetId, String(item.targetId), 'Today row points to the wrong record')
-      assertEqual(rows[index].time, item.time, 'Today row shows a different scheduled instant')
+      assertEqual(rows[index].time, item.time, 'Today row shows a different delivery or scheduled instant')
       assert(rows[index].text.includes(item.title), 'Today row shows the wrong reminder title')
     }
+    assert(/今日送达|Delivered today/.test(rows[0].text), 'Overnight row does not label the displayed delivery time')
+    assert(await main.evaluate(`document.querySelector(${JSON.stringify(EARLIER)}).textContent.includes('1')`),
+      'Earlier count should keep the untriggered backlog only')
     assert(await main.evaluate(`!document.querySelector(${JSON.stringify(AGENDA)}).textContent.includes(${JSON.stringify(otherPet.title)})`), 'Today agenda includes a different pet’s reminder')
     await waitFor(() => stub.requests.slice(refreshStart).some((request) => request.method === 'GET' && request.pathname === SERIES), {
       description: 'a device calendar change refreshes the existing reminder sources',
@@ -117,7 +122,7 @@ export async function todayAgendaScenario(context) {
       'Completing the delivered reminder issued more than one request')
     await main.evaluate(`document.querySelector(${JSON.stringify(AGENDA)}).scrollIntoView({ block: 'center' })`)
     const screenshot = await main.screenshot(join(context.artifactPath, 'today-agenda.png'))
-    return { deviceDayRefresh: true, sortedAndScoped: true, earlierRoutesToManager: true, allTodayRoutesFocused: true, liveCompletion: true, screenshot }
+    return { deviceDayRefresh: true, sortedAndScoped: true, overnightDelivery: true, earlierRoutesToManager: true, allTodayRoutesFocused: true, liveCompletion: true, screenshot }
   } finally {
     restoreSeries()
     await main.evaluate("window.restoreAgendaClock?.(); window.dispatchEvent(new Event('focus'))")
