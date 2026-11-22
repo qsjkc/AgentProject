@@ -66,8 +66,9 @@ export function cancelReminderSeries(seriesId, operationContext) {
   }, operationContext)
 }
 
-export function markReminderTriggered(reminderId, operationContext) {
-  return desktopApiRequest(`/reminders/${reminderId}/trigger`, {
+export function markReminderTriggered(reminderId, operationContext, expectedRemindAt) {
+  const query = expectedRemindAt ? `?${new URLSearchParams({ expected_remind_at: expectedRemindAt })}` : ''
+  return desktopApiRequest(`/reminders/${reminderId}/trigger${query}`, {
     method: 'POST',
   }, operationContext)
 }

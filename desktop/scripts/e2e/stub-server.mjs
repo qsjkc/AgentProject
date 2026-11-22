@@ -476,6 +476,11 @@ export class StubServer {
         json(response, 409, { detail: 'Only due pending reminders can be triggered' })
         return
       }
+      const expectedRemindAt = requestUrl.searchParams.get('expected_remind_at')
+      if (reminderActionMatch[2] === 'trigger' && expectedRemindAt !== null && expectedRemindAt !== reminder.remind_at) {
+        json(response, 409, { detail: 'Reminder changed before it could be triggered' })
+        return
+      }
       reminder.triggered_at ||= now
       if (reminderActionMatch[2] === 'complete') {
         reminder.status = 'completed'

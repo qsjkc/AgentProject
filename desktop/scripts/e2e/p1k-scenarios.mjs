@@ -941,9 +941,11 @@ export async function reminderConfirmationRetryScenario(context) {
     payload: { detail: 'Temporary trigger confirmation failure' },
   })
   const successfulTrigger = context.stub.holdNext('POST', route)
+  let staleTrigger
+  let stalePoll
   const { logPath } = await pet.evaluate('window.desktopBridge.getLogPaths()')
-  const presentations = async () => (await readFile(logPath, 'utf8')).trim().split('\n').map((line) => JSON.parse(line))
-    .filter((record) => record.payload?.event === 'reminder:presented' && record.payload.details?.reminderId === reminder.id)
+  const presentations = async (reminderId = reminder.id) => (await readFile(logPath, 'utf8')).trim().split('\n').map((line) => JSON.parse(line))
+    .filter((record) => record.payload?.event === 'reminder:presented' && record.payload.details?.reminderId === reminderId)
     .map((record) => record.payload.details)
   account.reminders = [reminder]
   const firstPoll = callE2e(pet, 'flushReminderPoll')
@@ -982,11 +984,52 @@ export async function reminderConfirmationRetryScenario(context) {
     const receipts = await presentations()
     assertEqual(receipts.length, 1, 'The acknowledgment retry emitted another presentation')
     assert(receipts[0].bubbleShown && receipts[0].nativeShown, 'The first presentation did not cover both channels', receipts[0])
-    return { triggerAttempts: triggerAttempts(), presentations: receipts.length, sameProfileReload: true, mainPanelRefreshed: true, unauthorizedRefreshRejected: true }
+
+    const rescheduleNow = Date.now()
+    const firstDue = new Date(rescheduleNow - 2000).toISOString().replace(/Z$/, '123Z')
+    const nextDue = new Date(rescheduleNow - 1000).toISOString().replace(/Z$/, '789Z')
+    const rescheduled = createReminderRecord({
+      user: USERS.A, id: context.stub.fixture.nextReminderId++, title: '改期后仍需送达的提醒',
+    })
+    rescheduled.remind_at = firstDue
+    const rescheduledPath = `/reminders/${rescheduled.id}`
+    const rescheduledTrigger = `/api/v1${rescheduledPath}/trigger`
+    staleTrigger = context.stub.holdNext('POST', rescheduledTrigger)
+    account.reminders = [rescheduled]
+    stalePoll = callE2e(pet, 'flushReminderPoll')
+    const staleRequest = await withTimeout(staleTrigger.arrived, 8000, 'original schedule acknowledgment before rescheduling')
+    const changed = await fetch(`${context.stub.apiBaseUrl}${rescheduledPath}`, {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${account.token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ remind_at: nextDue }),
+    })
+    assertEqual(changed.status, 200, 'The fixture reschedule failed')
+    assertEqual((await changed.json()).remind_at, nextDue, 'Rescheduling changed the fixture timestamp')
+    staleTrigger.release()
+    await stalePoll
+    assert(!rescheduled.triggered_at, 'The delayed acknowledgment marked the new schedule as delivered')
+    assertEqual(new URLSearchParams(staleRequest.search).get('expected_remind_at'), firstDue, 'The old acknowledgment omitted or rounded its scheduled time')
+
+    // Reconcile from the same profile with a fresh poll controller after the conflict.
+    await pet.reload()
+    await waitFor(() => rescheduled.triggered_at, { description: 'the rescheduled occurrence is acknowledged after reconciliation' })
+    await callE2e(pet, 'flushReminderPoll')
+    const rescheduledReceipts = await presentations(rescheduled.id)
+    assertEqual(rescheduledReceipts.map((receipt) => receipt.dueAt).join(','), [firstDue, nextDue].join(','),
+      'Each schedule must be presented exactly once')
+    const scheduleAttempts = context.stub.requests.filter(({ method, pathname }) => method === 'POST' && pathname === rescheduledTrigger)
+    assertEqual(scheduleAttempts.map(({ search }) => new URLSearchParams(search).get('expected_remind_at')).join(','), [firstDue, nextDue].join(','),
+      'Each acknowledgment must retain the exact original time of its presentation')
+    assert(context.stub.requests.filter((request) => request.method === 'POST' && request.pathname === route)
+      .every(({ search }) => new URLSearchParams(search).get('expected_remind_at') === reminder.remind_at),
+    'Retries must keep the same original scheduled time')
+    return { triggerAttempts: triggerAttempts(), presentations: receipts.length, sameProfileReload: true, mainPanelRefreshed: true, unauthorizedRefreshRejected: true, rescheduledPresentations: rescheduledReceipts.length, staleScheduleRejected: true }
   } finally {
     failedTrigger.release()
     successfulTrigger.release()
+    staleTrigger?.release()
     await firstPoll.catch(() => {})
+    await stalePoll?.catch(() => {})
     await main.evaluate('window.stopReminderUpdateObservation?.()').catch(() => {})
     account.reminders = previousReminders
   }
