@@ -47,6 +47,17 @@ export function readDailyStep(storageKey, date, getStorage = getLocalStorage) {
   }
 }
 
+export function readDailyStepCarryOver(storageKey, date, getStorage = getLocalStorage) {
+  if (!storageKey || !date) return null
+  // The key is already a local calendar date. Use UTC only for calendar arithmetic,
+  // so DST and overnight offset changes do not shift which date counts as yesterday.
+  const previous = new Date(`${date}T00:00:00Z`)
+  if (!Number.isFinite(previous.getTime())) return null
+  previous.setUTCDate(previous.getUTCDate() - 1)
+  const candidate = readDailyStep(storageKey, previous.toISOString().slice(0, 10), getStorage)
+  return candidate?.completed === false ? candidate : null
+}
+
 export function writeDailyStep(storageKey, date, value, getStorage = getLocalStorage) {
   const step = normalizeStep(value)
   if (!storageKey || !date || (value !== null && !step)) return false

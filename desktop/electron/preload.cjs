@@ -103,6 +103,17 @@ const mainPanelIntentListeners = createMainPanelIntentListenerRegistry({
   ),
 })
 
+const todayRequestListeners = createMainPanelIntentListenerRegistry({
+  onReady: () => void invokeForRendererInstance('desktop:today-request-readiness', true).catch(() => false),
+  onNotReady: () => void invokeForRendererInstance('desktop:today-request-readiness', false).catch(() => false),
+  validateContext: (context) => invokeForRendererInstance('desktop:today-request-current', context).catch(() => false),
+  acknowledge: (id) => invokeForRendererInstance('desktop:today-request-ack', id).catch(() => false),
+})
+
+ipcRenderer.on('desktop:today-requested', (_event, payload) => {
+  void todayRequestListeners.consume(payload)
+})
+
 ipcRenderer.on('desktop:main-panel-intent', (_event, payload) => {
   if (e2eEnabled && e2eIntentAckMode !== 'normal') {
     heldMainPanelIntent = payload
@@ -136,6 +147,10 @@ const desktopBridge = {
     return () => ipcRenderer.removeListener('desktop:focus-session-changed', listener)
   },
   openMainPanel: (options) => ipcRenderer.invoke('desktop:open-main-panel', options),
+  openToday: async () => (await invokeForRendererInstance('desktop:open-today')) === true,
+  onTodayRequested: (callback) => todayRequestListeners.add(
+    typeof callback === 'function' ? (payload) => callback(payload.authoritative) : null,
+  ),
   ackMainPanelIntent: (id) => ipcRenderer.invoke('desktop:main-panel-intent-ack', id),
   minimizeMainPanel: () => ipcRenderer.invoke('desktop:minimize-main-panel'),
   hideMainPanel: () => ipcRenderer.invoke('desktop:hide-main-panel'),

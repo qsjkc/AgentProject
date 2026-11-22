@@ -86,6 +86,17 @@
 .daily-step-actions button:disabled { opacity: .55; cursor: default; }
 .daily-step :is(button, input):focus-visible { outline: 2px solid #587553; outline-offset: 2px; }
 
+.daily-step-carry-over {
+  margin-top: 10px;
+  padding: 8px 9px;
+  border: 1px solid #d5e1d2;
+  border-radius: 8px;
+  background: #edf4e9;
+}
+
+.daily-step-carry-over-label { color: #596854; font-size: 11px; line-height: 1.5; }
+.daily-step-carry-over .daily-step-title { margin-top: 2px; }
+
 .daily-step-error {
   margin: 7px 0 0;
   color: #8b4237;
