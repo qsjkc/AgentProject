@@ -38,6 +38,7 @@ import {
   DEFAULT_COMPANION_SETTINGS,
   DEFAULT_COMPANION_STATE,
   evaluateCompanionOpportunity,
+  isCompanionQuietTime,
   normalizeCompanionSettings,
   normalizeCompanionState,
   recordCompanionCopy,
@@ -1569,6 +1570,8 @@ function PetApp() {
     transientBubble: Boolean(transientBubbleRef.current),
     milestonePending: Boolean(milestoneRequestInFlightRef.current),
     milestonePlaying: Boolean(milestonePlaybackRef.current),
+    companionMode: companionSettingsRef.current.mode,
+    companionStateReady: companionStateReadyRef.current,
     companionPending: Boolean(companionRequestInFlightRef.current),
   })), [getOnboardingContext, isOnboardingContextCurrent])
 
@@ -2648,10 +2651,11 @@ function PetApp() {
         }
 
         const previousState = companionStateRef.current
+        const settings = companionSettingsRef.current
         const result = evaluateCompanionOpportunity({
           now: new Date(),
           idleSeconds,
-          settings: companionSettingsRef.current,
+          settings,
           state: previousState,
         })
         let nextState = result.state
@@ -2680,6 +2684,8 @@ function PetApp() {
           if (
             !mounted
             || isFocusActive()
+            || settings !== companionSettingsRef.current
+            || isCompanionQuietTime(new Date(), settings)
             || !isPetAccountOperationCurrent(requestContext, getCurrentPetAccountContext())
             || petTypeRef.current !== requestContext.petType
             || !hasSessionRef.current
@@ -2778,11 +2784,13 @@ function PetApp() {
     const timer = window.setInterval(() => {
       void pollCompanion()
     }, COMPANION_POLL_INTERVAL_MS)
+    const unsubscribeTestPoll = window.desktopBridge?.e2e?.onFlushCompanionPoll?.(pollCompanion)
 
     return () => {
       mounted = false
       window.clearTimeout(initialTimer)
       window.clearInterval(timer)
+      unsubscribeTestPoll?.()
     }
   }, [capturePetApiOperation, getCurrentPetAccountContext, hasSession, isFocusActive, petType, setTransientBubbleForDuration, userId])
 

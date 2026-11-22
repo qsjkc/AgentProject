@@ -21,6 +21,7 @@ let e2eRelationship = null
 let e2eRelationshipCapabilityAdopted = false
 const e2eRelationshipRefreshListeners = new Set()
 const e2eReminderPollListeners = new Set()
+const e2eCompanionPollListeners = new Set()
 const e2eSnapshotReaders = new Set()
 let reminderWakeupSequence = 0
 
@@ -450,6 +451,12 @@ if (e2eEnabled) {
       )
       return results.length > 0 && results.every((result) => result.status === 'fulfilled')
     },
+    flushCompanionPoll: async () => {
+      const results = await Promise.allSettled(
+        [...e2eCompanionPollListeners].map((listener) => listener()),
+      )
+      return results.length > 0 && results.every((result) => result.status === 'fulfilled')
+    },
     triggerRelationshipRefresh: async () => {
       const results = await Promise.allSettled(
         [...e2eRelationshipRefreshListeners].map((listener) => listener()),
@@ -460,6 +467,11 @@ if (e2eEnabled) {
       if (typeof callback !== 'function') return () => undefined
       e2eReminderPollListeners.add(callback)
       return () => e2eReminderPollListeners.delete(callback)
+    },
+    onFlushCompanionPoll: (callback) => {
+      if (typeof callback !== 'function') return () => undefined
+      e2eCompanionPollListeners.add(callback)
+      return () => e2eCompanionPollListeners.delete(callback)
     },
     onRelationshipRefresh: (callback) => {
       if (typeof callback !== 'function') return () => undefined

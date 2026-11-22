@@ -39,6 +39,7 @@ import { todayAgendaConsistencyScenario } from './today-agenda-consistency-scena
 import { todayAgendaRowTargetScenario } from './today-agenda-row-target-scenario.mjs'
 import { todayFocusHandoffScenario } from './today-focus-handoff-scenario.mjs'
 import { focusDuringCompanionSyncScenario } from './focus-during-companion-sync-scenario.mjs'
+import { companionPreferenceRaceScenario } from './companion-preference-race-scenario.mjs'
 import { startStubServer } from './stub-server.mjs'
 
 const ADDITIONAL_SCENARIOS = Object.freeze({
@@ -59,6 +60,7 @@ const ADDITIONAL_SCENARIOS = Object.freeze({
   'today-agenda-consistency': todayAgendaConsistencyScenario,
   'today-agenda-row-target': todayAgendaRowTargetScenario,
   'focus-during-companion-sync': focusDuringCompanionSyncScenario,
+  'companion-preference-race': companionPreferenceRaceScenario,
   'daily-step-tomorrow': dailyStepTomorrowScenario,
 })
 const SCENARIOS = Object.freeze({ ...BASE_SCENARIOS, ...ADDITIONAL_SCENARIOS })
