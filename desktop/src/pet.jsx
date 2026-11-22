@@ -33,7 +33,7 @@ import {
   petAnimationReducer,
 } from './shared/pet-animation-state'
 import { getPetCareActions, getPetCareToolbarLabel, isPetCareContextReady } from './shared/pet-care-actions'
-import { captureFocusSnapshot, getFocusSnapshotRemainingMs, isFocusSnapshotCurrent } from './shared/focus-session'
+import { createPetFocusRecovery } from './shared/focus-session'
 import {
   DEFAULT_COMPANION_SETTINGS,
   DEFAULT_COMPANION_STATE,
@@ -273,8 +273,7 @@ function PetApp() {
   const companionStateRef = useRef(DEFAULT_COMPANION_STATE)
   const companionStateReadyRef = useRef(false)
   const companionRequestInFlightRef = useRef(null)
-  const focusSnapshotRef = useRef(null)
-  const focusServerRef = useRef(null)
+  const focusRecoveryRef = useRef(null)
   const companionLoadGateRef = useRef(null)
   if (!companionLoadGateRef.current) companionLoadGateRef.current = createAccountOperationGate()
   const petAnimationStateRef = useRef(petAnimationState)
@@ -408,47 +407,38 @@ function PetApp() {
     return operationContext
   }, [getCurrentPetAccountContext])
 
-  const isFocusActive = useCallback(() => {
-    const snapshot = focusSnapshotRef.current
-    return isFocusSnapshotCurrent(snapshot, { ...getCurrentPetAccountContext(), server: focusServerRef.current })
-      && snapshot.state?.status === 'running'
-      && getFocusSnapshotRemainingMs(snapshot) > 0
-  }, [getCurrentPetAccountContext])
+  const shouldHoldProactiveForFocus = useCallback(() => (
+    focusRecoveryRef.current?.shouldHoldProactive() ?? true
+  ), [])
 
   useEffect(() => {
-    focusSnapshotRef.current = null
-    focusServerRef.current = null
-    if (!hasSession || !PET_TYPES.includes(petType)) return undefined
-    let mounted = true
-    let receivedUpdate = false
-    const receiveSnapshot = (snapshot) => {
-      if (!mounted) return
-      if (!snapshot || !snapshot.state) {
-        receivedUpdate = true
-        focusSnapshotRef.current = null
-      } else if (isFocusSnapshotCurrent(snapshot, { ...getCurrentPetAccountContext(), server: focusServerRef.current })) {
-        receivedUpdate = true
-        focusSnapshotRef.current = captureFocusSnapshot(snapshot, focusSnapshotRef.current)
-      }
+    if (!hasSession || !PET_TYPES.includes(petType) || !Number.isSafeInteger(sessionSnapshot?.generation)) return undefined
+    const bridge = window.desktopBridge
+    const recovery = createPetFocusRecovery({
+      getContext: getCurrentPetAccountContext,
+      getServer: () => bridge?.getApiBaseUrl?.(),
+      read: async (context) => {
+        const operationContext = await capturePetApiOperation(context)
+        return bridge?.getFocusSession?.(operationContext)
+      },
+      onReadError: (error) => loggerRef.current.error('focus:state-load-failed', error),
+    })
+    focusRecoveryRef.current = recovery
+    const unsubscribe = bridge?.onFocusSessionChanged?.(recovery.receive)
+    const recoverWhenVisible = () => {
+      if (document.visibilityState === 'visible') void recovery.request()
     }
-    const unsubscribe = window.desktopBridge?.onFocusSessionChanged?.(receiveSnapshot)
-    void (async () => {
-      try {
-        const server = await window.desktopBridge?.getApiBaseUrl?.()
-        if (!mounted) return
-        focusServerRef.current = server
-        const operationContext = await capturePetApiOperation()
-        const snapshot = await window.desktopBridge?.getFocusSession?.({ ...operationContext, server })
-        if (mounted && !receivedUpdate) receiveSnapshot(snapshot)
-      } catch (error) {
-        loggerRef.current.error('focus:state-load-failed', error)
-      }
-    })()
+    window.addEventListener('focus', recovery.request)
+    window.addEventListener('online', recovery.request)
+    document.addEventListener('visibilitychange', recoverWhenVisible)
+    void recovery.request()
     return () => {
-      mounted = false
-      focusSnapshotRef.current = null
-      focusServerRef.current = null
+      recovery.dispose()
+      focusRecoveryRef.current = null
       unsubscribe?.()
+      window.removeEventListener('focus', recovery.request)
+      window.removeEventListener('online', recovery.request)
+      document.removeEventListener('visibilitychange', recoverWhenVisible)
     }
   }, [capturePetApiOperation, getCurrentPetAccountContext, hasSession, petType, userId, sessionSnapshot?.generation])
 
@@ -2601,7 +2591,7 @@ function PetApp() {
     const pollCompanion = async () => {
       if (
         !mounted ||
-        isFocusActive() ||
+        shouldHoldProactiveForFocus() ||
         companionRequestInFlightRef.current ||
         petTypeRef.current !== petType ||
         !hasSessionRef.current ||
@@ -2633,7 +2623,7 @@ function PetApp() {
         const idleSeconds = await window.desktopBridge?.getSystemIdleSeconds?.()
         if (
           !mounted
-          || isFocusActive()
+          || shouldHoldProactiveForFocus()
           || !isPetAccountOperationCurrent(requestContext, getCurrentPetAccountContext())
           || petTypeRef.current !== requestContext.petType
           || document.visibilityState !== 'visible'
@@ -2678,7 +2668,7 @@ function PetApp() {
           }
           if (
             !mounted
-            || isFocusActive()
+            || shouldHoldProactiveForFocus()
             || settings !== companionSettingsRef.current
             || isCompanionQuietTime(new Date(), settings)
             || !isPetAccountOperationCurrent(requestContext, getCurrentPetAccountContext())
@@ -2786,7 +2776,7 @@ function PetApp() {
       window.clearInterval(timer)
       unsubscribeTestPoll?.()
     }
-  }, [capturePetApiOperation, getCurrentPetAccountContext, hasSession, isFocusActive, petType, setTransientBubbleForDuration, userId])
+  }, [capturePetApiOperation, getCurrentPetAccountContext, hasSession, petType, setTransientBubbleForDuration, shouldHoldProactiveForFocus, userId])
 
   useEffect(() => {
     let mounted = true

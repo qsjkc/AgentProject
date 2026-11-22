@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import focusSessions from '../electron/focus-session.cjs'
-import { captureFocusSnapshot, formatFocusTime, getFocusRemainingMs, getFocusSnapshotRemainingMs, isFocusSnapshotCurrent } from '../src/shared/focus-session.js'
+import { captureFocusSnapshot, createPetFocusRecovery, formatFocusTime, getFocusRemainingMs, getFocusSnapshotRemainingMs, isFocusSnapshotCurrent } from '../src/shared/focus-session.js'
 
 const { createFocusAccountKey, createFocusSessionController, emptyFocusSession, normalizeFocusSession, transitionFocusSession } = focusSessions
 const accountA = { server: 'https://example.test/api/v1', hasSession: true, userId: 1, petType: 'pig', session: { generation: 1 } }
@@ -408,6 +408,125 @@ test('countdown rounds partial seconds up, stays bounded and suppresses stale ac
   assert.equal(isFocusSnapshotCurrent(started, { ...accountA, session: { generation: 3 } }), false)
   assert.equal(getFocusRemainingMs(started.state, h.now() - 60000), 900000)
   assert.equal(getFocusRemainingMs(started.state, h.now() + 1000000), 0)
+})
+
+function petFocusRecoveryHarness(read, { getContext = () => accountA, getServer = () => accountA.server } = {}) {
+  let nextTimerId = 0
+  const timers = new Map()
+  const errors = []
+  const recovery = createPetFocusRecovery({
+    getContext,
+    getServer,
+    read,
+    onReadError: (error) => errors.push(error),
+    setTimer: (callback) => { timers.set(++nextTimerId, callback); return nextTimerId },
+    clearTimer: (id) => timers.delete(id),
+  })
+  return { recovery, errors, timers, runRetry: () => {
+    assert.equal(timers.size, 1)
+    const [[id, callback]] = timers
+    timers.delete(id)
+    callback()
+    return recovery.request()
+  } }
+}
+
+test('a restarted pet holds proactive events on first read failure and recovers the running timer', async () => {
+  const h = harness()
+  const started = h.update('start', { minutes: 25 })
+  let reads = 0
+  const { recovery, errors, timers, runRetry } = petFocusRecoveryHarness((context) => {
+    assert.deepEqual(context, accountA)
+    if (++reads === 1) throw new Error('transient renderer authorization')
+    return { ok: true, ...h.controller.current() }
+  })
+  assert.equal(recovery.shouldHoldProactive(), true)
+  const firstAttempt = recovery.request()
+  assert.equal(recovery.request(), firstAttempt)
+  await firstAttempt
+  assert.equal(errors.length, 1)
+  assert.equal(recovery.shouldHoldProactive(), true)
+  assert.equal(recovery.request(), null)
+  h.advance(60_000)
+  h.controller.resume()
+  assert.equal(h.controller.current().state.id, started.state.id)
+  await runRetry()
+  assert.equal(reads, 2)
+  assert.equal(timers.size, 0)
+  assert.equal(recovery.shouldHoldProactive(), true)
+  assert.equal(recovery.request(), null)
+  const paused = h.update('pause')
+  recovery.receive(paused)
+  assert.equal(recovery.shouldHoldProactive(), false)
+  recovery.receive(started)
+  recovery.receive({ ...paused, state: null })
+  assert.equal(recovery.shouldHoldProactive(), false)
+})
+
+test('pet Focus retries stop when native reads stay unavailable and can recover on foreground', async () => {
+  const h = harness()
+  let reads = 0
+  const { recovery, timers, runRetry } = petFocusRecoveryHarness(() => (
+    ++reads < 5 ? { ok: false, reason: 'context-expired' } : { ok: true, ...h.controller.current() }
+  ))
+  await recovery.request()
+  for (let remaining = 3; remaining > 0; remaining--) {
+    assert.equal(recovery.request(), null)
+    await runRetry()
+  }
+  assert.equal(reads, 4)
+  assert.equal(timers.size, 0)
+  assert.equal(recovery.shouldHoldProactive(), true)
+  await recovery.request()
+  assert.equal(reads, 5)
+  assert.equal(recovery.shouldHoldProactive(), false)
+})
+
+test('wrong-scope pet Focus snapshots cannot open the proactive gate or rewind a newer broadcast', async () => {
+  const h = harness()
+  const running = h.update('start', { minutes: 15 })
+  let context = accountA
+  let resolveRead
+  const reading = new Promise((resolve) => { resolveRead = resolve })
+  const { recovery, timers } = petFocusRecoveryHarness(() => reading, { getContext: () => context })
+  const request = recovery.request()
+  await new Promise(setImmediate)
+  const paused = h.update('pause')
+  for (const mismatch of [{ userId: 2 }, { petType: 'dog' }, { generation: 2 }, { server: 'https://other.test/api/v1' }]) {
+    recovery.receive({ ...paused, ...mismatch })
+    assert.equal(recovery.shouldHoldProactive(), true)
+  }
+  recovery.receive(paused)
+  resolveRead(running)
+  await request
+  assert.equal(recovery.shouldHoldProactive(), false)
+  assert.equal(timers.size, 0)
+  context = { ...accountA, session: { generation: 2 } }
+  assert.equal(recovery.shouldHoldProactive(), true)
+  recovery.receive({ ...paused, generation: 2 })
+  assert.equal(recovery.shouldHoldProactive(), true)
+})
+
+test('a server change discards an old pending read and disposal clears any retry', async () => {
+  const h = harness()
+  let server = accountA.server
+  let resolveRead
+  const reading = new Promise((resolve) => { resolveRead = resolve })
+  const { recovery, timers, runRetry } = petFocusRecoveryHarness(() => reading, { getServer: () => server })
+  const request = recovery.request()
+  await new Promise(setImmediate)
+  server = 'https://other.test/api/v1'
+  resolveRead({ ok: true, ...h.controller.current() })
+  await request
+  assert.equal(recovery.shouldHoldProactive(), true)
+  await runRetry()
+  assert.equal(timers.size, 1)
+  recovery.dispose()
+  assert.equal(timers.size, 0)
+  h.controller.setContext({ ...accountA, server })
+  recovery.receive(h.controller.current())
+  assert.equal(recovery.request(), null)
+  assert.equal(recovery.shouldHoldProactive(), true)
 })
 
 for (const petType of ['cat', 'dog']) {
