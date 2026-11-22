@@ -2134,19 +2134,27 @@ function createPetWindow() {
   })
 
   petWindow.__role = 'pet'
+  const dragWindow = petWindow
+  const cancelWindowDrag = () => {
+    if (petWindow === dragWindow) petDrag.cancel()
+  }
+  dragWindow.webContents.on('input-event', (_event, input) => {
+    if (!quitting && petWindow === dragWindow) petDrag.observeMouseInput(input)
+  })
   attachRendererNavigationGuard(petWindow, 'pet.html')
   attachRendererCapabilityLifecycle(petWindow)
   petWindow.setAlwaysOnTop(true, 'screen-saver')
   persistBounds('petBounds', petWindow, { saveSize: false })
   petWindow.on('close', (event) => {
-    petDrag.cancel()
+    cancelWindowDrag()
     if (!quitting) {
       event.preventDefault()
       petWindow.hide()
     }
   })
-  petWindow.on('hide', petDrag.cancel)
-  petWindow.once('closed', petDrag.cancel)
+  petWindow.on('blur', cancelWindowDrag)
+  petWindow.on('hide', cancelWindowDrag)
+  petWindow.once('closed', cancelWindowDrag)
   petWindow.on('move', () => {
     syncQuickChatPosition()
   })
@@ -3391,6 +3399,7 @@ if (!app.requestSingleInstanceLock()) {
 
   app.on('before-quit', () => {
     quitting = true
+    petDrag.cancel()
     if (displayRecoveryTimer !== null) clearTimeout(displayRecoveryTimer)
     displayRecoveryTimer = null
     for (const persistence of boundsPersistence) persistence.flush()

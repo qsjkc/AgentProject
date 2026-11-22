@@ -44,6 +44,34 @@ function makeWindow(x, y) {
   }
 }
 
+function makeDragClock() {
+  let time = 0
+  let nextId = 0
+  const tasks = new Map()
+  return {
+    now: () => time,
+    setTimer(callback, delay) {
+      const id = ++nextId
+      tasks.set(id, { at: time + delay, callback })
+      return id
+    },
+    clearTimer: (id) => tasks.delete(id),
+    get pending() { return tasks.size },
+    advance(milliseconds) {
+      const end = time + milliseconds
+      for (const [id, task] of tasks) {
+        if (task.at > end) continue
+        tasks.delete(id)
+        time = task.at
+        task.callback()
+      }
+      time = end
+    },
+  }
+}
+
+const heldMouseMove = { type: 'mouseMove', modifiers: ['leftbuttondown'] }
+
 test('a sustained mouse drag follows a fixed grab point across both directions of an aligned display seam', () => {
   const screen = makeScreen([display(-1920, 0, 1920, 1040), display(0, 0, 1920, 1040)])
   const window = makeWindow(-220, 250)
@@ -82,6 +110,146 @@ test('a mouse release stays at its captured point when the live cursor moves bef
   assert.equal(drag.end({ id, screenX: 620, screenY: 400, cancelled: false }), true)
   assert.deepEqual(window.bounds, { x: 530, y: 280, ...size })
   assert.equal(drag.move({ id, screenX: 1300, screenY: 750 }), false)
+})
+
+test('native held motion takes over a stalled renderer without polling or exceeding the native frame rate', () => {
+  const screen = makeScreen([display(0, 0, 1800, 1040)])
+  const window = makeWindow(400, 200)
+  const clock = makeDragClock()
+  const drag = createPetDragController({ getWindow: () => window, screen, windowSize: size, ...clock })
+  const id = 'stalled-renderer'
+  assert.equal(drag.begin({ id, offsetX: 90, offsetY: 120, pointerType: 'mouse' }), true)
+
+  clock.advance(16)
+  screen.cursor = { x: 510, y: 320 }
+  drag.observeMouseInput(heldMouseMove)
+  assert.equal(clock.pending, 0)
+  assert.equal(drag.move({ id, screenX: 0, screenY: 0 }), true)
+  clock.advance(16)
+  screen.cursor = { x: 530, y: 320 }
+  drag.observeMouseInput(heldMouseMove)
+  assert.equal(clock.pending, 0, 'regular renderer movement drives the window')
+
+  clock.advance(8)
+  for (const x of [540, 550, 560]) {
+    screen.cursor = { x, y: 320 }
+    drag.observeMouseInput(heldMouseMove)
+  }
+  assert.equal(clock.pending, 1)
+  screen.cursor = { x: 1300, y: 700 }
+  clock.advance(0)
+  assert.deepEqual(window.bounds, { x: 470, y: 200, ...size }, 'uses the last observed point even if the live cursor moved')
+
+  clock.advance(1)
+  screen.cursor = { x: 570, y: 320 }
+  drag.observeMouseInput(heldMouseMove)
+  clock.advance(10)
+  assert.deepEqual(window.bounds, { x: 470, y: 200, ...size })
+  clock.advance(1)
+  assert.deepEqual(window.bounds, { x: 480, y: 200, ...size })
+  assert.equal(clock.pending, 0)
+
+  for (let index = 0; index < 12; index += 1) {
+    screen.cursor = { x: 580 + index * 10, y: 330 }
+    drag.observeMouseInput(heldMouseMove)
+    clock.advance(16)
+  }
+  assert.deepEqual(window.bounds, { x: 600, y: 210, ...size })
+  assert.equal(window.writes.length, 15)
+  clock.advance(500)
+  assert.equal(window.writes.length, 15, 'a still cursor schedules no repeated work')
+  assert.equal(clock.pending, 0)
+})
+
+test('native left release blocks queued and late moves while preserving the captured renderer release', () => {
+  for (const type of ['mouseUp', 'mouseMove']) {
+    const screen = makeScreen([display(0, 0, 1800, 1040)])
+    const window = makeWindow(400, 200)
+    const clock = makeDragClock()
+    const drag = createPetDragController({ getWindow: () => window, screen, windowSize: size, ...clock })
+    const id = type
+    assert.equal(drag.begin({ id, offsetX: 90, offsetY: 120, pointerType: 'mouse' }), true)
+    clock.advance(24)
+    screen.cursor = { x: 610, y: 390 }
+    drag.observeMouseInput(heldMouseMove)
+    drag.observeMouseInput({ type: 'mouseUp', modifiers: ['leftbuttondown'] })
+    clock.advance(0)
+    assert.deepEqual(window.bounds, { x: 520, y: 270, ...size }, 'right-up during left hold does not disarm motion')
+
+    screen.cursor = { x: 615, y: 394 }
+    drag.observeMouseInput(heldMouseMove)
+    assert.equal(clock.pending, 1)
+    drag.observeMouseInput({ type, modifiers: [] })
+    assert.equal(clock.pending, 0)
+    screen.cursor = { x: 1300, y: 750 }
+    drag.observeMouseInput(heldMouseMove)
+    assert.equal(drag.move({ id, screenX: 615, screenY: 394 }), false)
+    clock.advance(50)
+    assert.deepEqual(window.bounds, { x: 520, y: 270, ...size })
+    assert.equal(drag.end({ id, screenX: 620, screenY: 400, cancelled: false }), true)
+    assert.deepEqual(window.bounds, { x: 530, y: 280, ...size })
+    assert.equal(drag.end({ id, screenX: 1300, screenY: 750, cancelled: false }), false)
+  }
+})
+
+test('renderer recovery, replacement and cancellation clear pending native movement', () => {
+  const screen = makeScreen([display(0, 0, 1800, 1040)])
+  let window = makeWindow(400, 200)
+  const clock = makeDragClock()
+  const drag = createPetDragController({ getWindow: () => window, screen, windowSize: size, ...clock })
+  const start = { id: 1, offsetX: 90, offsetY: 120, pointerType: 'mouse' }
+  assert.equal(drag.begin(start), true)
+  clock.advance(24)
+  screen.cursor = { x: 600, y: 400 }
+  drag.observeMouseInput(heldMouseMove)
+  assert.equal(clock.pending, 1)
+  screen.cursor = { x: 620, y: 400 }
+  assert.equal(drag.move({ id: 1, screenX: 0, screenY: 0 }), true)
+  assert.equal(clock.pending, 0)
+  clock.advance(24)
+  screen.cursor = { x: 650, y: 400 }
+  drag.observeMouseInput(heldMouseMove)
+  assert.equal(clock.pending, 1)
+  assert.equal(drag.begin({ ...start, id: 2 }), true)
+  assert.equal(clock.pending, 0)
+
+  clock.advance(24)
+  drag.observeMouseInput(heldMouseMove)
+  assert.equal(clock.pending, 1)
+  const previous = window
+  window = makeWindow(50, 50)
+  clock.advance(0)
+  assert.deepEqual(previous.moves, [{ x: 530, y: 280 }])
+  assert.deepEqual(window.moves, [])
+  assert.equal(drag.move({ id: 2, screenX: 0, screenY: 0 }), false)
+
+  assert.equal(drag.begin(start), true)
+  clock.advance(24)
+  drag.observeMouseInput(heldMouseMove)
+  assert.equal(clock.pending, 1)
+  drag.cancel()
+  clock.advance(50)
+  assert.equal(clock.pending, 0)
+  assert.deepEqual(window.moves, [])
+})
+
+test('touch and pen samples are unaffected by native mouse movement and release', () => {
+  const screen = makeScreen([display(0, 0, 1800, 1040)])
+  const window = makeWindow(400, 200)
+  const clock = makeDragClock()
+  const drag = createPetDragController({ getWindow: () => window, screen, windowSize: size, ...clock })
+  for (const pointerType of ['touch', 'pen']) {
+    assert.equal(drag.begin({ id: pointerType, offsetX: 90, offsetY: 120, pointerType }), true)
+    clock.advance(50)
+    screen.cursor = { x: 1200, y: 700 }
+    drag.observeMouseInput(heldMouseMove)
+    drag.observeMouseInput({ type: 'mouseUp', modifiers: [] })
+    assert.equal(clock.pending, 0)
+    assert.equal(drag.move({ id: pointerType, screenX: 610, screenY: 390 }), true)
+    assert.deepEqual(window.bounds, { x: 520, y: 270, ...size })
+    assert.equal(drag.end({ id: pointerType, screenX: 620, screenY: 400 }), true)
+    assert.deepEqual(window.bounds, { x: 530, y: 280, ...size })
+  }
 })
 
 test('preserves a covered vertical or horizontal seam while clamping uncovered work-area gaps', () => {
