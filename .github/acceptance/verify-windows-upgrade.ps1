@@ -80,13 +80,13 @@ try {
     }
     $checks.Add([ordered]@{ name = 'clean-windows-baseline'; status = 'passed' })
 
-    Invoke-InstallerProcess (Join-Path $BaselineDirectory $baseline.filename) @('/S', "/D=$installDirectory")
+    Invoke-InstallerProcess 'baseline' (Join-Path $BaselineDirectory $baseline.filename) @('/S', "/D=$installDirectory")
     $first = Get-FilesAndRegistration 'baseline' $installDirectory $baseline.version
     $checks.Add($first)
     $before = Invoke-UpgradeLaunch 'baseline' $baseline.version 'set-language'
 
     # Let NSIS locate the registered installation and perform the in-place update.
-    Invoke-InstallerProcess (Join-Path $CandidateDirectory $candidate.filename) @('/S')
+    Invoke-InstallerProcess 'upgrade' (Join-Path $CandidateDirectory $candidate.filename) @('/S')
     $second = Get-FilesAndRegistration 'candidate' $installDirectory $candidate.version
     if (@(Find-DetachymRegistration).Count -ne 1 -or $second.desktopShortcuts -ne $first.desktopShortcuts -or
         $second.startMenuShortcuts -ne $first.startMenuShortcuts) { throw 'Upgrade duplicated a registration or shortcut' }
@@ -100,6 +100,9 @@ try {
 } catch {
     $report.status = 'failed'
     $report.error = $_.Exception.Message
+    if ($_.Exception.Data.Contains('installerFailure')) {
+        $report.installerFailure = $_.Exception.Data['installerFailure']
+    }
 } finally {
     $report.finishedAt = (Get-Date).ToUniversalTime().ToString('o')
     $json = $report | ConvertTo-Json -Depth 10

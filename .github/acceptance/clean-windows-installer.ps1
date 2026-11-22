@@ -76,11 +76,11 @@ try {
     }
     $checks.Add([ordered]@{ name = 'clean-windows-baseline'; status = 'passed' })
 
-    Invoke-InstallerProcess $installer @('/S', "/D=$installDirectory")
+    Invoke-InstallerProcess 'install' $installer @('/S', "/D=$installDirectory")
     $first = Get-FilesAndRegistration 'install' $installDirectory $version
     $checks.Add($first)
     Invoke-RendererCheck 'install'
-    Invoke-InstallerProcess $uninstaller @('/S')
+    Invoke-InstallerProcess 'uninstall' $uninstaller @('/S')
     $deadline = (Get-Date).AddSeconds(30)
     do {
         $executableRemoved = -not (Test-Path -LiteralPath $exe)
@@ -100,7 +100,7 @@ try {
         shortcutsRemoved = $shortcutsRemoved; registrationRemoved = $registrationRemoved
     })
 
-    Invoke-InstallerProcess $installer @('/S', "/D=$installDirectory")
+    Invoke-InstallerProcess 'reinstall' $installer @('/S', "/D=$installDirectory")
     $second = Get-FilesAndRegistration 'reinstall' $installDirectory $version
     if ($first.asarSha256 -ne $second.asarSha256 -or $first.applicationSha256 -ne $second.applicationSha256) {
         throw 'Reinstalled application payload differs from initial install'
@@ -112,6 +112,9 @@ try {
 catch {
     $report.status = 'failed'
     $report.error = $_.Exception.Message
+    if ($_.Exception.Data.Contains('installerFailure')) {
+        $report.installerFailure = $_.Exception.Data['installerFailure']
+    }
 }
 finally {
     $report.finishedAt = (Get-Date).ToUniversalTime().ToString('o')
