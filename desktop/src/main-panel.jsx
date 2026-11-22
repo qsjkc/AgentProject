@@ -77,7 +77,8 @@ import {
   rewardPetRelationship,
   updatePetOutfit,
 } from './shared/pet-relationships-api'
-import { getPetVisual } from './shared/pets'
+import { getPetLabelKey } from './shared/pet-labels'
+import { getPetPortrait } from './shared/pet-portraits'
 import {
   createPetOnboardingContextKey,
   createPetOnboardingSampleReminderPayload,
@@ -393,7 +394,7 @@ function LoginView({
           <LanguageSelector language={language} onChange={onLanguageChange} compact />
         </div>
         <div className="desktop-login-brand">
-          <img src={getPetVisual('pig', 'happy').image} alt="" />
+          <img src={getPetPortrait('pig', 'happy')} alt="" />
           <h1>{t(language, 'desktopTitle')}</h1>
         </div>
         <p className="desktop-login-intro">{t(language, 'desktopIntro')}</p>
@@ -474,8 +475,7 @@ function PetPreferencePicker({ language, activePetType, onSelect, saving }) {
       <div className="sidebar-copy">{t(language, 'petSelectionHint')}</div>
       <div className="pet-option-grid">
         {PET_OPTIONS.map((option) => {
-          const petVisual = getPetVisual(option, 'idle')
-          const petLabel = t(language, petVisual.labelKey)
+          const petLabel = t(language, getPetLabelKey(option))
           const isActive = option === activePetType
 
           return (
@@ -487,7 +487,7 @@ function PetPreferencePicker({ language, activePetType, onSelect, saving }) {
               onClick={() => onSelect(option)}
               disabled={saving}
             >
-              <img className="pet-option-image" src={petVisual.image} alt={petLabel} />
+              <img className="pet-option-image" src={getPetPortrait(option)} alt={petLabel} />
               <span className="pet-option-label">{petLabel}</span>
             </button>
           )
@@ -807,7 +807,7 @@ function MainPanelApp() {
   const currentPetType = user?.preferences?.pet_type ?? 'cat'
   const reminderDraftFeedback = getReminderParseFeedback(reminderDraftError, language)
   useEffect(() => { setReminderDraftError(null) }, [prompt, currentPetType, activeSessionId])
-  const currentPetLabel = useMemo(() => t(language, getPetVisual(currentPetType, 'idle').labelKey), [currentPetType, language])
+  const currentPetLabel = useMemo(() => t(language, getPetLabelKey(currentPetType)), [currentPetType, language])
   const petOnboardingContextKey = useMemo(() => createPetOnboardingContextKey({
     userId: user?.id,
     relationshipId: petRelationship?.id,
@@ -3148,7 +3148,7 @@ function MainPanelApp() {
               <LanguageSelector language={language} onChange={updateLanguage} compact />
             </div>
             <div className="desktop-login-brand">
-              <img src={getPetVisual('pig', 'happy').image} alt="" />
+              <img src={getPetPortrait('pig', 'happy')} alt="" />
               <h1>{language === 'zh-CN' ? '恢复登录' : 'Restore your session'}</h1>
             </div>
             <p className="desktop-login-intro" role="status">
@@ -3257,7 +3257,7 @@ function MainPanelApp() {
         <header className="main-product-header">
           <div className="main-header-top">
             <div className="main-brand">
-              <img src={getPetVisual(currentPetType, 'happy').image} alt="" />
+              <img src={getPetPortrait(currentPetType, 'happy')} alt="" />
               <div>
                 <div className="main-brand-label">Detachym · {currentPetLabel}</div>
                 <h1>{language === 'zh-CN' ? '今天，也一起慢慢来' : 'A little company for your day'}</h1>

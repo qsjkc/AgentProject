@@ -109,7 +109,7 @@ import {
   shouldRecordPetOnboardingInteraction,
 } from './shared/pet-onboarding-state'
 import { PET_ONBOARDING_MAIN_PANEL_INTENT } from './shared/pet-onboarding-main'
-import { getPetVisual } from './shared/pets'
+import { getPetLabelKey } from './shared/pet-labels'
 import { getPendingReminders, markReminderTriggered } from './shared/reminders-api'
 import {
   createReminderDeliveryController,
@@ -3704,8 +3704,7 @@ function PetApp() {
     }
   }, [hasSession, hovering, voiceUiState.phase])
 
-  const petVisual = getPetVisual(petType, petMood)
-  const petLabel = t(language, petVisual.labelKey)
+  const petLabel = t(language, getPetLabelKey(petType))
 
   return (
     <div className="pet-shell">

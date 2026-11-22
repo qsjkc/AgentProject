@@ -22,7 +22,8 @@ import { normalizeLanguage, t } from './shared/i18n'
 import { restoreFailedChatDraft, shouldSubmitChatInput } from './shared/chat-input'
 import { getPetReminderCopy } from './shared/pet-personality'
 import { getPetRelationship } from './shared/pet-relationships-api'
-import { getPetVisual } from './shared/pets'
+import { getPetLabelKey } from './shared/pet-labels'
+import { getPetPortrait } from './shared/pet-portraits'
 import { PET_ONBOARDING_CAPABILITIES } from './shared/pet-onboarding-main'
 import { parseReminder } from './shared/reminder-parser'
 import { getReminderParseFeedback } from './shared/reminder-feedback'
@@ -106,8 +107,7 @@ function QuickChatApp() {
   if (!chatGateRef.current) chatGateRef.current = createAccountOperationGate()
   petContextRef.current.petType = petType
 
-  const petVisual = useMemo(() => getPetVisual(petType, 'idle'), [petType])
-  const petLabel = useMemo(() => t(language, petVisual.labelKey), [language, petVisual.labelKey])
+  const petLabel = useMemo(() => t(language, getPetLabelKey(petType)), [language, petType])
   const recentMessages = messages.slice(-4)
   const reminderDraftFeedback = getReminderParseFeedback(reminderDraftError, language)
   useEffect(() => { setReminderDraftError(null) }, [message, petType, sessionId])
@@ -608,7 +608,7 @@ function QuickChatApp() {
             <div className="quick-chat-bubble-tail" />
             <div className="quick-chat-hero">
               <div className="quick-chat-mascot-frame">
-                <img className="quick-chat-pet-avatar" src={petVisual.image} alt={petLabel} />
+                <img className="quick-chat-pet-avatar" src={getPetPortrait(petType)} alt={petLabel} />
               </div>
               <div className="quick-chat-hero-copy">
                 <div className="quick-chat-chip">{t(language, 'quickChat')}</div>

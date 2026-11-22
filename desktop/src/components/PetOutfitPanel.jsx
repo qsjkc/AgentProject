@@ -6,13 +6,13 @@ import {
   getPetOutfitSlotLabel,
 } from '../shared/pet-outfits'
 import { OutfitSprite } from './PetOutfitRenderer'
-import { getPetVisual } from '../shared/pets'
+import { getPetLabelKey } from '../shared/pet-labels'
 import { t } from '../shared/i18n'
 
 const SELECTABLE_SLOTS = ['neck', 'head', 'side']
 
 function getCopy(language, petType) {
-  const petLabel = t(language, getPetVisual(petType).labelKey)
+  const petLabel = t(language, getPetLabelKey(petType))
   if (language === 'zh-CN') {
     return {
       title: `${petLabel}装扮`,
