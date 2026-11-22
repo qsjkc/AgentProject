@@ -361,6 +361,7 @@ export async function run(options = parseArgs(process.argv.slice(2))) {
     const devTools = await waitForDevToolsActivePort(userDataPath, { timeoutMs: 25_000 })
     report.devTools = devTools
     context = createTargetContext(devTools.port, stub, artifactPath)
+    context.userDataPath = userDataPath
     context.focusHistoryFixture = report.focusHistoryFixture
     context.capabilityRenewalFixture = report.capabilityRenewalFixture
     await discoverInitialTargets(context)

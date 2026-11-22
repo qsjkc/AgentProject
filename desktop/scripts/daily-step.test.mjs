@@ -3,9 +3,12 @@ import { spawnSync } from 'node:child_process'
 import { test } from 'node:test'
 import {
   DAILY_STEP_TITLE_LENGTH,
+  completeDailyStepFromFocus,
   getDailyStepDate,
   getDailyStepStorageKey,
   getDailyStepTitle,
+  isDailyStepFocusCurrent,
+  prepareDailyStepFocus,
   readCompletedDailySteps,
   readDailyStep,
   readDailyStepCarryOver,
@@ -18,6 +21,67 @@ const scope = { server: 'https://companion.example/api/v1', userId: 1, petType: 
 const firstDay = '2026-11-21'
 const nextDay = '2026-11-22'
 const step = { title: '读几页书', completed: false }
+
+test('linked focus completes the original scoped step once, and undo invalidates the link', () => {
+  const { records, writes, getStorage } = testStorage()
+  const key = getDailyStepStorageKey(scope)
+  const now = new Date(2026, 10, 21, 12).getTime()
+  records.set(key, JSON.stringify({ date: firstDay, ...step }))
+  assert.equal(prepareDailyStepFocus(key, firstDay, 'Different title', getStorage), null)
+  const origin = prepareDailyStepFocus(key, firstDay, step.title, getStorage)
+  assert.deepEqual(prepareDailyStepFocus(key, firstDay, step.title, getStorage), origin)
+  assert.equal(writes.length, 1)
+  assert.equal(isDailyStepFocusCurrent(key, origin, now, getStorage), true)
+  assert.deepEqual(readDailyStep(key, firstDay, getStorage), step)
+  assert.deepEqual(readCompletedDailySteps(key, firstDay, getStorage), [])
+
+  for (const other of [{ petType: 'cat' }, { userId: 2 }, { server: 'https://other.example' }, { hasSession: false }]) {
+    const otherKey = getDailyStepStorageKey({ ...scope, ...other })
+    if (otherKey) writeDailyStep(otherKey, firstDay, step, getStorage)
+    assert.equal(completeDailyStepFromFocus(otherKey, origin, now, getStorage), 'stale')
+  }
+  const afterMidnight = new Date(2026, 10, 22, 0).getTime()
+  assert.equal(isDailyStepFocusCurrent(key, origin, afterMidnight, getStorage), false)
+  assert.equal(completeDailyStepFromFocus(key, origin, afterMidnight, getStorage), 'stale')
+  assert.equal(completeDailyStepFromFocus(key, origin, now, getStorage), 'completed')
+  assert.deepEqual(readCompletedDailySteps(key, firstDay, getStorage), [{ date: firstDay, title: step.title }])
+  assert.equal(completeDailyStepFromFocus(key, origin, now, getStorage), 'stale')
+
+  assert.equal(writeDailyStep(key, firstDay, step, getStorage), true)
+  assert.equal(completeDailyStepFromFocus(key, origin, now, getStorage), 'stale')
+  assert.deepEqual(readCompletedDailySteps(key, firstDay, getStorage), [])
+})
+
+test('editing or recreating an identical step cannot adopt a past focus session', () => {
+  const { getStorage } = testStorage()
+  const key = getDailyStepStorageKey(scope)
+  const now = new Date(2026, 10, 21, 12).getTime()
+  assert.equal(writeDailyStep(key, firstDay, step, getStorage), true)
+  for (const replacement of [[step], [null, step]]) {
+    const origin = prepareDailyStepFocus(key, firstDay, step.title, getStorage)
+    for (const value of replacement) assert.equal(writeDailyStep(key, firstDay, value, getStorage), true)
+    assert.equal(completeDailyStepFromFocus(key, origin, now, getStorage), 'stale')
+    assert.deepEqual(readDailyStep(key, firstDay, getStorage), step)
+  }
+})
+
+test('a matured tomorrow plan can link without displacing yesterday or committing on write failure', () => {
+  const { records, getStorage } = testStorage()
+  const key = getDailyStepStorageKey(scope)
+  const now = new Date(2026, 10, 22, 12).getTime()
+  writeDailyStep(key, firstDay, step, getStorage)
+  writeTomorrowDailyStep(key, firstDay, 'Walk', getStorage)
+  const origin = prepareDailyStepFocus(key, nextDay, 'Walk', getStorage)
+  assert.deepEqual(readDailyStep(key, firstDay, getStorage), step)
+  assert.deepEqual(readTomorrowDailyStep(key, firstDay, getStorage), { date: nextDay, title: 'Walk' })
+  const snapshot = records.get(key)
+  const noWrites = () => ({ getItem: getStorage().getItem, setItem: () => { throw new Error('Storage full') } })
+  assert.equal(completeDailyStepFromFocus(key, origin, now, noWrites), 'failed')
+  assert.equal(records.get(key), snapshot)
+  assert.equal(completeDailyStepFromFocus(key, origin, now, getStorage), 'completed')
+  assert.deepEqual(readDailyStep(key, nextDay, getStorage), { title: 'Walk', completed: true })
+  assert.equal(readTomorrowDailyStep(key, firstDay, getStorage), null)
+})
 
 function testStorage() {
   const records = new Map()

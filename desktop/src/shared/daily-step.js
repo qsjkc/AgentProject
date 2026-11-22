@@ -4,6 +4,7 @@ export const DAILY_STEP_TITLE_LENGTH = 80
 const STORAGE_PREFIX = 'detachym.daily-step.v1:'
 const COMPLETED_HISTORY_DAYS = 7
 const UTC_DAY_MS = 86_400_000
+const FOCUS_REVISION = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/
 
 const getLocalStorage = () => globalThis.localStorage
 
@@ -74,15 +75,21 @@ function readSavedRecord(storageKey, getStorage) {
 function getSavedSlot(record) {
   if (parseDateLabel(record?.date) === null) return null
   const step = normalizeStep(record)
-  return step ? { date: record.date, ...step } : null
+  return step ? { date: record.date, ...step, ...readFocusRevision(record) } : null
 }
 
 function getSavedTomorrowPlan(record) {
   const plan = record?.tomorrowPlan
   const title = getDailyStepTitle(plan?.title)
   return title && parseDateLabel(plan.date) !== null && (plan.completed === undefined || plan.completed === false)
-    ? { date: plan.date, title }
+    ? { date: plan.date, title, ...readFocusRevision(plan) }
     : null
+}
+
+function readFocusRevision(record) {
+  return typeof record.focusRevision === 'string' && FOCUS_REVISION.test(record.focusRevision)
+    ? { focusRevision: record.focusRevision }
+    : {}
 }
 
 function getCompletedHistory(record, slot) {
@@ -117,15 +124,21 @@ function saveDailyStepRecord(storage, storageKey, slot, history, tomorrowPlan) {
   storage.setItem(storageKey, JSON.stringify(record))
 }
 
+function getDailyStepData(record) {
+  const slot = getSavedSlot(record)
+  return { slot, history: getCompletedHistory(record, slot), tomorrowPlan: getSavedTomorrowPlan(record) }
+}
+
+function findDailyStep({ slot, history, tomorrowPlan }, date) {
+  if (slot?.date === date) return slot
+  const title = history.get(date)
+  if (title) return { title, completed: true }
+  return tomorrowPlan?.date === date ? { ...tomorrowPlan, completed: false } : null
+}
+
 export function readDailyStep(storageKey, date, getStorage = getLocalStorage) {
   if (!storageKey || parseDateLabel(date) === null) return null
-  const record = readSavedRecord(storageKey, getStorage)
-  const slot = getSavedSlot(record)
-  if (slot?.date === date) return { title: slot.title, completed: slot.completed }
-  const title = getCompletedHistory(record, slot).get(date)
-  if (title) return { title, completed: true }
-  const tomorrowPlan = getSavedTomorrowPlan(record)
-  return tomorrowPlan?.date === date ? { title: tomorrowPlan.title, completed: false } : null
+  return normalizeStep(findDailyStep(getDailyStepData(readSavedRecord(storageKey, getStorage)), date))
 }
 
 export function readCompletedDailySteps(storageKey, date, getStorage = getLocalStorage) {
@@ -154,7 +167,15 @@ export function readTomorrowDailyStep(storageKey, date, getStorage = getLocalSto
   if (plan?.date !== tomorrow) return null
   const slot = getSavedSlot(record)
   if (slot?.date === tomorrow || getCompletedHistory(record, slot).has(tomorrow)) return null
-  return plan
+  return { date: plan.date, title: plan.title }
+}
+
+function saveDailyStepChange(storage, storageKey, date, step, { slot, history, tomorrowPlan }) {
+  if (step?.completed) history.set(date, step.title)
+  else history.delete(date)
+  const retainedSlot = slot?.date === date ? null : slot
+  const nextSlot = step ? { date, ...step } : retainedSlot
+  saveDailyStepRecord(storage, storageKey, nextSlot, history, tomorrowPlan?.date === date ? null : tomorrowPlan)
 }
 
 export function writeDailyStep(storageKey, date, value, getStorage = getLocalStorage) {
@@ -163,19 +184,53 @@ export function writeDailyStep(storageKey, date, value, getStorage = getLocalSto
   try {
     const storage = getStorage()
     if (!storage) return false
-    const record = parseSavedRecord(storage.getItem(storageKey))
-    const slot = getSavedSlot(record)
-    const history = getCompletedHistory(record, slot)
-    const tomorrowPlan = getSavedTomorrowPlan(record)
-    if (step?.completed) history.set(date, step.title)
-    else history.delete(date)
-
-    const retainedSlot = slot?.date === date ? null : slot
-    const nextSlot = step ? { date, ...step } : retainedSlot
-    saveDailyStepRecord(storage, storageKey, nextSlot, history, tomorrowPlan?.date === date ? null : tomorrowPlan)
+    saveDailyStepChange(storage, storageKey, date, step, getDailyStepData(parseSavedRecord(storage.getItem(storageKey))))
     return true
   } catch {
     return false
+  }
+}
+
+export function prepareDailyStepFocus(storageKey, date, title, getStorage = getLocalStorage) {
+  if (!storageKey || parseDateLabel(date) === null) return null
+  try {
+    const storage = getStorage()
+    const { slot, history, tomorrowPlan } = getDailyStepData(parseSavedRecord(storage.getItem(storageKey)))
+    const step = findDailyStep({ slot, history, tomorrowPlan }, date)
+    if (step?.completed !== false || step.title !== title) return null
+    // Existing steps acquire an identity only when explicitly opened in Focus.
+    if (step.focusRevision) return { date, revision: step.focusRevision }
+    const revision = globalThis.crypto.randomUUID()
+    const fromSlot = slot?.date === date
+    saveDailyStepRecord(storage, storageKey, fromSlot ? { ...slot, focusRevision: revision } : slot, history,
+      fromSlot ? tomorrowPlan : { ...tomorrowPlan, focusRevision: revision })
+    return { date, revision }
+  } catch {
+    return null
+  }
+}
+
+function matchesDailyStepFocus(step, origin) {
+  return step?.completed === false && typeof origin?.revision === 'string' && step.focusRevision === origin.revision
+}
+
+export function isDailyStepFocusCurrent(storageKey, origin, now = Date.now(), getStorage = getLocalStorage) {
+  if (!storageKey || !origin?.date || getDailyStepDate(now) !== origin.date) return false
+  const data = getDailyStepData(readSavedRecord(storageKey, getStorage))
+  return matchesDailyStepFocus(findDailyStep(data, origin.date), origin)
+}
+
+export function completeDailyStepFromFocus(storageKey, origin, now = Date.now(), getStorage = getLocalStorage) {
+  if (!storageKey || !origin?.date || getDailyStepDate(now) !== origin.date) return 'stale'
+  try {
+    const storage = getStorage()
+    const data = getDailyStepData(parseSavedRecord(storage.getItem(storageKey)))
+    const step = findDailyStep(data, origin.date)
+    if (!matchesDailyStepFocus(step, origin)) return 'stale'
+    saveDailyStepChange(storage, storageKey, origin.date, { title: step.title, completed: true }, data)
+    return 'completed'
+  } catch {
+    return 'failed'
   }
 }
 

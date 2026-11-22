@@ -761,6 +761,7 @@ function MainPanelApp() {
   const [intentOverride, setIntentOverride] = useState(null)
   const [focusNavigationVersion, setFocusNavigationVersion] = useState(0)
   const [focusStepIntent, setFocusStepIntent] = useState(null)
+  const [dailyStepVersion, setDailyStepVersion] = useState(0)
   const [focusHandoffHost, setFocusHandoffHost] = useState(null)
   const [todayNavigation, setTodayNavigation] = useState(null)
   const [todayReminderPrefill, setTodayReminderPrefill] = useState(null)
@@ -846,6 +847,9 @@ function MainPanelApp() {
   ])
   const handleFocusStepIntent = useCallback((handled) => {
     setFocusStepIntent((current) => current === handled ? null : current)
+  }, [])
+  const handleDailyStepChange = useCallback(() => {
+    setDailyStepVersion((current) => current + 1)
   }, [])
   const handleTodayReminderPrefill = useCallback((handled) => {
     setTodayReminderPrefill((current) => current === handled ? null : current)
@@ -3090,8 +3094,8 @@ function MainPanelApp() {
     setFocusNavigationVersion((value) => value + 1)
   }
 
-  const handleFocusTodayStep = (title) => {
-    setFocusStepIntent({ title, contextKey: todayContextKey })
+  const handleFocusTodayStep = (title, origin) => {
+    setFocusStepIntent({ title, origin, contextKey: todayContextKey })
     handleOpenFocus()
   }
 
@@ -3191,6 +3195,8 @@ function MainPanelApp() {
         accountContext={{ hasSession: authenticated, server: apiBaseUrl, userId: user?.id, petType: currentPetType }}
         onFocus={localFocusReady ? handleFocusTodayStep : undefined}
         onRemind={canCreateTodayReminder ? (title) => setTodayReminderPrefill({ title, contextKey: todayContextKey }) : undefined}
+        changeVersion={dailyStepVersion}
+        onStepChange={handleDailyStepChange}
       />
       <TodayReminderComposer
         key={`today-reminder-${todayContextKey}`}
@@ -3378,6 +3384,7 @@ function MainPanelApp() {
                 }}
                 stepIntent={focusStepIntent?.contextKey === todayContextKey ? focusStepIntent : null}
                 onStepIntentHandled={handleFocusStepIntent}
+                onStepChange={handleDailyStepChange}
                 onOpenToday={focusTodaySection}
                 handoffHost={focusHandoffHost}
                 onOpenFocus={handleOpenFocus}

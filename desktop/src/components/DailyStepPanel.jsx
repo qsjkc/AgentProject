@@ -6,6 +6,7 @@ import {
   getDailyStepDate,
   getDailyStepStorageKey,
   getDailyStepTitle,
+  prepareDailyStepFocus,
   readCompletedDailySteps,
   readDailyStep,
   readDailyStepCarryOver,
@@ -158,7 +159,7 @@ function TomorrowStep({ language, storageKey, date, isToday, canPlan, fallbackFo
   )
 }
 
-function DailyStep({ language, storageKey, date, isToday, onFocus, onRemind }) {
+function DailyStep({ language, storageKey, date, isToday, onFocus, onRemind, changeVersion, onStepChange }) {
   const copy = COPY[language]
   const [step, setStep] = useState(() => readDailyStep(storageKey, date))
   const [carryOver, setCarryOver] = useState(() => readDailyStepCarryOver(storageKey, date))
@@ -181,6 +182,12 @@ function DailyStep({ language, storageKey, date, isToday, onFocus, onRemind }) {
     restoreFocusRef.current = null
   }, [editing, step])
 
+  useEffect(() => {
+    setStep(readDailyStep(storageKey, date))
+    setCarryOver(readDailyStepCarryOver(storageKey, date))
+    setHistory(readCompletedDailySteps(storageKey, date))
+  }, [storageKey, date, changeVersion])
+
   const apply = (nextStep, nextFocus) => {
     if (!isToday(date)) return
     if (!writeDailyStep(storageKey, date, nextStep)) {
@@ -194,6 +201,7 @@ function DailyStep({ language, storageKey, date, isToday, onFocus, onRemind }) {
     setHistory(readCompletedDailySteps(storageKey, date))
     setEditing(false)
     setDraft('')
+    onStepChange?.()
   }
 
   const edit = () => {
@@ -264,7 +272,7 @@ function DailyStep({ language, storageKey, date, isToday, onFocus, onRemind }) {
           <p className="daily-step-title" data-e2e="daily-step-title">{step.title}</p>
           <div className="daily-step-actions">
             {!step.completed && onFocus && <button type="button" className="daily-step-primary" data-e2e="daily-step-focus" onClick={() => {
-              if (isToday(date)) onFocus(step.title)
+              if (isToday(date)) onFocus(step.title, prepareDailyStepFocus(storageKey, date, step.title))
             }}><Play size={12} aria-hidden="true" />{copy.focus}</button>}
             {!step.completed && onRemind && (
               <button type="button" data-e2e="daily-step-remind" onClick={() => {
@@ -321,7 +329,7 @@ function DailyStep({ language, storageKey, date, isToday, onFocus, onRemind }) {
   )
 }
 
-export function DailyStepPanel({ language, accountContext, onFocus, onRemind }) {
+export function DailyStepPanel({ language, accountContext, onFocus, onRemind, changeVersion, onStepChange }) {
   const [date, setDate] = useState(getDailyStepDate)
   const storageKey = getDailyStepStorageKey(accountContext)
 
@@ -361,5 +369,7 @@ export function DailyStepPanel({ language, accountContext, onFocus, onRemind }) 
     isToday={isToday}
     onFocus={onFocus}
     onRemind={onRemind}
+    changeVersion={changeVersion}
+    onStepChange={onStepChange}
   />
 }

@@ -1,3 +1,4 @@
+import { readFile, rename, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
 import { assertEqual, waitFor } from './assertions.mjs'
@@ -10,6 +11,7 @@ const OTHER = { id: 872, username: 'daily-step-other', email: 'daily-step-other@
 const FOCUS_PANEL = '[data-e2e="focus-panel"]'
 const FOCUS_INTENTION = '[data-e2e="focus-intention"]'
 const FOCUS_TIME = '[data-e2e="focus-time"]'
+const FOCUS_COMPLETE_STEP = '[data-e2e="focus-complete-step"]'
 const MAIN_CHAT_INPUT = '[data-e2e="main-chat-input"]'
 const STEP_INPUT = '[data-e2e="daily-step-input"]'
 const STEP_TITLE = '[data-e2e="daily-step-title"]'
@@ -109,6 +111,27 @@ function restoreDailyStepDate(main) {
   return main.evaluate("window.restoreDailyStepClock?.(); window.dispatchEvent(new Event('focus'))")
 }
 
+async function finishFocusFromCheckpoint(context, linked) {
+  const main = context.pages.main
+  await main.waitForSelector(`${FOCUS_PANEL}[data-focus-status="running"][aria-busy="false"]`)
+  await main.click('[data-e2e="focus-toggle"]')
+  await main.waitForSelector(`${FOCUS_PANEL}[data-focus-status="paused"][aria-busy="false"]`)
+  // Shorten the checkpoint in the isolated E2E profile. Resuming still uses
+  // the production timer, IPC and completion notification path.
+  const store = join(context.userDataPath, 'config.json')
+  const config = JSON.parse(await readFile(store, 'utf8'))
+  const key = JSON.stringify([context.stub.apiBaseUrl.replace(/\/+$/, ''), OWNER.id, 'pig'])
+  const state = config.focusSessions?.[key]
+  assertEqual(state?.status, 'paused', 'The focus checkpoint must be paused before shortening it')
+  assertEqual(Boolean(state.stepOrigin), linked, 'Unexpected saved step link in the focus checkpoint')
+  state.remainingMs = 350
+  const next = join(context.userDataPath, 'config.focus-e2e.json')
+  await writeFile(next, JSON.stringify(config), { flag: 'wx' })
+  await rename(next, store)
+  await main.click('[data-e2e="focus-toggle"]')
+  await main.waitForSelector(`${FOCUS_PANEL}[data-focus-status="completed"][aria-busy="false"]`)
+}
+
 async function selectPet(main, petType) {
   const selector = `[data-e2e="pet-option-${petType}"]`
   await waitFor(() => main.evaluate(`document.querySelector(${JSON.stringify(selector)})?.disabled === false`), {
@@ -192,13 +215,39 @@ export async function dailyStepScenario(context) {
   await main.click('[data-e2e="focus-end"]')
   await main.waitForSelector(`${FOCUS_PANEL}[data-focus-status="idle"]`)
   await expectStep(main, 'planned', title)
+  assertEqual(await main.evaluate(`document.querySelector(${JSON.stringify(FOCUS_COMPLETE_STEP)}) === null`), true,
+    'Ending a linked focus early offered to finish the step')
 
-  await main.click('[data-e2e="daily-step-complete"]')
+  await main.click('[data-e2e="daily-step-focus"]')
+  await waitFor(async () => await readIntention() === title, { description: 'linked step prepared for a second focus' })
+  await main.click('[data-e2e="focus-start"]')
+  await finishFocusFromCheckpoint(context, true)
+  await main.waitForSelector(FOCUS_COMPLETE_STEP)
+  await expectStep(main, 'planned', title)
+  await main.reload()
+  await waitForScope(main, OWNER, 'pig')
+  await main.waitForSelector(FOCUS_COMPLETE_STEP)
+  await main.click(FOCUS_COMPLETE_STEP)
   await expectStep(main, 'completed', title)
+  assertEqual(await main.evaluate("document.activeElement?.id"), 'companion-today',
+    'Confirming a linked step did not land on Today')
+  await waitFor(() => main.evaluate(`document.querySelector(${JSON.stringify(FOCUS_COMPLETE_STEP)}) === null`), {
+    description: 'the same focus can no longer offer completion after confirmation',
+  })
   await main.reload()
   await waitForScope(main, OWNER, 'pig')
   await expectStep(main, 'completed', title)
   await main.click('[data-e2e="daily-step-undo"]')
+  await expectStep(main, 'planned', title)
+  assertEqual(await main.evaluate(`document.querySelector(${JSON.stringify(FOCUS_COMPLETE_STEP)}) === null`), true,
+    'Undoing the step revived its previous focus completion link')
+  await main.click('[data-e2e="focus-reset"]')
+  await main.waitForSelector(`${FOCUS_PANEL}[data-focus-status="idle"][aria-busy="false"]`)
+  await main.input(FOCUS_INTENTION, title)
+  await main.click('[data-e2e="focus-start"]')
+  await finishFocusFromCheckpoint(context, false)
+  assertEqual(await main.evaluate(`document.querySelector(${JSON.stringify(FOCUS_COMPLETE_STEP)}) === null`), true,
+    'A manual focus with the same title was treated as linked')
   await expectStep(main, 'planned', title)
   await main.click('[data-e2e="daily-step-complete"]')
   await expectStep(main, 'completed', title)
@@ -312,6 +361,9 @@ export async function dailyStepScenario(context) {
     manualStart: true,
     preservesExistingIntention: true,
     manualCompletion: true,
+    linkedFocusCheckpointCompleted: true,
+    linkedFocusConfirmationSurvivesReload: true,
+    sameTitleManualFocusStaysUnlinked: true,
     undo: true,
     rendererReload: true,
     petIsolation: true,

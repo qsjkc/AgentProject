@@ -83,6 +83,37 @@ test('main-process timer completes without a renderer and never duplicates compl
   assert.equal(h.timers.size, 0)
 })
 
+test('a linked focus origin survives restore and natural completion without entering history', () => {
+  const start = new Date(2026, 10, 21, 12).getTime()
+  const origin = { date: '2026-11-21', revision: '47bdaa48-482a-43b3-970f-60919f6b5a75' }
+  const first = harness({ initialNow: start })
+  const running = first.update('start', { minutes: 15, intention: 'Read', stepOrigin: { ...origin, unrelated: 'discard' } })
+  assert.deepEqual(running.state.stepOrigin, origin)
+  first.controller.dispose()
+
+  const restored = harness({ storage: first.storage, initialNow: start + 60_000 })
+  assert.deepEqual(restored.controller.current().state.stepOrigin, origin)
+  restored.advance(14 * 60_000)
+  const completed = restored.controller.current()
+  assert.equal(completed.state.status, 'completed')
+  assert.deepEqual(completed.state.stepOrigin, origin)
+  assert.deepEqual(Object.keys(completed.history[0]).sort(), ['completedAt', 'durationMs', 'id', 'intention'])
+  assert.equal(restored.update('reset').state.stepOrigin, undefined)
+  assert.equal(restored.update('start', { minutes: 15, intention: 'Read' }).state.stepOrigin, undefined)
+})
+
+test('a start after midnight keeps the timer but drops an out-of-date or invalid step origin', () => {
+  const start = new Date(2026, 10, 22, 0).getTime()
+  const origin = { date: '2026-11-21', revision: '47bdaa48-482a-43b3-970f-60919f6b5a75' }
+  for (const stepOrigin of [origin, { ...origin, date: '2026-02-30' }, { date: '2026-11-22', revision: 'invalid' }]) {
+    const h = harness({ initialNow: start })
+    const running = h.update('start', { minutes: 15, stepOrigin })
+    assert.equal(running.state.status, 'running')
+    assert.equal(running.state.stepOrigin, undefined)
+    assert.equal(normalizeFocusSession({ ...running.state, stepOrigin: { ...origin, date: '2026-02-30' } }).stepOrigin, undefined)
+  }
+})
+
 test('resume after skipped timer callbacks settles elapsed time exactly once', () => {
   const h = harness()
   h.update('start', { minutes: 15 })
