@@ -31,68 +31,8 @@ $report = [ordered]@{
     installMode = 'NSIS silent'
     checks = $checks
 }
-function Find-DetachymShortcuts([string[]]$Folders) {
-    foreach ($folder in $Folders) {
-        $path = [Environment]::GetFolderPath($folder)
-        if ($path -and (Test-Path -LiteralPath $path)) {
-            Get-ChildItem -LiteralPath $path -Recurse -Filter 'Detachym.lnk' -File -ErrorAction SilentlyContinue
-        }
-    }
-}
-function Find-DetachymRegistration {
-    $keys = @(
-        'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall',
-        'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall',
-        'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall'
-    )
-    foreach ($key in $keys) {
-        Get-ChildItem -LiteralPath $key -ErrorAction SilentlyContinue |
-            ForEach-Object { Get-ItemProperty -LiteralPath $_.PSPath -ErrorAction SilentlyContinue } |
-            Where-Object DisplayName -Match '^Detachym(?:$|\s)'
-    }
-}
-function Invoke-InstallerProcess([string]$Executable, [string[]]$Arguments) {
-    $process = Start-Process -FilePath $Executable -ArgumentList $Arguments -PassThru -WindowStyle Hidden
-    if (-not $process.WaitForExit(120000)) {
-        & taskkill.exe /PID $process.Id /T /F | Out-Null
-        throw "NSIS timed out ($Executable)"
-    }
-    if ($process.ExitCode -ne 0) {
-        throw "NSIS failed with exit code $($process.ExitCode) ($Executable)"
-    }
-}
-function Get-FilesAndRegistration([string]$Phase) {
-    foreach ($path in @($exe, $asar, $uninstaller)) {
-        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "$Phase omitted $path" }
-    }
-    $desktopShortcuts = @(Find-DetachymShortcuts @('Desktop', 'CommonDesktopDirectory'))
-    $programShortcuts = @(Find-DetachymShortcuts @('Programs', 'CommonPrograms'))
-    if ($desktopShortcuts.Count -lt 1 -or $programShortcuts.Count -lt 1) {
-        throw "$Phase omitted Desktop or Start Menu shortcut"
-    }
-    $shell = New-Object -ComObject WScript.Shell
-    try {
-        foreach ($shortcut in ($desktopShortcuts + $programShortcuts)) {
-            if ($shell.CreateShortcut($shortcut.FullName).TargetPath -ne $exe) {
-                throw "$Phase registered a shortcut targeting another executable"
-            }
-        }
-    }
-    finally { [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($shell) }
-    $registration = @(Find-DetachymRegistration | Where-Object { $_.UninstallString -like "*$uninstaller*" })
-    if ($registration.Count -ne 1 -or $registration[0].DisplayVersion -ne $version) {
-        throw "$Phase did not register the expected uninstaller and version"
-    }
-    return [ordered]@{
-        name = "$Phase-files-shortcuts-registration"
-        status = 'passed'
-        asarSha256 = (Get-FileHash -LiteralPath $asar -Algorithm SHA256).Hash.ToLowerInvariant()
-        applicationSha256 = (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash.ToLowerInvariant()
-        desktopShortcuts = $desktopShortcuts.Count
-        startMenuShortcuts = $programShortcuts.Count
-        uninstallRegistration = $registration[0].DisplayVersion
-    }
-}
+. (Join-Path $PSScriptRoot 'windows-installer-common.ps1')
+
 function Invoke-RendererCheck([string]$Phase) {
     $profile = Join-Path $env:RUNNER_TEMP "detachym-release-$Phase-profile"
     $launchReport = Join-Path $ReportDirectory "$Phase-launch.json"
@@ -137,7 +77,7 @@ try {
     $checks.Add([ordered]@{ name = 'clean-windows-baseline'; status = 'passed' })
 
     Invoke-InstallerProcess $installer @('/S', "/D=$installDirectory")
-    $first = Get-FilesAndRegistration 'install'
+    $first = Get-FilesAndRegistration 'install' $installDirectory $version
     $checks.Add($first)
     Invoke-RendererCheck 'install'
     Invoke-InstallerProcess $uninstaller @('/S')
@@ -161,7 +101,7 @@ try {
     })
 
     Invoke-InstallerProcess $installer @('/S', "/D=$installDirectory")
-    $second = Get-FilesAndRegistration 'reinstall'
+    $second = Get-FilesAndRegistration 'reinstall' $installDirectory $version
     if ($first.asarSha256 -ne $second.asarSha256 -or $first.applicationSha256 -ne $second.applicationSha256) {
         throw 'Reinstalled application payload differs from initial install'
     }
