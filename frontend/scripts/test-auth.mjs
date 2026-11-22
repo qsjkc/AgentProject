@@ -11,7 +11,16 @@ export async function testAuth(importModule) {
   const { createAuthStore } = await importModule('src/stores/authState.js')
   const { getLoginDestination, shouldExpireSession } = await importModule('src/lib/auth.js')
   const user = { id: 1, username: 'first', email: 'first@example.test', status: 'active' }
-  const preferences = { user_id: 1, pet_type: 'pig' }
+  const preferences = {
+    id: 10,
+    user_id: 1,
+    pet_type: 'pig',
+    quick_chat_enabled: true,
+    bubble_frequency: 120,
+    created_at: '2026-11-22T00:00:00Z',
+    updated_at: '2026-11-22T00:00:00Z',
+  }
+  const catPreferences = { ...preferences, pet_type: 'cat' }
   function setup(getMe, getPreferences = async () => preferences) {
     const values = new Map([['token', 'session-a']])
     const storage = {
@@ -33,12 +42,28 @@ export async function testAuth(importModule) {
   await first
   assert.equal(store.getState().user.preferences.pet_type, 'pig')
 
+  const delayedPreference = deferred()
+  let embeddedPreferenceCalls = 0
+  const embedded = setup(
+    async () => ({ ...user, preferences: catPreferences }),
+    () => {
+      embeddedPreferenceCalls += 1
+      return delayedPreference.promise
+    },
+  ).store
+  const embeddedRequest = embedded.getState().fetchUser()
+  await Promise.resolve()
+  assert.equal(embeddedPreferenceCalls, 0, 'a complete same-account profile should skip the preference request')
+  assert.equal(embedded.getState().loading, false, 'the account is ready as soon as its profile loads')
+  assert.equal(embedded.getState().user.preferences, catPreferences)
+  await embeddedRequest
+
   const stale = deferred()
   let preferenceCalls = 0
   const loggedOut = setup(() => stale.promise, async () => { preferenceCalls++; return preferences }).store
   const oldRequest = loggedOut.getState().fetchUser()
   loggedOut.getState().logout()
-  stale.resolve(user)
+  stale.resolve({ ...user, preferences: catPreferences })
   await oldRequest
   assert.equal(loggedOut.getState().user, null, 'a late response must not resurrect a logged-out user')
   assert.equal(preferenceCalls, 0, 'a superseded session must not request the next user preferences')
@@ -140,9 +165,31 @@ export async function testAuth(importModule) {
   assert.equal(invalid.storage.getItem('token'), null)
   assert.equal(invalid.store.getState().token, null)
 
-  const fallback = setup(async () => ({ ...user, preferences }), async () => { throw new Error('offline') })
-  await fallback.store.getState().fetchUser()
-  assert.equal(fallback.store.getState().user.preferences, preferences)
+  for (const profilePreferences of [
+    undefined,
+    null,
+    { ...catPreferences, user_id: 2 },
+    { ...catPreferences, pet_type: 'unknown' },
+    { ...catPreferences, quick_chat_enabled: undefined },
+  ]) {
+    let fallbackCalls = 0
+    const fallback = setup(async () => ({ ...user, preferences: profilePreferences }), async () => {
+      fallbackCalls += 1
+      return preferences
+    }).store
+    await fallback.getState().fetchUser()
+    assert.equal(fallbackCalls, 1, 'missing or invalid profile preferences need a separate request')
+    assert.equal(fallback.getState().user.preferences, preferences)
+
+    const unavailable = setup(async () => ({ ...user, preferences: profilePreferences }), async () => {
+      throw { response: { status: 503 } }
+    }).store
+    await unavailable.getState().fetchUser()
+    assert.equal(unavailable.getState().token, 'session-a')
+    assert.equal(unavailable.getState().loading, false)
+    assert.equal(unavailable.getState().error, null)
+    assert.equal(unavailable.getState().user.preferences, null, 'skip unavailable or invalid preferences without blocking the account')
+  }
   const preferenceUnauthorized = setup(async () => user, async () => { throw { response: { status: 401 } } })
   await preferenceUnauthorized.store.getState().fetchUser()
   assert.equal(preferenceUnauthorized.store.getState().token, null)

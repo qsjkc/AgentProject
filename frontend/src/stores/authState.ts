@@ -21,6 +21,20 @@ interface AuthState {
   logout: () => void
 }
 
+function readProfilePreferences(user: User): UserPreference | null {
+  const preferences = user.preferences
+  if (!preferences || !Number.isSafeInteger(user.id) || preferences.user_id !== user.id) return null
+
+  const { id, pet_type, quick_chat_enabled, bubble_frequency, created_at, updated_at } = preferences
+  if (pet_type !== 'cat' && pet_type !== 'dog' && pet_type !== 'pig') return null
+  if (!Number.isSafeInteger(id) || typeof quick_chat_enabled !== 'boolean') return null
+  if (!Number.isInteger(bubble_frequency) || bubble_frequency < 30 || bubble_frequency > 3600) return null
+  if (typeof created_at !== 'string' || !Number.isFinite(Date.parse(created_at))) return null
+  if (typeof updated_at !== 'string' || !Number.isFinite(Date.parse(updated_at))) return null
+
+  return preferences
+}
+
 export function createAuthStore({ storage, getMe, getPreferences }: AuthDependencies) {
   let generation = 0
   let pending: Promise<void> | null = null
@@ -68,9 +82,9 @@ export function createAuthStore({ storage, getMe, getPreferences }: AuthDependen
         try {
           const user = await getMe()
           if (!isCurrent()) return
-          const preferences = await getPreferences().catch((error: unknown) => {
+          const preferences = readProfilePreferences(user) ?? await getPreferences().catch((error: unknown) => {
             if (getErrorStatus(error) === 401) throw error
-            return user.preferences ?? null
+            return null
           })
           if (!isCurrent()) return
           set({ user: { ...user, preferences }, loading: false, error: null })
