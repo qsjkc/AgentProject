@@ -4,7 +4,7 @@ This is a production API smoke check, not email registration acceptance. Only th
 users created by this run are deleted. Credentials and tokens are never reported.
 """
 import argparse
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time as local_time, timedelta, timezone
 from email.utils import parsedate_to_datetime
 import json
 from pathlib import Path
@@ -13,6 +13,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from zoneinfo import ZoneInfo
 
 from dotenv import dotenv_values
 
@@ -23,6 +24,8 @@ def main():
     parser.add_argument('--expected-version', required=True)
     parser.add_argument('--credentials-env', type=Path, required=True)
     parser.add_argument('--report', type=Path, required=True)
+    parser.add_argument('--verify-weekday-recurrence', action='store_true',
+                        help='Verify a future no-email weekday series in a disposable account')
     args = parser.parse_args()
     base = args.base_url.rstrip('/')
     parsed = urllib.parse.urlparse(base)
@@ -129,7 +132,8 @@ def main():
             assert current['outfit'] == saved['outfit']
         passed('later-pet-actions-do-not-change-earlier-pets')
         _, headers = request('GET', '/health/ready')
-        due = parsedate_to_datetime(headers['Date']) + timedelta(seconds=60)
+        server_now = parsedate_to_datetime(headers['Date'])
+        due = server_now + timedelta(seconds=60)
         wait_until = time.monotonic() + 61
         reminders = []
         for pet in ('cat', 'dog'):
@@ -164,6 +168,34 @@ def main():
             completed = api('POST', path + '/complete', token=token)
             assert completed['status'] == 'completed' and completed['completed_at']
             passed(f'{reminder["pet_type"]}-natural-deadline-trigger-complete-ownership')
+        if args.verify_weekday_recurrence:
+            recurrence_zone = ZoneInfo('America/New_York')
+            local_day = server_now.astimezone(recurrence_zone).date()
+            friday = local_day + timedelta(days=7 + (4 - local_day.weekday()) % 7)
+            first = datetime.combine(friday, local_time(8, 45), recurrence_zone)
+            following = first + timedelta(days=3)
+            occurrence = api('POST', '/reminders', {'pet_type': 'pig', 'title': 'Weekday release verification',
+                'remind_at': first.isoformat(), 'email_enabled': False, 'recurrence_type': 'weekdays',
+                'recurrence_timezone': recurrence_zone.key}, token)
+            assert occurrence['user_id'] == accounts[0][0]['id'] and occurrence['pet_type'] == 'pig'
+            assert occurrence['occurrence_sequence'] == 1 and occurrence['status'] == 'pending'
+            assert occurrence['email_status'] == 'disabled' and not occurrence['email_enabled']
+            assert datetime.fromisoformat(occurrence['remind_at']) == first
+            series_path = '/reminder-series?pet_type=pig&status=active'
+            series, = api('GET', series_path, token=token)
+            assert series['id'] == occurrence['series_id'] and series['recurrence_type'] == 'weekdays'
+            assert series['timezone'] == recurrence_zone.key and series['weekdays'] == [0, 1, 2, 3, 4]
+            assert (series['local_hour'], series['local_minute']) == (8, 45) and not series['email_enabled']
+            assert datetime.fromisoformat(series['next_occurrence_at']) == following
+            assert api('GET', series_path, token=accounts[1][1]) == []
+            cancel_path = f'/reminder-series/{series["id"]}/cancel'
+            api('POST', cancel_path, token=accounts[1][1], expected=404)
+            assert api('POST', cancel_path, token=token)['status'] == 'canceled'
+            canceled, = api('GET', '/reminders?pet_type=pig&status=canceled', token=token)
+            assert canceled['id'] == occurrence['id'] and canceled['cancellation_source'] == 'series_cancel'
+            passed('weekday-recurrence-timezone-weekend-skip-and-ownership',
+                   timezone=recurrence_zone.key, first=first.isoformat(), next=following.isoformat(),
+                   emailEnabled=False, canceled=True)
         for pet in relationships:
             relationships[pet] = api('GET', f'/pets/{pet}/relationship', token=token)
         fresh = api('POST', '/auth/login', {'username': accounts[0][2], 'password': accounts[0][3]}, form=True)['access_token']

@@ -49,6 +49,34 @@ for attempt in $(seq 1 45); do
   sleep 2
 done
 docker exec "$AGENT_ID" python -c "import json,urllib.request; assert json.load(urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5))['status']=='ok'"
+for id in "$BACKEND_ID" "$AGENT_ID"; do
+  docker exec "$id" sh -ec '
+    if command -v gcc >/dev/null || command -v make >/dev/null; then
+      echo "Build tools remain in the Python runtime image" >&2
+      exit 1
+    fi
+    python -m pip check
+    python -c "import httptools, uvloop"
+  '
+done
+docker run --rm -i --network none --entrypoint python "agentproject-backend:sha-$SOURCE_SHA" - <<'PYTHON'
+from tempfile import mkdtemp
+
+import chromadb
+import onnxruntime
+from chromadb.config import Settings
+
+assert "CPUExecutionProvider" in onnxruntime.get_available_providers()
+directory = mkdtemp(prefix="chroma-image-smoke-")
+client = chromadb.PersistentClient(path=directory, settings=Settings(anonymized_telemetry=False))
+# Flush the small batch into the native HNSW index. Explicit embeddings skip model downloads.
+collection = client.create_collection(
+    "image-smoke", embedding_function=None, metadata={"hnsw:batch_size": 3, "hnsw:sync_threshold": 3},
+)
+collection.add(ids=["east", "north", "west"], embeddings=[[1.0, 0.0], [0.0, 1.0], [-1.0, 0.0]])
+result = collection.query(query_embeddings=[[1.0, 0.0]], n_results=1)
+assert result["ids"] == [["east"]], result["ids"]
+PYTHON
 openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj '/CN=detachym.top' \
   -keyout "$SMOKE_DIR/privkey.pem" -out "$SMOKE_DIR/fullchain.pem" >/dev/null 2>&1
 NGINX_ID="$(docker run -d --network "$RUN_NAME" --network-alias nginx \
@@ -62,4 +90,6 @@ for attempt in $(seq 1 15); do
   sleep 2
 done
 docker exec "$NGINX_ID" nginx -t
-printf 'Image smoke passed: PostgreSQL migration, backend readiness, Agent health, HTTPS homepage and proxy routes.\n'
+docker image inspect --format '{{json .RepoTags}} {{.Size}} bytes' \
+  "agentproject-backend:sha-$SOURCE_SHA" "agentproject-agent-server:sha-$SOURCE_SHA" "agentproject-nginx:sha-$SOURCE_SHA"
+printf 'Image smoke passed: PostgreSQL migration, backend readiness, Agent health, native Python dependencies, Chroma indexing, HTTPS homepage and proxy routes.\n'

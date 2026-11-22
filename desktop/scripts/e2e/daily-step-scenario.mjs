@@ -1,3 +1,4 @@
+import { readFile, rename, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
 import { assertEqual, waitFor } from './assertions.mjs'
@@ -10,11 +11,14 @@ const OTHER = { id: 872, username: 'daily-step-other', email: 'daily-step-other@
 const FOCUS_PANEL = '[data-e2e="focus-panel"]'
 const FOCUS_INTENTION = '[data-e2e="focus-intention"]'
 const FOCUS_TIME = '[data-e2e="focus-time"]'
+const FOCUS_COMPLETE_STEP = '[data-e2e="focus-complete-step"]'
 const MAIN_CHAT_INPUT = '[data-e2e="main-chat-input"]'
 const STEP_INPUT = '[data-e2e="daily-step-input"]'
 const STEP_TITLE = '[data-e2e="daily-step-title"]'
 const CARRY_OVER = '[data-e2e="daily-step-carry-over"]'
 const CARRY_OVER_TITLE = '[data-e2e="daily-step-carry-over-title"]'
+const STEP_HISTORY = '[data-e2e="daily-step-history"]'
+const STEP_HISTORY_ROW = '[data-e2e="daily-step-history-row"]'
 
 function addDailyStepAccounts(stub) {
   for (const user of [OWNER, OTHER]) {
@@ -35,6 +39,7 @@ async function waitForScope(main, user, petType) {
     snapshot.account?.userId === user.id
     && snapshot.account?.petType === petType
     && snapshot.renderer?.[0]?.userId === user.id
+    && snapshot.renderer?.[0]?.petType === petType
     && snapshot.renderer?.[0]?.relationshipId === createRelationship(user, petType).id
   ), `daily step account ${user.id}/${petType} ready`)
 }
@@ -49,6 +54,24 @@ async function expectStep(main, state, title = null) {
   })()`), { description: `daily step in the ${state} state` })
   assertEqual(panels.length, 1, 'Only the active account and pet should have a daily step panel')
   assertEqual(panels[0].title, title, `Unexpected step title in the ${state} state`)
+}
+
+function expectNoStepHistory(main, description) {
+  return waitFor(() => main.evaluate(`document.querySelector(${JSON.stringify(STEP_HISTORY)}) === null`), { description })
+}
+
+async function expectStepHistoryRow(main, title, date) {
+  await main.waitForSelector(`details${STEP_HISTORY} > summary`)
+  assertEqual(await main.evaluate(`document.querySelector(${JSON.stringify(STEP_HISTORY)})?.open`), false,
+    'Recent completed steps should be collapsed by default')
+  await main.click(`${STEP_HISTORY} > summary`)
+  await main.waitForSelector(`${STEP_HISTORY}[open] ${STEP_HISTORY_ROW}`)
+  const rows = await main.evaluate(`Array.from(document.querySelectorAll(${JSON.stringify(`${STEP_HISTORY} ${STEP_HISTORY_ROW}`)}), (row) => ({
+    date: row.querySelector('time')?.dateTime, text: row.textContent,
+  }))`)
+  assertEqual(rows.length, 1, 'Recent completed steps should contain only the earlier completed plan')
+  assertEqual(rows[0].date, date, 'Recent completed steps used the wrong device-local date')
+  assertEqual(rows[0].text.includes(title), true, 'Recent completed steps lost the completed title')
 }
 
 async function expectTodayLanding(main, source) {
@@ -86,6 +109,27 @@ function showDailyStepDate(main, now) {
 
 function restoreDailyStepDate(main) {
   return main.evaluate("window.restoreDailyStepClock?.(); window.dispatchEvent(new Event('focus'))")
+}
+
+async function finishFocusFromCheckpoint(context, linked) {
+  const main = context.pages.main
+  await main.waitForSelector(`${FOCUS_PANEL}[data-focus-status="running"][aria-busy="false"]`)
+  await main.click('[data-e2e="focus-toggle"]')
+  await main.waitForSelector(`${FOCUS_PANEL}[data-focus-status="paused"][aria-busy="false"]`)
+  // Shorten the checkpoint in the isolated E2E profile. Resuming still uses
+  // the production timer, IPC and completion notification path.
+  const store = join(context.userDataPath, 'config.json')
+  const config = JSON.parse(await readFile(store, 'utf8'))
+  const key = JSON.stringify([context.stub.apiBaseUrl.replace(/\/+$/, ''), OWNER.id, 'pig'])
+  const state = config.focusSessions?.[key]
+  assertEqual(state?.status, 'paused', 'The focus checkpoint must be paused before shortening it')
+  assertEqual(Boolean(state.stepOrigin), linked, 'Unexpected saved step link in the focus checkpoint')
+  state.remainingMs = 350
+  const next = join(context.userDataPath, 'config.focus-e2e.json')
+  await writeFile(next, JSON.stringify(config), { flag: 'wx' })
+  await rename(next, store)
+  await main.click('[data-e2e="focus-toggle"]')
+  await main.waitForSelector(`${FOCUS_PANEL}[data-focus-status="completed"][aria-busy="false"]`)
 }
 
 async function selectPet(main, petType) {
@@ -171,16 +215,43 @@ export async function dailyStepScenario(context) {
   await main.click('[data-e2e="focus-end"]')
   await main.waitForSelector(`${FOCUS_PANEL}[data-focus-status="idle"]`)
   await expectStep(main, 'planned', title)
+  assertEqual(await main.evaluate(`document.querySelector(${JSON.stringify(FOCUS_COMPLETE_STEP)}) === null`), true,
+    'Ending a linked focus early offered to finish the step')
 
-  await main.click('[data-e2e="daily-step-complete"]')
+  await main.click('[data-e2e="daily-step-focus"]')
+  await waitFor(async () => await readIntention() === title, { description: 'linked step prepared for a second focus' })
+  await main.click('[data-e2e="focus-start"]')
+  await finishFocusFromCheckpoint(context, true)
+  await main.waitForSelector(FOCUS_COMPLETE_STEP)
+  await expectStep(main, 'planned', title)
+  await main.reload()
+  await waitForScope(main, OWNER, 'pig')
+  await main.waitForSelector(FOCUS_COMPLETE_STEP)
+  await main.click(FOCUS_COMPLETE_STEP)
   await expectStep(main, 'completed', title)
+  assertEqual(await main.evaluate("document.activeElement?.id"), 'companion-today',
+    'Confirming a linked step did not land on Today')
+  await waitFor(() => main.evaluate(`document.querySelector(${JSON.stringify(FOCUS_COMPLETE_STEP)}) === null`), {
+    description: 'the same focus can no longer offer completion after confirmation',
+  })
   await main.reload()
   await waitForScope(main, OWNER, 'pig')
   await expectStep(main, 'completed', title)
   await main.click('[data-e2e="daily-step-undo"]')
   await expectStep(main, 'planned', title)
+  assertEqual(await main.evaluate(`document.querySelector(${JSON.stringify(FOCUS_COMPLETE_STEP)}) === null`), true,
+    'Undoing the step revived its previous focus completion link')
+  await main.click('[data-e2e="focus-reset"]')
+  await main.waitForSelector(`${FOCUS_PANEL}[data-focus-status="idle"][aria-busy="false"]`)
+  await main.input(FOCUS_INTENTION, title)
+  await main.click('[data-e2e="focus-start"]')
+  await finishFocusFromCheckpoint(context, false)
+  assertEqual(await main.evaluate(`document.querySelector(${JSON.stringify(FOCUS_COMPLETE_STEP)}) === null`), true,
+    'A manual focus with the same title was treated as linked')
+  await expectStep(main, 'planned', title)
   await main.click('[data-e2e="daily-step-complete"]')
   await expectStep(main, 'completed', title)
+  await expectNoStepHistory(main, 'history disclosure absent with only today’s completion')
   await main.evaluate(`document.querySelector('[data-e2e="daily-step"]').scrollIntoView({ block: 'center' })`)
   const screenshot = join(context.artifactPath, 'daily-step-completed.png')
   await main.screenshot(screenshot)
@@ -194,26 +265,52 @@ export async function dailyStepScenario(context) {
   await switchAccount(context, OWNER)
   await expectStep(main, 'completed', title)
 
-  const alternate = await startStubServer({ fixture: context.stub.fixture })
-  try {
-    await switchAccount(context, OWNER, alternate)
-    await expectStep(main, 'empty')
-    await switchAccount(context, OWNER)
-    await expectStep(main, 'completed', title)
-  } finally {
-    await alternate.close()
-  }
-
-  const tomorrow = await main.evaluate(`(() => {
+  const { tomorrow, completedDate } = await main.evaluate(`(() => {
     const date = new Date()
+    const month = String(date.getMonth() + 1).padStart(2, '0')
+    const day = String(date.getDate()).padStart(2, '0')
+    const completedDate = date.getFullYear() + '-' + month + '-' + day
     date.setDate(date.getDate() + 1)
-    return date.setHours(12, 0, 0, 0)
+    return { tomorrow: date.setHours(12, 0, 0, 0), completedDate }
   })()`)
   try {
     await showDailyStepDate(main, tomorrow)
     await expectStep(main, 'empty')
     assertEqual(await main.evaluate(`document.querySelector(${JSON.stringify(CARRY_OVER)}) === null`), true,
       'A completed yesterday step was offered for carry-over')
+    await expectStepHistoryRow(main, title, completedDate)
+
+    await selectPet(main, 'cat')
+    await expectStep(main, 'empty')
+    await expectNoStepHistory(main, 'no completed step history for the other pet')
+    await selectPet(main, 'pig')
+    await switchAccount(context, OTHER)
+    await expectStep(main, 'empty')
+    await expectNoStepHistory(main, 'no completed step history for the other account')
+    const alternate = await startStubServer({ fixture: context.stub.fixture })
+    try {
+      await switchAccount(context, OWNER, alternate)
+      await expectStep(main, 'empty')
+      await expectNoStepHistory(main, 'no completed step history for the same account on a different service')
+      await switchAccount(context, OWNER)
+    } finally {
+      await alternate.close()
+    }
+    await expectStep(main, 'empty')
+    await expectStepHistoryRow(main, title, completedDate)
+
+    const nextStep = '整理一下书桌'
+    await main.input(STEP_INPUT, nextStep)
+    await main.click('[data-e2e="daily-step-save"]')
+    await expectStep(main, 'planned', nextStep)
+    await main.reload()
+    await waitForScope(main, OWNER, 'pig')
+    await showDailyStepDate(main, tomorrow)
+    await expectStep(main, 'planned', nextStep)
+    await expectStepHistoryRow(main, title, completedDate)
+    await main.click('[data-e2e="daily-step-edit"]')
+    await main.click('[data-e2e="daily-step-remove"]')
+    await expectStep(main, 'empty')
   } finally {
     await restoreDailyStepDate(main)
   }
@@ -225,6 +322,7 @@ export async function dailyStepScenario(context) {
     await showDailyStepDate(main, tomorrow)
     await expectStep(main, 'empty')
     await main.waitForSelector(CARRY_OVER)
+    await expectNoStepHistory(main, 'no completed history after undoing the earlier completion')
     assertEqual(await main.evaluate(`document.querySelector(${JSON.stringify(CARRY_OVER_TITLE)})?.textContent.trim()`), title,
       'Carry-over did not show the unfinished yesterday step')
     const newDraft = '今天自己的计划草稿'
@@ -263,12 +361,17 @@ export async function dailyStepScenario(context) {
     manualStart: true,
     preservesExistingIntention: true,
     manualCompletion: true,
+    linkedFocusCheckpointCompleted: true,
+    linkedFocusConfirmationSurvivesReload: true,
+    sameTitleManualFocusStaysUnlinked: true,
     undo: true,
     rendererReload: true,
     petIsolation: true,
     accountIsolation: true,
     serverIsolation: true,
     simulatedCalendarChange: true,
+    completedStepHistory: true,
+    stepHistoryScopeIsolation: true,
     carriesUnfinishedStepOnRequest: true,
     protectsTodayStepDraft: true,
     localTitle: true,

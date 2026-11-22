@@ -21,6 +21,7 @@ const COPY = {
     earlier: (count) => `之前还有 ${count} 项未完成`,
     more: (count) => `还有 ${count} 项`,
     delivered: '已提醒',
+    deliveredToday: '今日送达',
     due: '已到期',
     scheduled: '待提醒',
     projected: '周期计划',
@@ -34,6 +35,7 @@ const COPY = {
     earlier: (count) => `${count} unfinished from earlier`,
     more: (count) => `${count} more today`,
     delivered: 'Delivered',
+    deliveredToday: 'Delivered today',
     due: 'Due',
     scheduled: 'Scheduled',
     projected: 'Recurring plan',
@@ -186,20 +188,23 @@ export function TodayReminderAgenda({ language, accountContext, onNavigate }) {
       <h3 id={headingId}>{copy.heading}</h3>
       {items.length > 0 && (
         <ul className="today-agenda-list">
-          {items.slice(0, VISIBLE_ITEMS).map((item) => (
-            <li key={item.key}>
-              <button type="button" className="today-agenda-item" data-e2e="today-agenda-item"
-                data-status={item.status} data-destination={item.destination} data-target-id={item.targetId}
-                onClick={() => onNavigate(item.destination, item.targetId)}>
-                <time dateTime={new Date(item.remindAt).toISOString()}>{timeFormat.format(item.remindAt)}</time>
-                <span className="today-agenda-item-copy">
-                  <span className="today-agenda-item-title">{item.title}</span>
-                  <span className="today-agenda-item-status">{copy[item.status]}</span>
-                </span>
-                <ChevronRight size={14} aria-hidden="true" />
-              </button>
-            </li>
-          ))}
+          {items.slice(0, VISIBLE_ITEMS).map((item) => {
+            const time = item.lateDeliveryAt ?? item.remindAt
+            return (
+              <li key={item.key}>
+                <button type="button" className="today-agenda-item" data-e2e="today-agenda-item"
+                  data-status={item.status} data-destination={item.destination} data-target-id={item.targetId}
+                  onClick={() => onNavigate(item.destination, item.targetId)}>
+                  <time dateTime={new Date(time).toISOString()}>{timeFormat.format(time)}</time>
+                  <span className="today-agenda-item-copy">
+                    <span className="today-agenda-item-title">{item.title}</span>
+                    <span className="today-agenda-item-status">{item.lateDeliveryAt === undefined ? copy[item.status] : copy.deliveredToday}</span>
+                  </span>
+                  <ChevronRight size={14} aria-hidden="true" />
+                </button>
+              </li>
+            )
+          })}
         </ul>
       )}
       {state !== 'ready' && <p className="today-agenda-status" role="status">{copy[state]}</p>}

@@ -6,9 +6,13 @@ import {
   getDailyStepDate,
   getDailyStepStorageKey,
   getDailyStepTitle,
+  prepareDailyStepFocus,
+  readCompletedDailySteps,
   readDailyStep,
   readDailyStepCarryOver,
+  readTomorrowDailyStep,
   writeDailyStep,
+  writeTomorrowDailyStep,
 } from '../shared/daily-step'
 import { getFocusHistoryRefreshDelay } from '../shared/focus-history'
 import './daily-step.css'
@@ -29,6 +33,13 @@ const COPY = {
     undo: '撤销完成',
     yesterday: '昨天还没做完',
     carryOver: '今天继续',
+    tomorrow: '明天的小步骤',
+    tomorrowOpen: '安排明天',
+    tomorrowPrompt: '明天想做哪件小事？',
+    tomorrowEdit: '编辑明天计划',
+    tomorrowSave: '保存明天计划',
+    tomorrowRemove: '移除明天计划',
+    history: (count) => `近 7 天完成了 ${count} 个小步骤`,
     local: '仅保存在这台设备，按本机日期更新。',
     error: '没能在这台设备上保存这次更改，请重试。',
   },
@@ -47,14 +58,112 @@ const COPY = {
     undo: 'Undo completion',
     yesterday: 'Unfinished yesterday',
     carryOver: 'Continue today',
-    local: 'Saved on this device. A new day starts with a blank step.',
+    tomorrow: 'Tomorrow’s small step',
+    tomorrowOpen: 'Plan tomorrow',
+    tomorrowPrompt: 'What would you like to do tomorrow?',
+    tomorrowEdit: 'Edit tomorrow’s plan',
+    tomorrowSave: 'Save tomorrow’s plan',
+    tomorrowRemove: 'Remove tomorrow’s plan',
+    history: (count) => `Completed ${count} ${count === 1 ? 'small step' : 'small steps'} in the last 7 days`,
+    local: 'Saved on this device using its local date.',
     error: 'This change could not be saved on this device. Please try again.',
   },
 }
 
-function DailyStep({ copy, storageKey, date, isToday, onFocus, onRemind }) {
+function TomorrowStep({ language, storageKey, date, isToday, canPlan, fallbackFocusRef }) {
+  const copy = COPY[language]
+  const [plan, setPlan] = useState(() => readTomorrowDailyStep(storageKey, date))
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState('')
+  const [error, setError] = useState(false)
+  const inputRef = useRef(null)
+  const openRef = useRef(null)
+  const restoreFocusRef = useRef(false)
+  const title = getDailyStepTitle(draft)
+
+  useEffect(() => {
+    if (!restoreFocusRef.current) return
+    restoreFocusRef.current = false
+    const target = editing ? inputRef.current : (openRef.current ?? fallbackFocusRef.current)
+    target?.focus()
+  }, [editing, plan, fallbackFocusRef])
+
+  const open = () => {
+    if (!isToday(date)) return
+    restoreFocusRef.current = true
+    setDraft(plan?.title ?? '')
+    setError(false)
+    setEditing(true)
+  }
+
+  const close = () => {
+    restoreFocusRef.current = true
+    setEditing(false)
+    setDraft('')
+    setError(false)
+  }
+
+  const apply = (nextTitle) => {
+    if (!isToday(date)) return
+    if (!writeTomorrowDailyStep(storageKey, date, nextTitle)) {
+      setError(true)
+      return
+    }
+    setPlan(readTomorrowDailyStep(storageKey, date))
+    close()
+  }
+
+  if (editing) return (
+    <form className="daily-step-tomorrow" data-e2e="daily-step-tomorrow-form" onSubmit={(event) => {
+      event.preventDefault()
+      if (title) apply(title)
+    }}>
+      <label className="daily-step-input">
+        {copy.tomorrowPrompt}
+        <input
+          ref={inputRef}
+          value={draft}
+          maxLength={DAILY_STEP_TITLE_LENGTH}
+          placeholder={copy.placeholder}
+          data-e2e="daily-step-tomorrow-input"
+          onChange={(event) => {
+            setDraft(event.target.value)
+            setError(false)
+          }}
+        />
+      </label>
+      <div className="daily-step-actions">
+        <button type="submit" className="daily-step-primary" data-e2e="daily-step-tomorrow-save" disabled={!title}>{copy.tomorrowSave}</button>
+        <button type="button" data-e2e="daily-step-tomorrow-cancel" onClick={close}>{copy.cancel}</button>
+      </div>
+      {error && <p className="daily-step-error" role="alert">{copy.error}</p>}
+    </form>
+  )
+
+  if (!canPlan && !plan) return null
+  return (
+    <div className={plan ? 'daily-step-tomorrow' : undefined}>
+      {plan && <>
+        <div className="daily-step-tomorrow-label">
+          <span>{copy.tomorrow}</span>
+          <time dateTime={plan.date}>{new Date(`${plan.date}T00:00:00Z`).toLocaleDateString(language, { timeZone: 'UTC', month: 'short', day: 'numeric' })}</time>
+        </div>
+        <p className="daily-step-title" data-e2e="daily-step-tomorrow-title">{plan.title}</p>
+      </>}
+      <div className="daily-step-actions">
+        <button ref={openRef} type="button" data-e2e="daily-step-tomorrow" onClick={open}>{plan ? copy.tomorrowEdit : copy.tomorrowOpen}</button>
+        {plan && <button type="button" className="daily-step-remove" data-e2e="daily-step-tomorrow-remove" onClick={() => apply(null)}>{copy.tomorrowRemove}</button>}
+      </div>
+      {error && <p className="daily-step-error" role="alert">{copy.error}</p>}
+    </div>
+  )
+}
+
+function DailyStep({ language, storageKey, date, isToday, onFocus, onRemind, changeVersion, onStepChange }) {
+  const copy = COPY[language]
   const [step, setStep] = useState(() => readDailyStep(storageKey, date))
   const [carryOver, setCarryOver] = useState(() => readDailyStepCarryOver(storageKey, date))
+  const [history, setHistory] = useState(() => readCompletedDailySteps(storageKey, date))
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState('')
   const [error, setError] = useState(false)
@@ -64,11 +173,20 @@ function DailyStep({ copy, storageKey, date, isToday, onFocus, onRemind }) {
   const statusActionRef = useRef(null)
   const restoreFocusRef = useRef(null)
   const title = getDailyStepTitle(draft)
+  const historyDateFormat = history.some((entry) => entry.date !== date)
+    ? new Intl.DateTimeFormat(language, { timeZone: 'UTC', month: 'short', day: 'numeric' })
+    : null
 
   useEffect(() => {
     restoreFocusRef.current?.current?.focus()
     restoreFocusRef.current = null
   }, [editing, step])
+
+  useEffect(() => {
+    setStep(readDailyStep(storageKey, date))
+    setCarryOver(readDailyStepCarryOver(storageKey, date))
+    setHistory(readCompletedDailySteps(storageKey, date))
+  }, [storageKey, date, changeVersion])
 
   const apply = (nextStep, nextFocus) => {
     if (!isToday(date)) return
@@ -80,8 +198,10 @@ function DailyStep({ copy, storageKey, date, isToday, onFocus, onRemind }) {
     setError(false)
     setStep(nextStep)
     setCarryOver(null)
+    setHistory(readCompletedDailySteps(storageKey, date))
     setEditing(false)
     setDraft('')
+    onStepChange?.()
   }
 
   const edit = () => {
@@ -152,7 +272,7 @@ function DailyStep({ copy, storageKey, date, isToday, onFocus, onRemind }) {
           <p className="daily-step-title" data-e2e="daily-step-title">{step.title}</p>
           <div className="daily-step-actions">
             {!step.completed && onFocus && <button type="button" className="daily-step-primary" data-e2e="daily-step-focus" onClick={() => {
-              if (isToday(date)) onFocus(step.title)
+              if (isToday(date)) onFocus(step.title, prepareDailyStepFocus(storageKey, date, step.title))
             }}><Play size={12} aria-hidden="true" />{copy.focus}</button>}
             {!step.completed && onRemind && (
               <button type="button" data-e2e="daily-step-remind" onClick={() => {
@@ -182,13 +302,34 @@ function DailyStep({ copy, storageKey, date, isToday, onFocus, onRemind }) {
           </div>
         </div>
       )}
+      <TomorrowStep
+        language={language}
+        storageKey={storageKey}
+        date={date}
+        isToday={isToday}
+        canPlan={Boolean(step?.completed)}
+        fallbackFocusRef={editing || !step ? inputRef : editRef}
+      />
+      {historyDateFormat && (
+        <details className="daily-step-history" data-e2e="daily-step-history">
+          <summary>{copy.history(history.length)}</summary>
+          <ul>
+            {history.map((entry) => (
+              <li key={entry.date} data-e2e="daily-step-history-row">
+                <time dateTime={entry.date}>{historyDateFormat.format(new Date(`${entry.date}T00:00:00Z`))}</time>
+                <span>{entry.title}</span>
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
       <p className="daily-step-local">{copy.local}</p>
       {error && <p className="daily-step-error" role="alert">{copy.error}</p>}
     </section>
   )
 }
 
-export function DailyStepPanel({ language, accountContext, onFocus, onRemind }) {
+export function DailyStepPanel({ language, accountContext, onFocus, onRemind, changeVersion, onStepChange }) {
   const [date, setDate] = useState(getDailyStepDate)
   const storageKey = getDailyStepStorageKey(accountContext)
 
@@ -222,11 +363,13 @@ export function DailyStepPanel({ language, accountContext, onFocus, onRemind }) 
   if (!storageKey || !date) return null
   return <DailyStep
     key={`${storageKey}:${date}`}
-    copy={COPY[language] || COPY.en}
+    language={language === 'zh-CN' ? 'zh-CN' : 'en'}
     storageKey={storageKey}
     date={date}
     isToday={isToday}
     onFocus={onFocus}
     onRemind={onRemind}
+    changeVersion={changeVersion}
+    onStepChange={onStepChange}
   />
 }

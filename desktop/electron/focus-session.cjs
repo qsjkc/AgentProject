@@ -4,6 +4,23 @@ const DURATIONS = [15, 25, 45]
 const MAX_DURATION_MS = 45 * 60 * 1000
 const MAX_HISTORY_ENTRIES = 200
 
+function normalizeStepOrigin(origin) {
+  if (typeof origin?.date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(origin.date)
+    || typeof origin.revision !== 'string' || !/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/.test(origin.revision)) return null
+  const day = new Date(`${origin.date}T00:00:00Z`)
+  if (!Number.isFinite(day.getTime()) || day.toISOString().slice(0, 10) !== origin.date) return null
+  return { date: origin.date, revision: origin.revision }
+}
+
+function stepOriginForStart(origin, now) {
+  const normalized = normalizeStepOrigin(origin)
+  if (!normalized) return null
+  const [year, month, day] = normalized.date.split('-').map(Number)
+  const local = new Date(now)
+  return year === local.getFullYear() && month === local.getMonth() + 1 && day === local.getDate()
+    ? normalized : null
+}
+
 function normalizeFocusHistory(value) {
   if (!Array.isArray(value)) return []
   // Bound storage by count, not the wall clock: clock corrections must not
@@ -47,6 +64,7 @@ function normalizeFocusSession(value) {
     || !Number.isFinite(value.remainingMs) || value.remainingMs < 0 || value.remainingMs > value.durationMs
     || (value.status === 'running' && !Number.isFinite(value.endsAt))
   ) return emptyFocusSession(revision)
+  const stepOrigin = normalizeStepOrigin(value.stepOrigin)
   return {
     status: value.status,
     revision,
@@ -56,6 +74,7 @@ function normalizeFocusSession(value) {
     remainingMs: value.status === 'completed' ? 0 : value.remainingMs,
     endsAt: value.status === 'running' ? value.endsAt : null,
     completedAt: value.status === 'completed' && Number.isFinite(value.completedAt) ? value.completedAt : null,
+    ...(stepOrigin ? { stepOrigin } : {}),
   }
 }
 
@@ -70,11 +89,13 @@ function transitionFocusSession(state, command, payload, now, createId) {
   if (command === 'start' && ['idle', 'completed'].includes(state.status)) {
     if (!DURATIONS.includes(payload.minutes)) return { ok: false, reason: 'invalid-duration', state }
     const durationMs = payload.minutes * 60000
+    const stepOrigin = stepOriginForStart(payload.stepOrigin, now)
     next = {
       ...emptyFocusSession(),
       status: 'running', id: createId(),
       intention: typeof payload.intention === 'string' ? payload.intention.trim().slice(0, 80) : '',
       durationMs, remainingMs: durationMs, endsAt: now + durationMs,
+      ...(stepOrigin ? { stepOrigin } : {}),
     }
   } else if (command === 'pause' && state.status === 'running') {
     next = { ...state, status: 'paused', remainingMs: Math.max(0, Math.min(state.durationMs, state.endsAt - now)), endsAt: null }

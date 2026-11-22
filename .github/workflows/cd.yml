@@ -614,10 +614,13 @@ jobs:
         run: |
           set -euo pipefail
           PUBLIC_ORIGIN="$(ssh deploy-target "cd '$DEPLOY_APP_DIR' && cat '.public-origin-$DEPLOY_SOURCE_SHA'")"
+          public_verify_args=(
+            --directory desktop-release --package desktop/package.json
+            --source-commit "$DEPLOY_SOURCE_SHA" --manifest desktop-release/desktop-release.json
+            --verify --public-base-url "$PUBLIC_ORIGIN"
+          )
           for attempt in 1 2 3 4 5 6; do
-            if python3 deploy/verify_desktop_artifact.py --directory desktop-release --package desktop/package.json \
-              --source-commit "$DEPLOY_SOURCE_SHA" --manifest desktop-release/desktop-release.json --verify \
-              --public-base-url "$PUBLIC_ORIGIN" > public-release-verification.json; then
+            if python3 deploy/verify_desktop_artifact.py "${public_verify_args[@]}" > public-release-verification.json; then
               cat public-release-verification.json
               break
             fi
@@ -627,6 +630,19 @@ jobs:
             fi
             sleep 5
           done
+          # Read and hash the published bytes once after public routing is ready.
+          if timeout --kill-after=15s 12m python3 deploy/verify_desktop_artifact.py "${public_verify_args[@]}" \
+            --verify-public-download > public-installer-download.json; then
+            cat public-installer-download.json
+          else
+            result=$?
+            if [[ ! -s public-installer-download.json ]]; then
+              printf '{"status":"failed","exitCode":%s,"error":"Full installer download ended without a report"}\n' \
+                "$result" > public-installer-download.json
+            fi
+            cat public-installer-download.json
+            exit "$result"
+          fi
           ssh deploy-target "cd '$DEPLOY_APP_DIR' && mv '.desktop-release-$DEPLOY_SOURCE_SHA.json' .deployed-release.json"
 
       - name: Upload release provenance and public verification
@@ -637,6 +653,7 @@ jobs:
           path: |
             desktop-release/desktop-release.json
             public-release-verification.json
+            public-installer-download.json
             running-release.json
             running-images.json
             server-images/server-images.json

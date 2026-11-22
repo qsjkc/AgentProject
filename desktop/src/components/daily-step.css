@@ -84,9 +84,10 @@
 .daily-step-actions .daily-step-primary:hover:not(:disabled) { background: #365333; }
 .daily-step-actions .daily-step-remove { color: #8b4237; }
 .daily-step-actions button:disabled { opacity: .55; cursor: default; }
-.daily-step :is(button, input):focus-visible { outline: 2px solid #587553; outline-offset: 2px; }
+.daily-step :is(button, input, summary):focus-visible { outline: 2px solid #587553; outline-offset: 2px; }
 
-.daily-step-carry-over {
+.daily-step-carry-over,
+.daily-step-tomorrow {
   margin-top: 10px;
   padding: 8px 9px;
   border: 1px solid #d5e1d2;
@@ -95,7 +96,49 @@
 }
 
 .daily-step-carry-over-label { color: #596854; font-size: 11px; line-height: 1.5; }
-.daily-step-carry-over .daily-step-title { margin-top: 2px; }
+.daily-step-carry-over .daily-step-title,
+.daily-step-tomorrow .daily-step-title { margin-top: 2px; }
+
+.daily-step-tomorrow-label {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 4px 8px;
+  color: #596854;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.daily-step-tomorrow .daily-step-input { margin-top: 0; }
+
+.daily-step-history {
+  margin-top: 10px;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.daily-step-history summary {
+  color: #405b3d;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.daily-step-history ul {
+  display: grid;
+  gap: 4px;
+  list-style: none;
+  margin: 5px 0 0;
+  padding: 0 0 0 12px;
+}
+
+.daily-step-history li {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 8px;
+  overflow-wrap: anywhere;
+}
+
+.daily-step-history time { color: #596854; }
 
 .daily-step-error {
   margin: 7px 0 0;
