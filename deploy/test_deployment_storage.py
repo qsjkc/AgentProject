@@ -1,5 +1,6 @@
 from contextlib import redirect_stdout
 from io import StringIO
+import base64
 import json
 import os
 from pathlib import Path
@@ -145,6 +146,157 @@ class DeploymentStorageTests(unittest.TestCase):
         self.assertEqual(len(output.getvalue().splitlines()), 1)
         self.assertEqual(json.loads(output.getvalue()), {"status": "failed", "error": "invalid-protected-source"})
         docker.assert_not_called()
+
+
+class RetirementTests(unittest.TestCase):
+    def setUp(self):
+        work = tempfile.TemporaryDirectory()
+        self.addCleanup(work.cleanup)
+        self.root = Path(work.name).resolve()
+        self.manifest = {
+            "schemaVersion": 1, "sourceCommit": STALE, "filename": "server-images.tar.gz", "bytes": 8192,
+            "sha256": "e" * 64,
+            "images": [{"service": service, "tag": f"agentproject-{service}:sha-{STALE}", "revision": STALE,
+                        "id": self.image_id(index), "configId": self.image_id(index + 10), "os": "linux", "architecture": "amd64"}
+                       for index, service in enumerate(storage.SERVICES, 1)],
+        }
+        self.tags = {entry["tag"]: entry["configId"] for entry in self.manifest["images"]}
+        self.running_images = {name: self.image_id(index) for index, name in enumerate(storage.CONTAINERS, 4)}
+        self.references = {f"{index:064x}": image_id for index, image_id in enumerate(self.running_images.values(), 1)}
+        self.commands = []
+        self.remove_limit = len(self.tags)
+        self.list_failure = False
+        self.inspect_revision = STALE
+        self.write(".deployed-release.json", {"sourceCommit": PUBLISHED})
+        for path, services in storage.OVERRIDES.values():
+            self.write(path, self.override(PUBLISHED, services))
+        self.write(f".server-images-{PUBLISHED}/previous-overrides.json", {
+            "schemaVersion": 1, "sourceCommit": PUBLISHED,
+            **{project: self.override(PRIOR, services) for project, (_, services) in storage.OVERRIDES.items()},
+        })
+
+    @staticmethod
+    def image_id(index):
+        return f"sha256:{index:064x}"
+
+    def write(self, relative, value):
+        path = self.root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(value), encoding="utf-8")
+
+    @staticmethod
+    def override(source, services):
+        return {"x-agentproject-source-commit": source, "services": {
+            service: {"image": f"agentproject-{service}:sha-{source}", "pull_policy": "never"} for service in services
+        }}
+
+    def docker(self, *args, **options):
+        self.commands.append((args, options))
+        if args[:3] == ("container", "inspect", "--format"):
+            if args[4:] == storage.CONTAINERS:
+                return "\n".join(f"/{name}\ttrue\t{image_id}\t{PUBLISHED}" for name, image_id in self.running_images.items())
+            self.assertEqual(set(args[4:]), self.references.keys())
+            return "\n".join(f"{container}\t{image_id}" for container, image_id in self.references.items())
+        if args == ("container", "ls", "--all", "--quiet", "--no-trunc"):
+            return "\n".join(self.references)
+        if args[:2] == ("image", "ls"):
+            self.assertIn("--all", args)
+            self.assertIn("--no-trunc", args)
+            tag = args[-1].split("=", 1)[1]
+            if self.list_failure:
+                return None
+            return f"{tag}\t{self.tags[tag]}" if tag in self.tags else ""
+        if args[:2] == ("image", "inspect"):
+            return f"{self.tags[args[-1]]}\tlinux\tamd64\t{self.inspect_revision}"
+        if args[:3] == ("image", "rm", "--no-prune"):
+            for tag in args[3:3 + self.remove_limit]:
+                self.tags.pop(tag)
+            return "removed" if self.remove_limit == len(args[3:]) else None
+        self.fail(f"Unexpected Docker command {args}")
+
+    def app_filesystem(self, _root):
+        return {"device": 1, "freeBytes": 4096}
+
+    def docker_filesystem(self):
+        return {"device": 2, "freeBytes": 4096 + 8192 * (len(storage.SERVICES) - len(self.tags))}
+
+    def retire(self, requested=REQUESTED, artifact_id="14736814415"):
+        encoded = base64.b64encode(json.dumps(self.manifest).encode()).decode()
+        with patch.object(storage, "docker_output", side_effect=self.docker), \
+                patch.object(storage, "app_filesystem", side_effect=self.app_filesystem), \
+                patch.object(storage, "docker_filesystem", side_effect=self.docker_filesystem):
+            return storage.retire_archive(self.root, requested, encoded, artifact_id)
+
+    def mutations(self):
+        return [(args, options) for args, options in self.commands if args[:2] == ("image", "rm")]
+
+    def test_retires_only_exact_tags_and_measures_real_filesystem_delta(self):
+        targets = list(self.tags)
+        report = self.retire()
+        self.assertEqual(report["status"], "passed")
+        self.assertEqual(report["outcome"], "retired")
+        self.assertEqual(report["archiveArtifactId"], 14736814415)
+        self.assertEqual(report["protectedSources"], sorted([REQUESTED, PUBLISHED, PRIOR]))
+        self.assertEqual(report["tags"]["removed"], targets)
+        self.assertEqual(report["tags"]["remaining"], [])
+        self.assertEqual(report["filesystems"]["freeBytesDelta"], {"app": 0, "docker": 24576})
+        self.assertEqual(self.mutations(), [(('image', 'rm', '--no-prune', *targets), {"timeout": storage.DOCKER_REMOVE_TIMEOUT})])
+
+    def test_requires_successful_exact_listings_for_idempotency(self):
+        self.tags.clear()
+        report = self.retire()
+        self.assertEqual(report["status"], "passed")
+        self.assertEqual(report["outcome"], "already-absent")
+        self.assertEqual(len(report["tags"]["absentBefore"]), 3)
+        self.assertEqual(self.mutations(), [])
+        self.list_failure = True
+        self.assertEqual(self.retire()["error"], "image-tag-inventory-unavailable")
+        self.assertEqual(self.mutations(), [])
+
+    def test_container_config_id_reference_blocks_all_removal(self):
+        # This container is absent from the active-release check but appears in --all.
+        self.references["e" * 64] = self.manifest["images"][0]["configId"]
+        self.assertEqual(self.retire()["error"], "archive-image-referenced")
+        self.assertEqual(self.mutations(), [])
+
+    def test_refuses_unknown_or_disagreeing_rollback_and_current_release(self):
+        path = f".server-images-{PUBLISHED}/previous-overrides.json"
+        self.write(path, {"schemaVersion": 1, "sourceCommit": PUBLISHED, "main": self.override(PRIOR, ("backend", "nginx"))})
+        self.assertEqual(self.retire()["error"], "rollback-protection-unconfirmed")
+        self.assertEqual(self.mutations(), [])
+        self.write(path, {"schemaVersion": 1, "sourceCommit": PUBLISHED,
+                          **{project: self.override(PRIOR, services) for project, (_, services) in storage.OVERRIDES.items()}})
+        self.write("agent-server/docker-compose.override.yml", self.override(PRIOR, ("agent-server",)))
+        self.assertEqual(self.retire()["error"], "rollback-protection-unconfirmed")
+        self.assertEqual(self.mutations(), [])
+
+    def test_refuses_protected_source_even_if_archived(self):
+        self.assertEqual(self.retire(requested=STALE)["error"], "protected-release")
+        self.assertEqual(self.mutations(), [])
+
+    def test_refuses_archive_or_image_inconsistency_before_removing_any_tag(self):
+        self.inspect_revision = PRIOR
+        self.assertEqual(self.retire()["error"], "archive-image-mismatch")
+        self.assertEqual(self.mutations(), [])
+        self.inspect_revision = STALE
+        self.tags[self.manifest["images"][0]["tag"]] = self.image_id(999)
+        self.assertEqual(self.retire()["error"], "archive-image-mismatch")
+        self.assertEqual(self.mutations(), [])
+        self.commands.clear()
+        self.manifest["images"][0]["tag"] = "--force"
+        self.assertEqual(self.retire()["error"], "invalid-archive-manifest")
+        self.assertEqual(self.retire(artifact_id="0")["error"], "invalid-archive-artifact-id")
+        self.assertEqual(self.commands, [])
+
+    def test_reports_partial_removal_from_authoritative_postcheck(self):
+        self.remove_limit = 1
+        targets = list(self.tags)
+        report = self.retire()
+        self.assertEqual(report["status"], "failed")
+        self.assertEqual(report["outcome"], "partial")
+        self.assertEqual(report["tags"]["removed"], targets[:1])
+        self.assertEqual(report["tags"]["remaining"], targets[1:])
+        self.assertFalse(report["dockerRemoveSucceeded"])
 
 
 if __name__ == "__main__":

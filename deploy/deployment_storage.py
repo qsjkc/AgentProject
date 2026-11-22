@@ -1,6 +1,7 @@
-"""Report deployment storage without changing files, Docker objects, or release state."""
+"""Report deployment storage or retire a verified, archived set of image tags."""
 
 import argparse
+import base64
 import json
 import os
 from pathlib import Path
@@ -16,9 +17,12 @@ RUNTIME = re.compile(r"\.deploy-runtime-([a-f0-9]{40})\.tgz")
 IMAGE_DIRECTORY = re.compile(r"\.server-images-([a-f0-9]{40})")
 INSTALLER = re.compile(r"\.Detachym-[0-9]+\.[0-9]+\.[0-9]+(?:-(?:alpha|beta|rc)\.[0-9]+)?-x64\.exe\.([a-f0-9]{40})\.upload")
 IMAGE_ID = re.compile(r"sha256:[a-f0-9]{64}")
+DIGEST = re.compile(r"[a-f0-9]{64}")
 DOCKER_SIZE = re.compile(r"[0-9]+(?:\.[0-9]+)?\s?(?:[kmgtpe]i?B|B)(?: \(\d+%\))?", re.IGNORECASE)
 DOCKER_TYPES = {"Images", "Containers", "Local Volumes", "Build Cache"}
 CONTAINERS = ("agentproject-backend", "agentproject-nginx", "agentproject-agent-server")
+SERVICES = ("backend", "nginx", "agent-server")
+REVISION_LABEL = "org.opencontainers.image.revision"
 OVERRIDES = {
     "main": ("docker-compose.override.yml", ("backend", "nginx")),
     "agent": ("agent-server/docker-compose.override.yml", ("agent-server",)),
@@ -27,6 +31,8 @@ MAX_SCAN_ENTRIES = 4096
 MAX_STAGED_FILES = 256
 MAX_METADATA_BYTES = 65536
 DOCKER_PROBE_TIMEOUT = 10
+DOCKER_REMOVE_TIMEOUT = 90
+MAX_CONTAINER_COUNT = 256
 
 
 def source_id(value):
@@ -73,11 +79,20 @@ def filesystem(directory):
     return {"device": info.st_dev, "freeBytes": vfs.f_bavail * vfs.f_frsize}
 
 
-def docker_output(*arguments):
+def app_filesystem(root):
+    try:
+        if not root.is_absolute() or root == Path(root.anchor) or root.resolve(strict=True) != root:
+            return None
+        return filesystem(root)
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+
+def docker_output(*arguments, timeout=DOCKER_PROBE_TIMEOUT):
     try:
         result = subprocess.run(
             ["docker", *arguments], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-            timeout=DOCKER_PROBE_TIMEOUT, encoding="utf-8", check=False,
+            timeout=timeout, encoding="utf-8", check=False,
         )
     except (OSError, UnicodeError, subprocess.TimeoutExpired):
         return None
@@ -150,19 +165,19 @@ def override_source(record, services):
     return source if source and record.get("services") == expected else None
 
 
+def prior_override_sources(root, source):
+    snapshot = read_metadata(root, f".server-images-{source}/previous-overrides.json")
+    if snapshot.get("schemaVersion") != 1 or snapshot.get("sourceCommit") != source:
+        return {}
+    return {project: override_source(snapshot.get(project), services) for project, (_, services) in OVERRIDES.items()}
+
+
 def release_protection(root, requested, containers):
     published = source_id(read_metadata(root, ".deployed-release.json").get("sourceCommit"))
     overrides = {project: override_source(read_metadata(root, path), services)
                  for project, (path, services) in OVERRIDES.items()}
     current = {published, *overrides.values(), *(row["sourceCommit"] for row in containers or [])} - {None}
-    prior = set()
-    for source in sorted(current):
-        snapshot = read_metadata(root, f".server-images-{source}/previous-overrides.json")
-        if snapshot.get("schemaVersion") == 1 and snapshot.get("sourceCommit") == source:
-            for project, (_, services) in OVERRIDES.items():
-                previous = override_source(snapshot.get(project), services)
-                if previous:
-                    prior.add(previous)
+    prior = {previous for source in current for previous in prior_override_sources(root, source).values() if previous}
     return {
         "requestedSource": requested, "publishedSource": published, "runningContainers": containers,
         "overrideSources": overrides, "priorSources": sorted(prior), "sourceCommits": sorted(current | prior | {requested}),
@@ -225,11 +240,8 @@ def staging_inventory(root, protected, now):
 def inspect_storage(root, requested, *, now=None):
     if not source_id(requested):
         return {"status": "failed", "error": "invalid-protected-source"}
-    try:
-        if not root.is_absolute() or root == Path(root.anchor) or root.resolve(strict=True) != root:
-            return {"status": "failed", "error": "invalid-deploy-directory"}
-        app = filesystem(root)
-    except (OSError, RuntimeError, ValueError):
+    app = app_filesystem(root)
+    if app is None:
         return {"status": "failed", "error": "invalid-deploy-directory"}
 
     docker = docker_filesystem()
@@ -249,12 +261,180 @@ def inspect_storage(root, requested, *, now=None):
             "staging": staging, "protection": protection, "dockerUsage": usage, "warnings": warnings}
 
 
+def read_archive_manifest(encoded):
+    if not isinstance(encoded, str) or not encoded or len(encoded) > MAX_METADATA_BYTES:
+        return None
+    try:
+        manifest = json.loads(base64.b64decode(encoded, validate=True))
+    except (ValueError, RecursionError):
+        return None
+    if not isinstance(manifest, dict):
+        return None
+    source = source_id(manifest.get("sourceCommit"))
+    size, digest, images = manifest.get("bytes"), manifest.get("sha256"), manifest.get("images")
+    if (not source or type(manifest.get("schemaVersion")) is not int or manifest["schemaVersion"] != 1
+            or manifest.get("filename") != "server-images.tar.gz" or type(size) is not int or size <= 0
+            or not isinstance(digest, str) or not DIGEST.fullmatch(digest)
+            or not isinstance(images, list) or len(images) != len(SERVICES)):
+        return None
+
+    indexed = {}
+    for image in images:
+        if not isinstance(image, dict):
+            return None
+        service = image.get("service")
+        if service not in SERVICES or service in indexed:
+            return None
+        tag = f"agentproject-{service}:sha-{source}"
+        if image.get("tag") != tag or image.get("revision") != source or (image.get("os"), image.get("architecture")) != ("linux", "amd64"):
+            return None
+        image_id = image.get("id")
+        config_id = image.get("configId", image_id)
+        if not all(isinstance(value, str) and IMAGE_ID.fullmatch(value) for value in (image_id, config_id)):
+            return None
+        indexed[service] = (tag, {image_id, config_id})
+    return source, digest, dict(indexed[service] for service in SERVICES)
+
+
+def retirement_protection(root, requested):
+    active = running_containers()
+    state = release_protection(root, requested, active)
+    published = state["publishedSource"]
+    if (not published or not active or len(active) != len(CONTAINERS)
+            or {row["name"] for row in active} != set(CONTAINERS)
+            or {row["sourceCommit"] for row in active} != {published}
+            or set(state["overrideSources"].values()) != {published}):
+        return None
+    prior = set(prior_override_sources(root, published).values())
+    if len(prior) != 1 or prior & {published, None}:
+        return None
+    return sorted({requested, published} | prior)
+
+
+def tag_inventory(tags):
+    """Successful exact Docker listings alone establish tag absence."""
+    inventory = {}
+    for tag in tags:
+        output = docker_output("image", "ls", "--all", "--no-trunc", "--format", "{{.Repository}}:{{.Tag}}\t{{.ID}}",
+                               "--filter", f"reference={tag}")
+        if output is None:
+            return None
+        if not output.strip():
+            continue
+        parts = output.rstrip("\r\n").split("\t")
+        if len(parts) != 2 or parts[0] != tag:
+            return None
+        image_id = f"sha256:{parts[1]}" if DIGEST.fullmatch(parts[1]) else parts[1]
+        if not IMAGE_ID.fullmatch(image_id):
+            return None
+        inventory[tag] = image_id
+    return inventory
+
+
+def archived_image_matches(tag, image_id, source):
+    output = docker_output("image", "inspect", "--format",
+                           f'{{{{.Id}}}}\t{{{{.Os}}}}\t{{{{.Architecture}}}}\t{{{{index .Config.Labels "{REVISION_LABEL}"}}}}', tag)
+    return output is not None and output.rstrip("\r\n").split("\t") == [image_id, "linux", "amd64", source]
+
+
+def container_image_references():
+    arguments = ("container", "ls", "--all", "--quiet", "--no-trunc")
+    output = docker_output(*arguments)
+    if output is None:
+        return None
+    container_ids = output.splitlines()
+    if (not container_ids or len(container_ids) > MAX_CONTAINER_COUNT
+            or len(container_ids) != len(set(container_ids)) or not all(DIGEST.fullmatch(value) for value in container_ids)):
+        return None
+
+    output = docker_output("container", "inspect", "--format", "{{.Id}}\t{{.Image}}", *container_ids)
+    if output is None:
+        return None
+    references = {}
+    for line in output.splitlines():
+        parts = line.split("\t")
+        if len(parts) != 2 or parts[0] in references or not IMAGE_ID.fullmatch(parts[1]):
+            return None
+        references[parts[0]] = parts[1]
+
+    current = docker_output(*arguments)
+    if current is None or sorted(current.splitlines()) != sorted(container_ids) or set(references) != set(container_ids):
+        return None
+    return set(references.values())
+
+
+def retire_archive(root, requested, encoded, artifact_id):
+    refusal = {"status": "failed", "outcome": "refused"}
+    if not source_id(requested):
+        return {**refusal, "error": "invalid-protected-source"}
+    if not isinstance(artifact_id, str) or not re.fullmatch(r"[1-9][0-9]{0,18}", artifact_id):
+        return {**refusal, "error": "invalid-archive-artifact-id"}
+    manifest = read_archive_manifest(encoded)
+    if manifest is None:
+        return {**refusal, "error": "invalid-archive-manifest"}
+    source, archive_digest, images = manifest
+    evidence = {"sourceCommit": source, "archiveArtifactId": int(artifact_id), "archiveSha256": archive_digest}
+    refusal.update(evidence)
+    before = {"app": app_filesystem(root), "docker": None}
+    if before["app"] is None:
+        return {**refusal, "error": "invalid-deploy-directory"}
+    protected = retirement_protection(root, requested)
+    if protected is None:
+        return {**refusal, "error": "rollback-protection-unconfirmed"}
+    evidence["protectedSources"] = protected
+    refusal["protectedSources"] = protected
+    if source in protected:
+        return {**refusal, "error": "protected-release"}
+
+    present = tag_inventory(images)
+    if present is None:
+        return {**refusal, "error": "image-tag-inventory-unavailable"}
+    if not all(image_id in images[tag] and archived_image_matches(tag, image_id, source) for tag, image_id in present.items()):
+        return {**refusal, "error": "archive-image-mismatch"}
+    before["docker"] = docker_filesystem()
+    if before["docker"] is None:
+        return {**refusal, "error": "docker-filesystem-unavailable"}
+    # These are separate Docker API reads. Recheck just before any removal, and
+    # use non-forced tag deletion so the daemon also enforces its reference rules.
+    if retirement_protection(root, requested) != protected or tag_inventory(images) != present:
+        return {**refusal, "error": "retirement-inventory-changed"}
+    references = container_image_references()
+    if references is None:
+        return {**refusal, "error": "container-inventory-unavailable"}
+    if any(references & image_ids for image_ids in images.values()):
+        return {**refusal, "error": "archive-image-referenced"}
+    removal = None
+    if present:
+        removal = docker_output("image", "rm", "--no-prune", *present, timeout=DOCKER_REMOVE_TIMEOUT)
+    remaining = tag_inventory(images)
+    after = {"app": app_filesystem(root), "docker": docker_filesystem()}
+    deltas = {name: after[name]["freeBytes"] - prior["freeBytes"]
+              if after[name] and after[name]["device"] == prior["device"] else None for name, prior in before.items()}
+    report = {
+        **evidence,
+        "tags": {"requested": list(images), "absentBefore": [tag for tag in images if tag not in present],
+                 "removed": [tag for tag in present if tag not in remaining] if remaining is not None else None,
+                 "remaining": list(remaining) if remaining is not None else None},
+        "dockerRemoveSucceeded": removal is not None if present else None,
+        "filesystems": {"before": before, "after": after, "freeBytesDelta": deltas},
+    }
+    if remaining is None or remaining or None in deltas.values():
+        return {**report, "status": "failed", "outcome": "partial", "error": "retirement-outcome-incomplete"}
+    return {**report, "status": "passed", "outcome": "retired" if present else "already-absent"}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--directory", type=Path, required=True)
     parser.add_argument("--protected-source", required=True)
+    parser.add_argument("--retire-archive-manifest")
+    parser.add_argument("--archive-artifact-id")
     arguments = parser.parse_args()
-    report = inspect_storage(arguments.directory, arguments.protected_source)
+    if arguments.retire_archive_manifest is None and arguments.archive_artifact_id is None:
+        report = inspect_storage(arguments.directory, arguments.protected_source)
+    else:
+        report = retire_archive(arguments.directory, arguments.protected_source,
+                                arguments.retire_archive_manifest, arguments.archive_artifact_id)
     print(json.dumps(report))
     return int(report["status"] == "failed")
 
