@@ -171,7 +171,8 @@ export function TodayReminderAgenda({ language, accountContext, onNavigate }) {
   const { snapshot, refresh } = useAgendaSnapshot(accountContext)
   const [now, setNow] = useAgendaClock(refresh)
   const timeFormat = new Intl.DateTimeFormat(locale, { hour: 'numeric', minute: '2-digit' })
-  const dayIsCurrent = snapshot.day === new Date(now).toDateString()
+  const day = new Date(now).toDateString()
+  const dayIsCurrent = snapshot.day === day
   const { items, earlierUnfinished, earlierDestination } = getTodayReminderAgenda({
     scheduled: dayIsCurrent ? snapshot.reminders : [],
     series: dayIsCurrent ? snapshot.series : [],
@@ -180,37 +181,37 @@ export function TodayReminderAgenda({ language, accountContext, onNavigate }) {
   const state = snapshot.status === 'error' ? 'error'
     : !dayIsCurrent || snapshot.status === 'loading' ? 'loading'
       : items.length ? 'ready' : 'empty'
-  const firstHidden = items[VISIBLE_ITEMS]
+  const rows = items.map((item) => {
+    const time = item.lateDeliveryAt ?? item.remindAt
+    return (
+      <li key={item.key}>
+        <button type="button" className="today-agenda-item" data-e2e="today-agenda-item"
+          data-status={item.status} data-destination={item.destination} data-target-id={item.targetId}
+          onClick={() => onNavigate(item.destination, item.targetId)}>
+          <time dateTime={new Date(time).toISOString()}>{timeFormat.format(time)}</time>
+          <span className="today-agenda-item-copy">
+            <span className="today-agenda-item-title">{item.title}</span>
+            <span className="today-agenda-item-status">{item.lateDeliveryAt === undefined ? copy[item.status] : copy.deliveredToday}</span>
+          </span>
+          <ChevronRight size={14} aria-hidden="true" />
+        </button>
+      </li>
+    )
+  })
 
   return (
     <section className="today-reminder-agenda" aria-labelledby={headingId} aria-busy={state === 'loading'}
       data-e2e="today-reminder-agenda" data-state={state}>
       <h3 id={headingId}>{copy.heading}</h3>
-      {items.length > 0 && (
-        <ul className="today-agenda-list">
-          {items.slice(0, VISIBLE_ITEMS).map((item) => {
-            const time = item.lateDeliveryAt ?? item.remindAt
-            return (
-              <li key={item.key}>
-                <button type="button" className="today-agenda-item" data-e2e="today-agenda-item"
-                  data-status={item.status} data-destination={item.destination} data-target-id={item.targetId}
-                  onClick={() => onNavigate(item.destination, item.targetId)}>
-                  <time dateTime={new Date(time).toISOString()}>{timeFormat.format(time)}</time>
-                  <span className="today-agenda-item-copy">
-                    <span className="today-agenda-item-title">{item.title}</span>
-                    <span className="today-agenda-item-status">{item.lateDeliveryAt === undefined ? copy[item.status] : copy.deliveredToday}</span>
-                  </span>
-                  <ChevronRight size={14} aria-hidden="true" />
-                </button>
-              </li>
-            )
-          })}
-        </ul>
+      {rows.length > 0 && (
+        <ul className="today-agenda-list">{rows.slice(0, VISIBLE_ITEMS)}</ul>
       )}
       {state !== 'ready' && <p className="today-agenda-status" role="status">{copy[state]}</p>}
-      {firstHidden && (
-        <button type="button" className="today-agenda-link" data-e2e="today-agenda-more"
-          onClick={() => onNavigate(firstHidden.destination)}>{copy.more(items.length - VISIBLE_ITEMS)}</button>
+      {rows.length > VISIBLE_ITEMS && (
+        <details key={day} className="today-agenda-more">
+          <summary className="today-agenda-link" data-e2e="today-agenda-more">{copy.more(rows.length - VISIBLE_ITEMS)}</summary>
+          <ul className="today-agenda-list">{rows.slice(VISIBLE_ITEMS)}</ul>
+        </details>
       )}
       {earlierUnfinished > 0 && (
         <button type="button" className="today-agenda-link" data-e2e="today-agenda-earlier"

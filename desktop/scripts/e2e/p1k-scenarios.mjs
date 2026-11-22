@@ -16,6 +16,7 @@ export const REQUIRED_E2E_BRIDGE_API = Object.freeze({
     'reset',
     'snapshot',
     'showWindow',
+    'setReminderNotificationOutcome',
     'prepareOnboarding',
     'expireOperationCapabilities',
     'switchAccount',
@@ -707,19 +708,47 @@ export async function hiddenReminderDeadlineScenario(context) {
   const pet = context.pages.pet
   const account = context.stub.fixture.accounts.get(USERS.A.id)
   account.reminders = []
-  const dueAt = Date.now() + 4000
-  const reminders = [1, 2, 3].map((number) => createReminderRecord({
-    user: USERS.A,
-    id: context.stub.fixture.nextReminderId++, title: `准点提醒 ${number}`,
-    petType: 'pig', remindAt: new Date(dueAt),
-  }))
-  const canceled = createReminderRecord({
-    user: USERS.A,
-    id: context.stub.fixture.nextReminderId++, title: '到期前取消的提醒',
-    petType: 'pig', remindAt: new Date(dueAt),
-  })
-  account.reminders.push(...reminders, canceled)
   try {
+    assertEqual(await callE2e(pet, 'setReminderNotificationOutcome', 'failed'), true, 'Fixture can decline notification submission')
+    await callE2e(pet, 'hideWindow', 'pet')
+    await waitFor(() => pet.evaluate("document.visibilityState === 'hidden'"), { description: 'pet hidden for declined notification' })
+    const declined = createReminderRecord({
+      user: USERS.A,
+      id: context.stub.fixture.nextReminderId++, title: '系统拒绝的提醒',
+      petType: 'pig', remindAt: new Date(Date.now() - 1000),
+    })
+    const requestsToTriggerDeclined = () => context.stub.requests.filter((request) => (
+      request.method === 'POST' && request.pathname === `/api/v1/reminders/${declined.id}/trigger`
+    )).length
+    const before = await callE2e(pet, 'snapshot')
+    account.reminders = [declined]
+    await callE2e(pet, 'flushReminderPoll')
+    const after = await callE2e(pet, 'snapshot')
+    assert(after.reminderNotificationAttempts > before.reminderNotificationAttempts, 'Hidden pet did not attempt native submission')
+    assert(!declined.triggered_at && declined.status === 'pending', 'Rejected native notification no longer waits for presentation')
+    assertEqual(requestsToTriggerDeclined(), 0, 'Rejected native notification wrote a trigger')
+
+    // Reopening a renderer starts a new poll controller. Native submission is still
+    // declined here, so only the visible bubble can acknowledge this reminder.
+    await callE2e(pet, 'showWindow', 'pet')
+    await pet.reload()
+    await waitFor(() => declined.triggered_at, { description: 'visible reminder acknowledges after native decline' })
+    assert(await pet.evaluate(`document.querySelector('.pet-bubble')?.textContent.includes(${JSON.stringify(declined.title)})`), 'Recovery did not present the reminder bubble')
+    assertEqual(requestsToTriggerDeclined(), 1, 'Visible recovery did not acknowledge exactly once')
+
+    assertEqual(await callE2e(pet, 'setReminderNotificationOutcome', 'show'), true, 'Fixture can accept notification submission')
+    const dueAt = Date.now() + 4000
+    const reminders = [1, 2, 3].map((number) => createReminderRecord({
+      user: USERS.A,
+      id: context.stub.fixture.nextReminderId++, title: `准点提醒 ${number}`,
+      petType: 'pig', remindAt: new Date(dueAt),
+    }))
+    const canceled = createReminderRecord({
+      user: USERS.A,
+      id: context.stub.fixture.nextReminderId++, title: '到期前取消的提醒',
+      petType: 'pig', remindAt: new Date(dueAt),
+    })
+    account.reminders = [...reminders, canceled]
     await callE2e(pet, 'hideWindow', 'pet')
     await waitFor(() => pet.evaluate("document.visibilityState === 'hidden'"), { description: 'pet hidden before reminder deadline' })
     // Discover future deadlines once. From here onward only the real main-process
@@ -735,10 +764,19 @@ export async function hiddenReminderDeadlineScenario(context) {
     for (const reminder of reminders) {
       assertEqual(context.stub.requests.filter((request) => request.pathname === `/api/v1/reminders/${reminder.id}/trigger`).length, 1, 'The local wakeup duplicated a successful trigger')
     }
-    return { deliveryLagsMs, hidden: true, canceledRechecked: true, remindersRemainPending: true }
+    return {
+      deliveryLagsMs,
+      hidden: true,
+      simulatedNativeSubmission: true,
+      declinedNativeRemainedPending: true,
+      visibleRecoveryTriggers: requestsToTriggerDeclined(),
+      canceledRechecked: true,
+      remindersRemainPending: true,
+    }
   } finally {
-    await callE2e(pet, 'showWindow', 'pet')
     account.reminders = []
+    await callE2e(pet, 'setReminderNotificationOutcome', 'show')
+    await callE2e(pet, 'showWindow', 'pet')
   }
 }
 

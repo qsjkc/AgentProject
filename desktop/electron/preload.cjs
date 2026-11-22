@@ -405,6 +405,7 @@ if (e2eEnabled) {
     },
     showWindow: (role) => invokeE2eControl('showWindow', role),
     hideWindow: (role) => invokeE2eControl('hideWindow', role),
+    setReminderNotificationOutcome: (outcome) => invokeE2eControl('setReminderNotificationOutcome', outcome),
     simulateSystemResume: () => invokeE2eControl('simulateSystemResume'),
     prepareOnboarding: (options) => invokeE2eControl('prepareOnboarding', options),
     expireOperationCapabilities: () => invokeE2eControl('expireOperationCapabilities'),

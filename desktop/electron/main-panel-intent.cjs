@@ -1,5 +1,60 @@
 const { randomUUID } = require('node:crypto')
 
+const MAX_RETAINED_REMINDER_NOTIFICATIONS = 32
+
+function isSameTodayNavigationContext(current, expected) {
+  return Boolean(current && expected
+    && expected.server === current.server
+    && expected.userId === current.userId
+    && expected.petType === current.petType
+    && expected.generation === current.generation)
+}
+
+function createReminderNotificationNavigation({ readContext, openToday }) {
+  const retained = new Map()
+  return (notification) => {
+    const context = readContext()
+    if (!context) return
+
+    const release = () => {
+      retained.delete(notification)
+      notification.removeListener('click', onClick)
+      notification.removeListener('failed', release)
+    }
+    const onClick = () => {
+      release()
+      if (isSameTodayNavigationContext(readContext(), context)) openToday(context)
+    }
+    notification.once('click', onClick)
+    notification.once('failed', release)
+    // A timed-out Windows banner can still be clicked in Action Center.
+    retained.set(notification, release)
+    if (retained.size > MAX_RETAINED_REMINDER_NOTIFICATIONS) retained.values().next().value()
+  }
+}
+
+function showWindowsReminderNotification(notification, bindNavigation) {
+  let shown = false
+  let failed = false
+  const onShow = () => { shown = true }
+  const onFailed = () => { failed = true }
+  // Electron 35's Windows presenter emits show synchronously after WinRT accepts the toast.
+  notification.once('show', onShow)
+  notification.once('failed', onFailed)
+  try {
+    notification.show()
+  } catch {
+    return false
+  } finally {
+    notification.removeListener('show', onShow)
+    notification.removeListener('failed', onFailed)
+  }
+  if (!shown || failed) return false
+  // Windows posts click and later failure callbacks to the UI thread. Retain only accepted toasts.
+  bindNavigation(notification)
+  return true
+}
+
 function createMainPanelIntentCoordinator({
   timeoutMs,
   scheduleTimeout = setTimeout,
@@ -250,4 +305,7 @@ function createMainPanelIntentListenerRegistry({
 module.exports = {
   createMainPanelIntentCoordinator,
   createMainPanelIntentListenerRegistry,
+  createReminderNotificationNavigation,
+  isSameTodayNavigationContext,
+  showWindowsReminderNotification,
 }

@@ -19,7 +19,4 @@ docker build --platform linux/amd64 --provenance=false --sbom=false --file deplo
   --build-arg NPM_REGISTRY=https://registry.npmjs.org \
   --label "org.opencontainers.image.revision=$SOURCE_SHA" \
   --tag "agentproject-nginx:sha-$SOURCE_SHA" .
-docker image save --platform linux/amd64 "agentproject-backend:sha-$SOURCE_SHA" \
-  "agentproject-nginx:sha-$SOURCE_SHA" "agentproject-agent-server:sha-$SOURCE_SHA" \
-  | gzip -1 > "$OUTPUT_DIR/server-images.tar.gz"
-python3 deploy/server_images.py create --directory "$OUTPUT_DIR" --source-commit "$SOURCE_SHA"
+bash deploy/archive_server_images.sh "$SOURCE_SHA" "$OUTPUT_DIR"
