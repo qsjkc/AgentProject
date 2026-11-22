@@ -595,6 +595,7 @@ function QuickChatApp() {
   }
 
   const needsSetup = !hasToken || !hasApiBaseUrl
+  const canOpenToday = ready && !needsSetup && typeof window.desktopBridge?.openToday === 'function'
 
   return (
     <div className="window-shell window-shell-quick-chat">
@@ -617,9 +618,10 @@ function QuickChatApp() {
               <button
                 type="button"
                 className="quick-chat-main-link no-drag"
-                onClick={() => window.desktopBridge?.openMainPanel?.()}
+                data-e2e={canOpenToday ? 'quick-open-today' : undefined}
+                onClick={() => canOpenToday ? void window.desktopBridge.openToday() : void window.desktopBridge?.openMainPanel?.()}
               >
-                {t(language, 'openMainPanel')}
+                {canOpenToday ? (language === 'zh-CN' ? '今天' : 'Today') : t(language, 'openMainPanel')}
               </button>
             </div>
 

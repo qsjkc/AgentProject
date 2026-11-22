@@ -297,20 +297,26 @@ export async function happyPathScenario(context) {
 export async function capabilityTtlScenario(context) {
   await ensureBaseBridge(context)
   await resetAuthenticated(context)
+  const main = context.pages.main
+  await main.waitForSelector(REQUIRED_SELECTORS.relationshipSummary)
+  const completedRelationships = (snapshot) => (snapshot.activityJournal || []).filter((entry) => (
+    entry.kind === 'request' && entry.userId === USERS.A.id && entry.path === '/pets/pig/relationship' && entry.ok
+  ))
+  const previousCompletions = completedRelationships(await callE2e(main, 'snapshot')).length
   const before = context.stub.requests.length
-  const expiry = await callE2e(context.pages.main, 'expireOperationCapabilities')
+  const expiry = await callE2e(main, 'expireOperationCapabilities')
   assert(expiry?.expired > 0, 'E2E hook did not expire an operation capability', expiry)
-  await callE2e(context.pages.main, 'triggerRelationshipRefresh')
+  await callE2e(main, 'triggerRelationshipRefresh')
   await waitFor(
     () => context.stub.requests.slice(before).some((request) => request.pathname === '/api/v1/pets/pig/relationship'),
     { timeoutMs: CAPABILITY_TTL_MS, description: 'real relationship request after capability TTL' },
   )
   const snapshot = await expectSnapshot(
-    context.pages.main,
-    (value) => value.lastCompletedRequest?.path === '/pets/pig/relationship' && value.lastCompletedRequest?.ok === true,
+    main,
+    (value) => completedRelationships(value).length > previousCompletions,
     'successful post-TTL request commit',
   )
-  return { expiry, lastCompletedRequest: snapshot.lastCompletedRequest }
+  return { expiry, completedRequest: completedRelationships(snapshot).at(-1) }
 }
 
 export async function mainReloadDuringIntentScenario(context) {

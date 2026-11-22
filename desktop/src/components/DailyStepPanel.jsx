@@ -7,6 +7,7 @@ import {
   getDailyStepStorageKey,
   getDailyStepTitle,
   readDailyStep,
+  readDailyStepCarryOver,
   writeDailyStep,
 } from '../shared/daily-step'
 import { getFocusHistoryRefreshDelay } from '../shared/focus-history'
@@ -25,6 +26,8 @@ const COPY = {
     complete: '做完了',
     completed: '已完成',
     undo: '撤销完成',
+    yesterday: '昨天还没做完',
+    carryOver: '今天继续',
     local: '仅保存在这台设备，按本机日期更新。',
     error: '没能在这台设备上保存这次更改，请重试。',
   },
@@ -40,6 +43,8 @@ const COPY = {
     complete: 'Done',
     completed: 'Completed',
     undo: 'Undo completion',
+    yesterday: 'Unfinished yesterday',
+    carryOver: 'Continue today',
     local: 'Saved on this device. A new day starts with a blank step.',
     error: 'This change could not be saved on this device. Please try again.',
   },
@@ -47,6 +52,7 @@ const COPY = {
 
 function DailyStep({ copy, storageKey, date, isToday, onFocus }) {
   const [step, setStep] = useState(() => readDailyStep(storageKey, date))
+  const [carryOver, setCarryOver] = useState(() => readDailyStepCarryOver(storageKey, date))
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState('')
   const [error, setError] = useState(false)
@@ -71,6 +77,7 @@ function DailyStep({ copy, storageKey, date, isToday, onFocus }) {
     restoreFocusRef.current = nextFocus
     setError(false)
     setStep(nextStep)
+    setCarryOver(null)
     setEditing(false)
     setDraft('')
   }
@@ -88,6 +95,16 @@ function DailyStep({ copy, storageKey, date, isToday, onFocus }) {
     setEditing(false)
     setError(false)
     setDraft('')
+  }
+
+  const continueYesterday = () => {
+    if (step || draft || inputRef.current?.value || !isToday(date)) return
+    const latest = readDailyStepCarryOver(storageKey, date)
+    if (!latest || latest.title !== carryOver?.title) {
+      setCarryOver(latest)
+      return
+    }
+    apply(latest, editRef)
   }
 
   return (
@@ -144,6 +161,17 @@ function DailyStep({ copy, storageKey, date, isToday, onFocus }) {
             <button ref={editRef} type="button" data-e2e="daily-step-edit" onClick={edit}>{copy.edit}</button>
           </div>
         </>
+      )}
+      {!step && carryOver && (
+        <div className="daily-step-carry-over">
+          <div className="daily-step-carry-over-label">{copy.yesterday}</div>
+          <p className="daily-step-title" data-e2e="daily-step-carry-over-title">{carryOver.title}</p>
+          <div className="daily-step-actions">
+            <button type="button" data-e2e="daily-step-carry-over" disabled={Boolean(draft)} onClick={continueYesterday}>
+              {copy.carryOver}
+            </button>
+          </div>
+        </div>
       )}
       <p className="daily-step-local">{copy.local}</p>
       {error && <p className="daily-step-error" role="alert">{copy.error}</p>}

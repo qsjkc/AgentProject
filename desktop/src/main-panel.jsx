@@ -13,6 +13,7 @@ import { FocusSessionPanel } from './components/FocusSessionPanel'
 import { DailyStepPanel } from './components/DailyStepPanel'
 import { ChatMessageStream } from './components/ChatMessageStream'
 import { DesktopReleasePanel } from './components/DesktopReleasePanel'
+import { normalizeApiBaseUrl } from './shared/api-base-url'
 import {
   checkApiConnection,
   beginLoginAttempt,
@@ -200,6 +201,12 @@ function PetRelationshipSummary({ language, petType, relationship, loading, sect
       </div>
     </section>
   )
+}
+
+function focusTodaySection() {
+  const today = document.getElementById('companion-today')
+  today?.scrollIntoView({ block: 'start' })
+  today?.focus({ preventScroll: true })
 }
 
 function PetDailySummaryPanel({ language, petType, summary, loading, onRetry }) {
@@ -735,6 +742,7 @@ function MainPanelApp() {
   const [intentOverride, setIntentOverride] = useState(null)
   const [focusNavigationVersion, setFocusNavigationVersion] = useState(0)
   const [focusStepIntent, setFocusStepIntent] = useState(null)
+  const [todayNavigation, setTodayNavigation] = useState(null)
   const pendingFocusNavigationRef = useRef(false)
   const tabRef = useRef('chat')
   const intentOverrideRef = useRef(null)
@@ -817,6 +825,34 @@ function MainPanelApp() {
   const handleFocusStepIntent = useCallback((handled) => {
     setFocusStepIntent((current) => current === handled ? null : current)
   }, [])
+  const requestTodayNavigation = useCallback(() => {
+    intentConsumerRef.current.cancel()
+    pendingFocusNavigationRef.current = false
+    tabRef.current = 'chat'
+    setTab('chat')
+    setTodayNavigation({ contextKey: todayContextKey })
+  }, [todayContextKey])
+
+  useEffect(() => {
+    if (!authenticated || !apiBaseUrl || !user?.id) return undefined
+    return window.desktopBridge?.onTodayRequested?.((request) => {
+      if (normalizeApiBaseUrl(request?.server) !== apiBaseUrl
+        || request.userId !== activeUserIdRef.current
+        || request.petType !== activePetTypeRef.current
+        || request.generation !== activeSessionSnapshotRef.current?.generation) return false
+      requestTodayNavigation()
+      return true
+    })
+  }, [apiBaseUrl, authenticated, requestTodayNavigation, user?.id])
+
+  useEffect(() => {
+    if (!todayNavigation || todayNavigation.contextKey !== todayContextKey || effectiveTab !== 'chat') return undefined
+    const frame = window.requestAnimationFrame(() => {
+      focusTodaySection()
+      setTodayNavigation((current) => current === todayNavigation ? null : current)
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [effectiveTab, todayContextKey, todayNavigation])
 
   useEffect(() => {
     if (!pendingFocusNavigationRef.current || !authenticated || effectiveTab !== 'chat' || !PET_OPTIONS.includes(currentPetType)) return undefined
@@ -3012,12 +3048,6 @@ function MainPanelApp() {
     handleOpenFocus()
   }
 
-  const handleOpenToday = () => {
-    const today = document.getElementById('companion-today')
-    today?.scrollIntoView({ block: 'start' })
-    today?.focus({ preventScroll: true })
-  }
-
   const handleOpenOnboarding = () => {
     const target = petOnboardingScene === PET_ONBOARDING_SCENES.RELATIONSHIP
       ? relationshipSummaryRef.current : petOnboardingCardRef.current
@@ -3200,6 +3230,9 @@ function MainPanelApp() {
               </button>
             </nav>
             <div className="main-header-shortcuts">
+              <button type="button" className="main-header-action" data-e2e="main-open-today" aria-controls="companion-today" onClick={requestTodayNavigation}>
+                {language === 'zh-CN' ? '今天' : 'Today'}
+              </button>
               {effectiveTab === 'chat' && petDataReady && petOnboardingScene && (
                 <button type="button" className="main-header-action main-focus-shortcut" data-e2e="open-onboarding"
                   aria-controls={petOnboardingScene === PET_ONBOARDING_SCENES.RELATIONSHIP ? 'companion-relationship' : 'companion-onboarding'}
@@ -3278,7 +3311,7 @@ function MainPanelApp() {
                 }}
                 stepIntent={focusStepIntent?.contextKey === todayContextKey ? focusStepIntent : null}
                 onStepIntentHandled={handleFocusStepIntent}
-                onOpenToday={handleOpenToday}
+                onOpenToday={focusTodaySection}
               />
               <PetWeeklySummaryPanel
                 key={`weekly-${user?.id || 'anonymous'}:${currentPetType}:${activeSessionSnapshotRef.current?.generation ?? 'none'}:${accountRequestEpochRef.current}`}

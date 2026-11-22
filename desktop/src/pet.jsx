@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
 import ReactDOM from 'react-dom/client'
-import { Cookie, Hand, Sparkles } from 'lucide-react'
+import { Cookie, Hand, Sparkles, Sprout } from 'lucide-react'
 
 import './desktop.css'
 import { PetAnimator } from './components/PetAnimator'
@@ -3759,7 +3759,9 @@ function PetApp() {
                 : ''
             }`}
             role="toolbar"
-            aria-label={getPetCareToolbarLabel(language, petType)}
+            aria-label={hasSession
+              ? (language === 'zh-CN' ? '桌宠快捷操作' : 'Pet quick actions')
+              : getPetCareToolbarLabel(language, petType)}
           >
             {careActions.map((action) => {
               const Icon = CARE_ACTION_ICONS[action.id]
@@ -3785,6 +3787,26 @@ function PetApp() {
                 </button>
               )
             })}
+            {hasSession && (
+              <button
+                type="button"
+                className="pet-care-button pet-today-button"
+                data-e2e="pet-open-today"
+                title={language === 'zh-CN' ? '打开今天一起' : 'Open Today together'}
+                onClick={async (event) => {
+                  event.stopPropagation()
+                  if (!hasSessionRef.current) return
+                  try {
+                    await window.desktopBridge?.openToday?.()
+                  } catch (error) {
+                    loggerRef.current.error('today:open-failed', error)
+                  }
+                }}
+              >
+                <Sprout size={14} strokeWidth={2.2} aria-hidden="true" />
+                {language === 'zh-CN' ? '今天' : 'Today'}
+              </button>
+            )}
           </div>
         )}
         <button

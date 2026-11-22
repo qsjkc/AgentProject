@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
 import { test } from 'node:test'
 import {
   DAILY_STEP_TITLE_LENGTH,
@@ -6,6 +7,7 @@ import {
   getDailyStepStorageKey,
   getDailyStepTitle,
   readDailyStep,
+  readDailyStepCarryOver,
   writeDailyStep,
 } from '../src/shared/daily-step.js'
 
@@ -60,6 +62,47 @@ test('calendar keys use the device day and a new plan replaces the previous day 
   assert.equal(records.size, 1)
 })
 
+test('carry-over only offers yesterday’s unfinished step in the same scope and writes nothing when read', () => {
+  const { records, getStorage } = testStorage()
+  const key = getDailyStepStorageKey(scope)
+  assert.equal(writeDailyStep(key, firstDay, step, getStorage), true)
+  assert.deepEqual(readDailyStepCarryOver(key, nextDay, getStorage), step)
+  assert.equal(readDailyStep(key, nextDay, getStorage), null)
+  assert.deepEqual(readDailyStep(key, firstDay, getStorage), step)
+  assert.equal(readDailyStepCarryOver(key, '2026-11-23', getStorage), null)
+  assert.equal(readDailyStepCarryOver(key, firstDay, getStorage), null)
+  for (const other of [{ userId: 2 }, { petType: 'cat' }, { server: 'https://other.example' }]) {
+    assert.equal(readDailyStepCarryOver(getDailyStepStorageKey({ ...scope, ...other }), nextDay, getStorage), null)
+  }
+  assert.equal(writeDailyStep(key, nextDay, step, getStorage), true)
+  assert.deepEqual(readDailyStep(key, nextDay, getStorage), step)
+  assert.equal(readDailyStep(key, firstDay, getStorage), null)
+  assert.equal(readDailyStepCarryOver(key, nextDay, getStorage), null)
+  assert.equal(records.size, 1)
+})
+
+test('carry-over finds the previous local date across DST and calendar rollover', () => {
+  const moduleUrl = new URL('../src/shared/daily-step.js', import.meta.url).href
+  const program = `
+    import assert from 'node:assert/strict'
+    import { getDailyStepDate, readDailyStepCarryOver } from ${JSON.stringify(moduleUrl)}
+    assert.equal(new Intl.DateTimeFormat().resolvedOptions().timeZone, 'America/New_York')
+    for (const [today, yesterday] of [
+      [new Date(2026, 2, 9, 0, 15), '2026-03-08'],
+      [new Date(2026, 10, 1, 23, 45), '2026-10-31'],
+      [new Date(2027, 0, 1, 0, 15), '2026-12-31'],
+    ]) {
+      const step = { title: 'Read', completed: false }
+      const getStorage = () => ({ getItem: () => JSON.stringify({ date: yesterday, ...step }) })
+      assert.deepEqual(readDailyStepCarryOver('local-step', getDailyStepDate(today), getStorage), step)
+    }
+  `
+  const result = spawnSync(process.execPath, ['--input-type=module', '-e', program], {
+    env: { ...process.env, TZ: 'America/New_York' }, encoding: 'utf8', timeout: 10000,
+  })
+  assert.equal(result.status, 0, result.stderr || result.error || result.stdout)
+})
+
 test('editing, completion, undo and removal persist only explicit writes', () => {
   const { getStorage } = testStorage()
   const key = getDailyStepStorageKey(scope)
@@ -69,6 +112,7 @@ test('editing, completion, undo and removal persist only explicit writes', () =>
   assert.deepEqual(readDailyStep(key, firstDay, getStorage), { ...completed, completed: false })
   assert.equal(writeDailyStep(key, firstDay, completed, getStorage), true)
   assert.deepEqual(readDailyStep(key, firstDay, getStorage), completed)
+  assert.equal(readDailyStepCarryOver(key, nextDay, getStorage), null)
   assert.equal(writeDailyStep(key, firstDay, { ...completed, completed: false }, getStorage), true)
   assert.deepEqual(readDailyStep(key, firstDay, getStorage), { ...completed, completed: false })
   assert.equal(writeDailyStep(key, firstDay, null, getStorage), true)

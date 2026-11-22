@@ -83,6 +83,7 @@ let quitting = false
 let debugLogPath = null
 let registeredVoiceGlobalShortcut = null
 let mainPanelIntentCoordinator = null
+let mainPanelTodayCoordinator = null
 let sessionGeneration = 0
 const authoritativeOperationContext = createAuthoritativeOperationContextState()
 const operationCapabilities = createOperationCapabilityRegistry({
@@ -662,6 +663,37 @@ function getMainPanelIntentCoordinator() {
   return mainPanelIntentCoordinator
 }
 
+function getTodayNavigationContext() {
+  const context = getCurrentStableAccountContext()
+  const server = String(getStore().get('apiBaseUrl') || '').replace(/\/+$/, '')
+  if (!context.hasSession || !server) return null
+  return { server, userId: context.userId, petType: context.petType, generation: context.session.generation }
+}
+
+function isTodayNavigationContextCurrent(expected) {
+  const current = getTodayNavigationContext()
+  return Boolean(current && expected
+    && expected.server === current.server
+    && expected.userId === current.userId
+    && expected.petType === current.petType
+    && expected.generation === current.generation)
+}
+
+function getMainPanelTodayCoordinator() {
+  if (!mainPanelTodayCoordinator) {
+    mainPanelTodayCoordinator = createMainPanelIntentCoordinator({
+      timeoutMs: MAIN_PANEL_INTENT_READY_TIMEOUT_MS,
+      deliver: (payload) => {
+        if (!mainPanelWindow || mainPanelWindow.isDestroyed()) return false
+        mainPanelWindow.webContents.send('desktop:today-requested', payload)
+        return true
+      },
+      validateContext: isTodayNavigationContextCurrent,
+    })
+  }
+  return mainPanelTodayCoordinator
+}
+
 function resetPetOnboardingEngagementSamples() {
   petOnboardingEngagementSamples.clear()
 }
@@ -1174,6 +1206,15 @@ function getIpcSenderRole(event) {
     return 'quick-chat'
   }
   return null
+}
+
+function getCurrentRendererRole(event, rendererInstanceNonce) {
+  const role = getIpcSenderRole(event)
+  return operationCapabilities.isRendererInstanceCurrent({
+    sender: event?.sender,
+    senderRole: role,
+    rendererInstanceNonce,
+  }) ? role : null
 }
 
 function attachRendererCapabilityLifecycle(windowInstance) {
@@ -2149,6 +2190,7 @@ function createMainPanelWindow() {
   attachRendererNavigationGuard(mainPanelWindow, 'main-panel.html')
   attachRendererCapabilityLifecycle(mainPanelWindow)
   getMainPanelIntentCoordinator().markRendererNotReady()
+  mainPanelTodayCoordinator?.markRendererNotReady()
   mainPanelWindow.setTitle(getWindowTitle('mainPanel'))
   mainPanelWindow.removeMenu()
   mainPanelWindow.setMenuBarVisibility(false)
@@ -2161,6 +2203,7 @@ function createMainPanelWindow() {
   })
   mainPanelWindow.webContents.on('did-start-loading', () => {
     getMainPanelIntentCoordinator().markRendererNotReady()
+    mainPanelTodayCoordinator?.markRendererNotReady()
   })
   mainPanelWindow.webContents.on('did-finish-load', () => {
     sendPetStateToWindow(mainPanelWindow, getPetState())
@@ -2172,14 +2215,17 @@ function createMainPanelWindow() {
     (_event, _errorCode, _errorDescription, _validatedUrl, isMainFrame) => {
       if (isMainFrame !== false) {
         getMainPanelIntentCoordinator().failPending('main-frame-load-failed')
+        mainPanelTodayCoordinator?.failPending('main-frame-load-failed')
       }
     },
   )
   mainPanelWindow.webContents.on('render-process-gone', () => {
     getMainPanelIntentCoordinator().failPending('renderer-process-gone')
+    mainPanelTodayCoordinator?.failPending('renderer-process-gone')
   })
   mainPanelWindow.on('closed', () => {
     getMainPanelIntentCoordinator().failPending('window-destroyed')
+    mainPanelTodayCoordinator?.failPending('window-destroyed')
     // attachRendererCapabilityLifecycle already revokes the captured sender on
     // destruction. Accessing webContents here throws after BrowserWindow dies.
     mainPanelWindow = null
@@ -2187,6 +2233,7 @@ function createMainPanelWindow() {
 
   void loadWindow(mainPanelWindow, 'main-panel.html').catch((error) => {
     getMainPanelIntentCoordinator().failPending('main-frame-load-failed')
+    mainPanelTodayCoordinator?.failPending('main-frame-load-failed')
     logDesktop('main-panel-load-failed', { message: error?.message || 'unknown' })
   })
 }
@@ -2247,6 +2294,14 @@ function openMainPanel(options = {}) {
     })
   }
   return true
+}
+
+function openTodayForRenderer(event, rendererInstanceNonce) {
+  const role = getCurrentRendererRole(event, rendererInstanceNonce)
+  if (role !== 'pet' && role !== 'quick-chat') return false
+  const context = getTodayNavigationContext()
+  if (!openMainPanel() || !context) return false
+  return getMainPanelTodayCoordinator().request('today', { context })
 }
 
 async function openMainPanelForRenderer(event, options = {}) {
@@ -2807,6 +2862,21 @@ function registerIpc() {
   }
   ipcMain.handle('desktop:open-main-panel', async (event, options) => (
     openMainPanelForRenderer(event, options)
+  ))
+  ipcMain.handle('desktop:open-today', openTodayForRenderer)
+  ipcMain.handle('desktop:today-request-readiness', (event, ready, rendererInstanceNonce) => {
+    if (getCurrentRendererRole(event, rendererInstanceNonce) !== 'main-panel') return false
+    if (ready === true) return getMainPanelTodayCoordinator().markRendererReady()
+    mainPanelTodayCoordinator?.markRendererNotReady()
+    return true
+  })
+  ipcMain.handle('desktop:today-request-current', (event, context, rendererInstanceNonce) => (
+    getCurrentRendererRole(event, rendererInstanceNonce) === 'main-panel'
+    && isTodayNavigationContextCurrent(context)
+  ))
+  ipcMain.handle('desktop:today-request-ack', (event, id, rendererInstanceNonce) => (
+    getCurrentRendererRole(event, rendererInstanceNonce) === 'main-panel'
+    && getMainPanelTodayCoordinator().acknowledge(id)
   ))
   ipcMain.handle('desktop:main-panel-intent-ready', async (event) => {
     if (getIpcSenderRole(event) !== 'main-panel') {
