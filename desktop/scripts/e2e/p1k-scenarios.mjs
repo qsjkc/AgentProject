@@ -613,10 +613,12 @@ export async function petSwitchSyncScenario(context) {
     ), `${petType} relationship after pet switch`)
     await waitFor(() => context.pages.main.evaluate(`(() => {
       const selected = document.querySelector('[data-e2e="pet-option-${petType}"]')
+      const agenda = document.querySelector('[data-e2e="today-reminder-agenda"]')
       return selected?.classList.contains('active') && !selected.disabled
         && Boolean(document.querySelector('[data-e2e="pet-relationship-summary"]'))
+        && ['ready', 'empty'].includes(agenda?.dataset.state)
         && !document.querySelector('.main-companion-sync')
-    })()`), { description: `${petType} companion cards ready without retry` })
+    })()`), { description: `${petType} companion cards and agenda ready without retry` })
     settledPets.push(petType)
   }
   await context.pages.main.waitForSelector('[data-e2e="focus-panel"][data-focus-status="idle"]')
