@@ -13,6 +13,13 @@ type RtcSdk = Pick<typeof import('@volcengine/rtc'), 'AudioProfileType' | 'Conne
 }
 let sdkPromise: Promise<RtcSdk> | null = null
 
+export class VoiceRtcSdkLoadError extends Error {
+  constructor(readonly cause: unknown) {
+    super('语音组件暂时无法加载，请刷新页面后重试。')
+    this.name = 'VoiceRtcSdkLoadError'
+  }
+}
+
 function sdkRecord(value: unknown): Record<string, unknown> {
   return value && (typeof value === 'object' || typeof value === 'function') ? value as Record<string, unknown> : {}
 }
@@ -42,7 +49,9 @@ function normalizeRtcSdk(value: unknown): RtcSdk {
 
 function loadRtcSdk(): Promise<RtcSdk> {
   if (sdkPromise) return sdkPromise
-  const pending = import('@volcengine/rtc').then(normalizeRtcSdk).catch((error) => {
+  const pending = import('@volcengine/rtc').then(normalizeRtcSdk, (cause: unknown) => {
+    throw new VoiceRtcSdkLoadError(cause)
+  }).catch((error) => {
     sdkPromise = null
     throw error
   })
