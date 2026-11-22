@@ -8,6 +8,7 @@ const OWNER = Object.freeze({ id: 874, username: 'today-agenda-owner', email: 't
 const AGENDA = '[data-e2e="today-reminder-agenda"]'
 const ITEM = '[data-e2e="today-agenda-item"]'
 const EARLIER = '[data-e2e="today-agenda-earlier"]'
+const REMINDERS = '/api/v1/reminders'
 const SERIES = '/api/v1/reminder-series'
 
 function getFixtureSchedule(main) {
@@ -30,8 +31,10 @@ function getFixtureSchedule(main) {
 
 function showAgendaDay(main, now) {
   return main.evaluate(`(() => {
-    const original = Date.now
-    window.restoreAgendaClock = () => { Date.now = original; delete window.restoreAgendaClock }
+    if (!window.restoreAgendaClock) {
+      const original = Date.now
+      window.restoreAgendaClock = () => { Date.now = original; delete window.restoreAgendaClock }
+    }
     Date.now = () => ${JSON.stringify(now)}
     window.dispatchEvent(new Event('focus'))
   })()`)
@@ -124,7 +127,50 @@ export async function todayAgendaScenario(context) {
       'Completing the delivered reminder issued more than one request')
     await main.evaluate(`document.querySelector(${JSON.stringify(AGENDA)}).scrollIntoView({ block: 'center' })`)
     const screenshot = await main.screenshot(join(context.artifactPath, 'today-agenda.png'))
-    return { deviceDayRefresh: true, sortedAndScoped: true, overnightDelivery: true, earlierRoutesToManager: true, allTodayRoutesFocused: true, liveCompletion: true, screenshot }
+
+    const reconnects = []
+    let previousDay = clock.now
+    for (const onlineWhilePending of [false, true]) {
+      const day = await main.evaluate(`(() => {
+        const date = new Date(${previousDay})
+        const now = date.setHours(24, 0, 0, 1)
+        const due = new Date(date.setHours(18, 0, 0, 0)).toISOString()
+        const dueBefore = new Date(date.setHours(24, 0, 0, 0)).toISOString()
+        return { now, due, dueBefore }
+      })()`)
+      previousDay = day.now
+      const afterMidnight = record('联网恢复后读取的新一天提醒', day.due)
+      stub.fixture.accounts.get(OWNER.id).reminders.push(afterMidnight)
+      const failedRead = stub.holdNext('GET', REMINDERS, {
+        statusCode: 503, payload: { detail: 'Today reminders temporarily unavailable' },
+      }, (request) => new URLSearchParams(request.search).get('due_before') === day.dueBefore)
+      let held = false
+      void failedRead.arrived.then(() => { held = true })
+      try {
+        await showAgendaDay(main, day.now)
+        await waitFor(() => held, { description: 'the new local day starts a Today reminder read' })
+        await main.waitForSelector(`${AGENDA}[data-state="loading"]`)
+        assertEqual((await readAgendaRows(main)).length, 0, 'Today displayed old rows during the new-day read')
+        if (!onlineWhilePending) {
+          failedRead.release()
+          await main.waitForSelector(`${AGENDA}[data-state="error"]`)
+        }
+        const onlineAt = Date.now()
+        await main.evaluate("window.dispatchEvent(new Event('online'))")
+        failedRead.release()
+        await waitFor(async () => (await readAgendaRows(main)).some((row) => row.targetId === String(afterMidnight.id)), {
+          timeoutMs: 5000,
+          description: onlineWhilePending ? 'reconnect during the failed Today read shows the new-day reminder'
+            : 'reconnect after the failed Today read shows the new-day reminder',
+        })
+        reconnects.push({ onlineWhilePending, latencyMs: Date.now() - onlineAt })
+        assertEqual((await readAgendaRows(main)).map((row) => row.targetId).join(','), String(afterMidnight.id),
+          'Reconnect did not show only the correct local day')
+      } finally {
+        failedRead.release()
+      }
+    }
+    return { deviceDayRefresh: true, sortedAndScoped: true, overnightDelivery: true, earlierRoutesToManager: true, allTodayRoutesFocused: true, liveCompletion: true, reconnects, screenshot }
   } finally {
     restoreSeries()
     await main.evaluate("window.restoreAgendaClock?.(); window.dispatchEvent(new Event('focus'))")

@@ -152,6 +152,7 @@ function useAgendaSnapshot(accountContext) {
     window.addEventListener('detachym:reminders-changed', requestRefresh)
     window.addEventListener('detachym:reminder-series-changed', requestRefresh)
     window.addEventListener('focus', refreshIfVisible)
+    window.addEventListener('online', refreshIfVisible)
     document.addEventListener('visibilitychange', refreshIfVisible)
     return () => {
       active = false
@@ -161,6 +162,7 @@ function useAgendaSnapshot(accountContext) {
       window.removeEventListener('detachym:reminders-changed', requestRefresh)
       window.removeEventListener('detachym:reminder-series-changed', requestRefresh)
       window.removeEventListener('focus', refreshIfVisible)
+      window.removeEventListener('online', refreshIfVisible)
       document.removeEventListener('visibilitychange', refreshIfVisible)
     }
   }, [petType])

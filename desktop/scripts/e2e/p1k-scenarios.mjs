@@ -342,13 +342,32 @@ export async function mainReloadDuringIntentScenario(context) {
 }
 
 export async function accountSwitchRaceScenario(context) {
+  const { main } = context.pages
   await ensureBaseBridge(context)
   await resetAuthenticated(context, USERS.A)
+  // The dashboard appears before the initial relationship load replaces its operation capability.
+  await main.waitForSelector(`${REQUIRED_SELECTORS.relationshipSummary}[aria-busy="false"]`)
+  await expectSnapshot(main, (value) => (
+    value.account?.userId === USERS.A.id
+    && value.account?.petType === 'pig'
+    && value.renderer?.[0]?.userId === USERS.A.id
+    && value.renderer?.[0]?.relationshipId === createRelationship(USERS.A).id
+  ), 'account A relationship ready before the delayed refresh')
+
+  const requestsBeforeRefresh = context.stub.requests.length
   const hold = context.stub.holdNext('GET', '/api/v1/pets/pig/relationship')
-  const request = callE2e(context.pages.main, 'triggerRelationshipRefresh')
-  await withTimeout(hold.arrived, 10_000, 'delayed account A relationship request')
-  await switchAccountViaUi(context, USERS.B)
-  hold.release()
+  const request = callE2e(main, 'triggerRelationshipRefresh')
+  let held
+  try {
+    held = await withTimeout(Promise.race([
+      hold.arrived,
+      request.then((result) => assert(false, 'Account A refresh finished before the held request arrived', { result })),
+    ]), 10_000, 'delayed account A relationship request')
+    assert(held.sequence > requestsBeforeRefresh && held.authorization, 'Expected a new authenticated relationship request from account A')
+    await switchAccountViaUi(context, USERS.B)
+  } finally {
+    hold.release()
+  }
   await request
   const snapshot = await expectSnapshot(
     context.pages.main,
@@ -396,6 +415,7 @@ export async function accountSwitchRaceScenario(context) {
     account: intentSnapshot.account,
     relationship: intentSnapshot.relationship,
     activityJournal: intentSnapshot.activityJournal,
+    delayedAccountARequestSequence: held.sequence,
   }
 }
 
@@ -1398,19 +1418,26 @@ export async function conversationReturnScenario(context) {
 
 export async function quickChatRefreshRecoveryScenario(context) {
   await resetAuthenticated(context)
-  const quick = context.pages.quick
+  const { main, quick } = context.pages
+  const preferencesPath = '/api/v1/users/me/preferences'
+  const chatPath = '/api/v1/chat/message'
+  const account = context.stub.fixture.accounts.get(USERS.B.id)
+  const previousPreferences = account.preferences
+  const previousReminders = account.reminders
   await callE2e(quick, 'showWindow', 'quick-chat')
   await quick.reload()
   await quick.waitForSelector(REQUIRED_SELECTORS.quickChatInput)
   const first = '偏好刷新失败时保留这条回答'
-  const firstHold = context.stub.holdNext('POST', '/api/v1/chat/message')
+  const firstHold = context.stub.holdNext('POST', chatPath)
   let secondHold
   let restorePreferences
+  let pigSend
+  let catPreferences
   try {
     await quick.input(REQUIRED_SELECTORS.quickChatInput, first)
     await quick.click(REQUIRED_SELECTORS.quickChatSend)
     await withTimeout(firstHold.arrived, 5000, 'quick chat in flight before preference failure')
-    restorePreferences = context.stub.overrideResponse('GET', '/api/v1/users/me/preferences', 503, { detail: 'Temporary preference failure' })
+    restorePreferences = context.stub.overrideResponse('GET', preferencesPath, 503, { detail: 'Temporary preference failure' })
     await quick.evaluate('window.dispatchEvent(new Event("focus"))')
     await quick.waitForSelector('[data-e2e="quick-chat-sync-error"]')
     assert(await quick.evaluate(`Boolean(document.querySelector(${JSON.stringify(REQUIRED_SELECTORS.quickChatInput)}))`), 'Preference failure removed the authenticated chat')
@@ -1423,7 +1450,7 @@ export async function quickChatRefreshRecoveryScenario(context) {
     await waitFor(() => quick.evaluate('!document.querySelector("[data-e2e=quick-chat-sync-error]")'), { description: 'preferences refresh recovers' })
 
     const privateMessage = '旧账号 A 的迟到回答'
-    secondHold = context.stub.holdNext('POST', '/api/v1/chat/message')
+    secondHold = context.stub.holdNext('POST', chatPath)
     await quick.input(REQUIRED_SELECTORS.quickChatInput, privateMessage)
     await quick.click(REQUIRED_SELECTORS.quickChatSend)
     await withTimeout(secondHold.arrived, 5000, 'old account reply before logout')
@@ -1436,11 +1463,77 @@ export async function quickChatRefreshRecoveryScenario(context) {
     await quick.click(REQUIRED_SELECTORS.quickChatSend)
     await waitFor(() => quick.evaluate(`document.querySelector(${JSON.stringify(REQUIRED_SELECTORS.quickChatAssistantMessage)})?.textContent.includes(${JSON.stringify(currentMessage)})`), { description: 'new account sends after stale reply release' })
     assert(!await quick.evaluate(`document.querySelector('.quick-chat-thread').textContent.includes(${JSON.stringify(privateMessage)})`), 'Old account reply leaked into the new account')
-    return { optionalRefreshKeepsChat: true, inFlightReplyPreserved: true, sendingRecovered: true, accountIsolation: true }
+    await waitFor(() => quick.evaluate(`!document.querySelector(${JSON.stringify(REQUIRED_SELECTORS.quickChatSend)}).disabled`), { description: 'new account Quick Chat is ready for another send' })
+
+    const pigMessage = '切换桌宠前仍在发送的小猪消息'
+    const pigDraft = '只为小猪写的未发送草稿'
+    pigSend = context.stub.holdNext('POST', chatPath)
+    await quick.input(REQUIRED_SELECTORS.quickChatInput, pigMessage)
+    await quick.click(REQUIRED_SELECTORS.quickChatSend)
+    const pigRequest = await withTimeout(pigSend.arrived, 5000, 'existing pig conversation send before pet switch')
+    const pigPayload = JSON.parse(pigRequest.body)
+    assertEqual(pigPayload.pet_type, 'pig', 'The held message must belong to the pig')
+    assert(Number.isInteger(pigPayload.session_id), 'The held message must belong to an existing conversation')
+    await quick.input(REQUIRED_SELECTORS.quickChatInput, pigDraft)
+
+    const { logPath } = await quick.evaluate('window.desktopBridge.getLogPaths()')
+    const completedSyncs = async () => (await readFile(logPath, 'utf8')).split('\n')
+      .filter((line) => line.includes('"event":"quick-chat-sync-session"')).length
+    restorePreferences = context.stub.overrideResponse('GET', preferencesPath, 200, { ...account.preferences, pet_type: 'cat' })
+    catPreferences = context.stub.holdNext('GET', preferencesPath)
+    await quick.evaluate('window.dispatchEvent(new Event("focus"))')
+    await withTimeout(catPreferences.arrived, 5000, 'cat preference read before desktop pet switch')
+    const syncsBefore = await completedSyncs()
+    catPreferences.release()
+    await waitFor(async () => (await completedSyncs()) > syncsBefore, { description: 'Quick Chat applied its preference refresh' })
+    assertEqual(await quick.evaluate('window.desktopBridge.getPetState().then(s => s.petType)'), 'pig', 'Native pet changed before the preference refresh')
+
+    account.reminders = []
+    await callE2e(main, 'showWindow', 'main-panel')
+    await main.bringToFront()
+    await waitFor(() => main.evaluate(`(() => {
+      const option = document.querySelector('[data-e2e="pet-option-cat"]')
+      if (!(option instanceof HTMLButtonElement) || option.matches(':disabled') || !document.hasFocus()) return false
+      option.scrollIntoView({ block: 'center', behavior: 'instant' })
+      option.focus({ preventScroll: true })
+      return document.activeElement === option && !option.matches(':disabled')
+    })()`), { description: 'focused enabled cat option' })
+    const enter = { key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 }
+    await main.send('Input.dispatchKeyEvent', { ...enter, type: 'keyDown', text: '\r', unmodifiedText: '\r' })
+    await main.send('Input.dispatchKeyEvent', { ...enter, type: 'keyUp' })
+    await expectSnapshot(main, (snapshot) => snapshot.account?.userId === USERS.B.id
+      && snapshot.account?.petType === 'cat' && snapshot.relationship?.pet_type === 'cat', 'verified desktop cat switch')
+    pigSend.release()
+    await waitFor(() => account.sessions.some((session) => session.messages.some((message) => message.content === pigMessage)), {
+      description: 'the held pig request completes under its original account',
+    })
+    await callE2e(quick, 'showWindow', 'quick-chat')
+    await waitFor(() => quick.evaluate(`document.querySelector(${JSON.stringify(REQUIRED_SELECTORS.quickChatSend)})?.disabled === false`), {
+      description: 'Quick Chat releases sending after the verified pet switch', timeoutMs: 5000,
+    })
+    assertEqual(await quick.evaluate(`document.querySelector(${JSON.stringify(REQUIRED_SELECTORS.quickChatInput)}).value`), '', 'Pig draft survived the cat switch')
+    assert(!await quick.evaluate(`document.querySelector('.quick-chat-thread').textContent.includes(${JSON.stringify(pigMessage)})`), 'Pig conversation survived the cat switch')
+
+    const catMessage = '切换后发给猫咪的新消息'
+    const catStart = context.stub.requests.length
+    await quick.input(REQUIRED_SELECTORS.quickChatInput, catMessage)
+    await quick.click(REQUIRED_SELECTORS.quickChatSend)
+    await waitFor(() => quick.evaluate(`document.querySelector(${JSON.stringify(REQUIRED_SELECTORS.quickChatAssistantMessage)})?.textContent.includes(${JSON.stringify(catMessage)})`), { description: 'new cat conversation receives a reply' })
+    const catRequests = context.stub.requests.slice(catStart).filter(({ method, pathname }) => method === 'POST' && pathname === chatPath)
+    assertEqual(catRequests.length, 1, 'The new cat message must be sent exactly once')
+    const catPayload = JSON.parse(catRequests[0].body)
+    assertEqual(catPayload.pet_type, 'cat', 'The new message did not use the verified cat identity')
+    assertEqual(catPayload.message, catMessage, 'The new message reused an old draft')
+    assertEqual(catPayload.session_id, undefined, 'The new cat message reused the previous pig conversation')
+    return { optionalRefreshKeepsChat: true, inFlightReplyPreserved: true, sendingRecovered: true, accountIsolation: true, freshPetConversation: true }
   } finally {
     restorePreferences?.()
+    account.preferences = previousPreferences
+    account.reminders = previousReminders
     firstHold.release()
     secondHold?.release()
+    pigSend?.release()
+    catPreferences?.release()
   }
 }
 
