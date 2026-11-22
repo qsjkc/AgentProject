@@ -111,8 +111,11 @@ async function testStubEndpoints() {
     assertEqual((await fetch(`${stub.apiBaseUrl}/pets/pig/relationship`, { headers })).status, 503)
     restore()
     assertEqual((await fetch(`${stub.apiBaseUrl}/pets/pig/relationship`, { headers })).status, 200)
-    const staleReply = stub.holdNext('GET', '/api/v1/chat/sessions', { statusCode: 200, payload: [] })
-    const staleRead = fetch(`${stub.apiBaseUrl}/chat/sessions`, { headers }).then((response) => response.json())
+    const staleReply = stub.holdNext('GET', '/api/v1/chat/sessions', { statusCode: 200, payload: [] },
+      (request) => new URLSearchParams(request.search).get('include_messages') === 'false')
+    assertEqual((await fetch(`${stub.apiBaseUrl}/chat/sessions`, { headers }).then((response) => response.json())).length, 1,
+      'A read with a different query consumed the hold')
+    const staleRead = fetch(`${stub.apiBaseUrl}/chat/sessions?include_messages=false`, { headers }).then((response) => response.json())
     await staleReply.arrived
     staleReply.release()
     assertEqual((await staleRead).length, 0, 'Held response did not preserve its earlier snapshot')
