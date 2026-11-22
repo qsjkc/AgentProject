@@ -121,12 +121,9 @@ export function PendingReminderPanel({
   petType,
   accountContext,
   onCompleted,
-  onDeliveredAgenda,
-  onScheduledAgenda,
   highlightReminderId = null,
 }) {
-  const [agenda, setAgenda] = useState({ status: 'loading', rows: [] })
-  const reminders = agenda.rows
+  const [reminders, setReminders] = useState([])
   const [loading, setLoading] = useState(true)
   const [savingId, setSavingId] = useState(null)
   const [retryingId, setRetryingId] = useState(null)
@@ -140,8 +137,6 @@ export function PendingReminderPanel({
   const { loadGate, actionGate } = operationsRef.current
   currentContextRef.current = accountContext
   const copy = getCopy(language, petType)
-
-  useEffect(() => { onDeliveredAgenda?.(agenda) }, [agenda, onDeliveredAgenda])
 
   const refreshQueued = useCallback(() => {
     if (!queuedRefreshRef.current) return
@@ -168,7 +163,7 @@ export function PendingReminderPanel({
         requestContext,
         currentContextRef.current,
         () => {
-          setAgenda({ status: 'ready', rows: items })
+          setReminders(items)
           setError('')
         },
       )
@@ -177,10 +172,7 @@ export function PendingReminderPanel({
         loadGate,
         requestContext,
         currentContextRef.current,
-        () => {
-          setAgenda((current) => ({ ...current, status: 'error' }))
-          setError(copy.loadFailed)
-        },
+        () => setError(copy.loadFailed),
       )
     } finally {
       const current = commitAccountOperation(
@@ -251,7 +243,7 @@ export function PendingReminderPanel({
         actionGate,
         requestContext,
         currentContextRef.current,
-        () => setAgenda((current) => ({ ...current, rows: current.rows.filter((item) => item.id !== reminder.id) })),
+        () => setReminders((current) => current.filter((item) => item.id !== reminder.id)),
       )) {
         return
       }
@@ -291,10 +283,7 @@ export function PendingReminderPanel({
         actionGate,
         requestContext,
         currentContextRef.current,
-        () => setAgenda((current) => ({
-          ...current,
-          rows: current.rows.map((item) => item.id === reminder.id ? updated : item),
-        })),
+        () => setReminders((current) => current.map((item) => item.id === reminder.id ? updated : item)),
       )
     } catch {
       commitAccountOperation(
@@ -330,7 +319,7 @@ export function PendingReminderPanel({
         actionGate,
         requestContext,
         currentContextRef.current,
-        () => setAgenda((current) => ({ ...current, rows: current.rows.filter((item) => item.id !== reminder.id) })),
+        () => setReminders((current) => current.filter((item) => item.id !== reminder.id)),
       )
       if (committed) window.dispatchEvent(new Event('detachym:reminders-changed'))
     } catch {
@@ -353,7 +342,7 @@ export function PendingReminderPanel({
 
   return (
     <>
-    <UpcomingReminderPanel language={language} petType={petType} accountContext={accountContext} onAgendaSnapshot={onScheduledAgenda} />
+    <UpcomingReminderPanel language={language} petType={petType} accountContext={accountContext} />
     <section id="delivered-reminders" tabIndex={-1} className="pending-reminder-panel" aria-label={copy.title}>
       <div className="pending-reminder-header">
         <div className="sidebar-title">{copy.title}</div>
@@ -395,9 +384,12 @@ export function PendingReminderPanel({
             return (
               <div
                 className={`pending-reminder-item ${isOnboardingHighlight ? 'is-onboarding-highlight' : ''}`}
+                data-reminder-row-id={String(reminder.id)}
                 data-e2e-reminder-id={String(reminder.id)}
                 key={reminder.id}
+                tabIndex={-1}
                 role="group"
+                aria-label={reminder.title}
                 aria-busy={savingId === reminder.id || retryingId === reminder.id || skippingId === reminder.id}
                 aria-describedby={isOnboardingHighlight ? `pending-reminder-onboarding-${reminder.id}` : undefined}
               >

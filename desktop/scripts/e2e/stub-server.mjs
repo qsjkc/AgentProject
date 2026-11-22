@@ -131,7 +131,7 @@ export class StubServer {
     })
   }
 
-  holdNext(method, pathname, response = null) {
+  holdNext(method, pathname, response = null, matches) {
     const arrived = createDeferred()
     const released = createDeferred()
     const control = {
@@ -141,6 +141,7 @@ export class StubServer {
       _arrive: arrived.resolve,
       _released: released.promise,
       response,
+      matches,
     }
     this.#enqueueControl(method, pathname, control)
     return control
@@ -174,8 +175,9 @@ export class StubServer {
   async #applyControl(method, pathname, requestRecord) {
     const key = routeKey(method, pathname)
     const queue = this.controls.get(key)
-    const control = queue?.shift()
-    if (!control) return
+    const index = queue?.findIndex((entry) => !entry.matches || entry.matches(requestRecord)) ?? -1
+    if (index < 0) return
+    const [control] = queue.splice(index, 1)
     if (queue.length === 0) this.controls.delete(key)
     control._arrive(requestRecord)
     if (control.type === 'hold') {

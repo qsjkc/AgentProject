@@ -1197,6 +1197,12 @@ select {
   border-bottom: 1px solid #e2e8f0;
 }
 
+.pending-reminder-item:focus,
+.recurring-reminder-item:focus {
+  outline: 2px solid #587553;
+  outline-offset: -2px;
+}
+
 .pending-reminder-copy {
   min-width: 0;
 }

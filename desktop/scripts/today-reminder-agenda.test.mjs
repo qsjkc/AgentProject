@@ -29,9 +29,9 @@ test('today agenda distinguishes receipt, due time, next reminder and prior-day 
   assert.equal(result.earlierUnfinished, 1)
   assert.equal(result.earlierDestination, 'upcoming')
   assert.deepEqual(result.items, [
-    { key: 'reminder:3', title: 'Reminder 3', remindAt: Date.parse(start), status: 'due', destination: 'upcoming' },
-    { key: 'reminder:1', title: 'Reminder 1', remindAt: Date.parse(received.remind_at), status: 'delivered', destination: 'delivered' },
-    { key: 'reminder:2', title: 'Reminder 2', remindAt: Date.parse(localTime(22, 12, 5)), status: 'scheduled', destination: 'upcoming' },
+    { key: 'reminder:3', title: 'Reminder 3', remindAt: Date.parse(start), status: 'due', destination: 'upcoming', targetId: 3 },
+    { key: 'reminder:1', title: 'Reminder 1', remindAt: Date.parse(received.remind_at), status: 'delivered', destination: 'delivered', targetId: 1 },
+    { key: 'reminder:2', title: 'Reminder 2', remindAt: Date.parse(localTime(22, 12, 5)), status: 'scheduled', destination: 'upcoming', targetId: 2 },
   ])
   assert.deepEqual(scheduled, original)
 })
@@ -63,10 +63,10 @@ test('today agenda prefers a receipt and deduplicates a recurring preview by occ
     recurrence(14, localTime(22, 12)), recurrence(15, localTime(23)),
   ]
   const result = getTodayReminderAgenda({ scheduled, delivered: [received], series, accountContext, now })
-  assert.deepEqual(result.items.map(({ title, status, destination }) => ({ title, status, destination })), [
-    { title: received.title, status: 'delivered', destination: 'delivered' },
-    { title: 'Reminder 9', status: 'scheduled', destination: 'recurring' },
-    { title: 'Series 11', status: 'projected', destination: 'recurring' },
+  assert.deepEqual(result.items.map(({ title, status, destination, targetId }) => ({ title, status, destination, targetId })), [
+    { title: received.title, status: 'delivered', destination: 'delivered', targetId: 8 },
+    { title: 'Reminder 9', status: 'scheduled', destination: 'recurring', targetId: 10 },
+    { title: 'Series 11', status: 'projected', destination: 'recurring', targetId: 11 },
   ])
 })
 

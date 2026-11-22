@@ -217,15 +217,15 @@ const REMINDER_AGENDA_TARGETS = {
   recurring: 'recurring-reminders',
 }
 
-function openReminderAgendaTarget(destination) {
-  const target = document.getElementById(REMINDER_AGENDA_TARGETS[destination])
-  target?.scrollIntoView({ block: 'start' })
-  target?.focus({ preventScroll: true })
-}
-
-function refreshReminderAgenda() {
-  window.dispatchEvent(new Event('detachym:reminders-changed'))
-  window.dispatchEvent(new Event('detachym:reminder-series-changed'))
+function openReminderAgendaTarget(destination, targetId) {
+  const section = document.getElementById(REMINDER_AGENDA_TARGETS[destination])
+  if (!section) return
+  const rowAttribute = destination === 'recurring' ? 'data-reminder-series-id' : 'data-reminder-row-id'
+  const row = Number.isSafeInteger(targetId) && targetId > 0
+    ? section.querySelector(`[${rowAttribute}="${targetId}"]`) : null
+  const target = row || section
+  target.scrollIntoView({ block: row ? 'nearest' : 'start' })
+  target.focus({ preventScroll: true })
 }
 
 function PetDailySummaryPanel({ language, petType, summary, loading, onRetry }) {
@@ -750,7 +750,7 @@ function MainPanelApp() {
   const [petRelationship, setPetRelationship] = useState(null)
   const [petRelationshipLoading, setPetRelationshipLoading] = useState(false)
   const [petRelationshipError, setPetRelationshipError] = useState(false)
-  const [readyRelationshipContext, setReadyRelationshipContext] = useState(null)
+  const [settledCompanionContext, setSettledCompanionContext] = useState(null)
   const [petDailySummary, setPetDailySummary] = useState(null)
   const [petDailySummaryLoading, setPetDailySummaryLoading] = useState(false)
   const [petOnboardingState, setPetOnboardingState] = useState(null)
@@ -761,9 +761,9 @@ function MainPanelApp() {
   const [intentOverride, setIntentOverride] = useState(null)
   const [focusNavigationVersion, setFocusNavigationVersion] = useState(0)
   const [focusStepIntent, setFocusStepIntent] = useState(null)
+  const [focusHandoffHost, setFocusHandoffHost] = useState(null)
   const [todayNavigation, setTodayNavigation] = useState(null)
   const [todayReminderPrefill, setTodayReminderPrefill] = useState(null)
-  const [reminderAgendaSources, setReminderAgendaSources] = useState(null)
   const pendingFocusNavigationRef = useRef(false)
   const tabRef = useRef('chat')
   const intentOverrideRef = useRef(null)
@@ -830,40 +830,20 @@ function MainPanelApp() {
     && Number(intentOverride.semantic?.relationshipId) === Number(petRelationship?.id)
   )
   const effectiveTab = intentOverrideIsCurrent ? 'chat' : tab
-  const petDataReady = Boolean(
+  const localFocusReady = Boolean(
     authenticated
-    && readyRelationshipContext
-    && readyRelationshipContext.epoch === accountRequestEpochRef.current
-    && Number(readyRelationshipContext.userId) === Number(user?.id)
-    && readyRelationshipContext.petType === currentPetType
-    && isSessionSnapshotCurrent(readyRelationshipContext.session, activeSessionSnapshotRef.current)
+    && settledCompanionContext
+    && settledCompanionContext.epoch === accountRequestEpochRef.current
+    && Number(settledCompanionContext.userId) === Number(user?.id)
+    && settledCompanionContext.petType === currentPetType
+    && isSessionSnapshotCurrent(settledCompanionContext.session, activeSessionSnapshotRef.current)
   )
+  const petDataReady = localFocusReady && settledCompanionContext.relationshipReady
   const petSelectionPending = savingPet || petRelationshipLoading
     || (!petDataReady && !petRelationshipError)
   const todayContextKey = JSON.stringify([
     apiBaseUrl, user?.id, currentPetType, activeSessionSnapshotRef.current?.generation, accountRequestEpochRef.current,
   ])
-  const todayContextKeyRef = useRef(todayContextKey)
-  todayContextKeyRef.current = todayContextKey
-  const reminderAgendaObservers = useMemo(() => {
-    const update = (source, snapshot) => {
-      setReminderAgendaSources((current) => {
-        if (todayContextKeyRef.current !== todayContextKey) return current
-        return {
-          ...(current?.contextKey === todayContextKey ? current : { contextKey: todayContextKey }),
-          [source]: snapshot,
-        }
-      })
-    }
-    return {
-      delivered: (snapshot) => update('delivered', snapshot),
-      scheduled: (snapshot) => update('scheduled', snapshot),
-      series: (snapshot) => update('series', snapshot),
-    }
-  }, [todayContextKey])
-  useEffect(() => {
-    setReminderAgendaSources((current) => current?.contextKey === todayContextKey ? current : null)
-  }, [todayContextKey])
   const handleFocusStepIntent = useCallback((handled) => {
     setFocusStepIntent((current) => current === handled ? null : current)
   }, [])
@@ -914,7 +894,7 @@ function MainPanelApp() {
       }
     })
     return () => window.cancelAnimationFrame(frame)
-  }, [authenticated, currentPetType, effectiveTab, focusNavigationVersion, petDataReady, petRelationshipError])
+  }, [authenticated, currentPetType, effectiveTab, focusNavigationVersion, localFocusReady, petRelationshipError])
 
   useEffect(() => {
     pendingFocusNavigationRef.current = false
@@ -1154,8 +1134,9 @@ function MainPanelApp() {
     setPetRelationshipError(false)
 
     let cachedRelationship = null
+    let operationContext = null
     try {
-      const operationContext = await captureApiOperationContext(requestContext, 'pet')
+      operationContext = await captureApiOperationContext(requestContext, 'pet')
       if (
         relationshipRequestRef.current !== requestId
         || !isMainPanelAccountRequestCurrent(requestContext)
@@ -1206,7 +1187,7 @@ function MainPanelApp() {
         || Number(cacheResult.relationship?.user_id) !== Number(requestContext.userId)
       ) throw new Error('relationship_cache_unavailable')
       activeAuthoritativeContextRef.current = cacheResult.authoritative
-      setReadyRelationshipContext(requestContext)
+      setSettledCompanionContext({ ...requestContext, relationshipReady: true })
       setPetRelationshipError(false)
       return true
     } catch (error) {
@@ -1215,6 +1196,11 @@ function MainPanelApp() {
         && isMainPanelAccountRequestCurrent(requestContext)
       ) {
         if (!cachedRelationship) setPetRelationship(null)
+        // An optional relationship read can fail after the pet scope is already validated.
+        if (operationContext) setSettledCompanionContext((previous) => {
+          if (!isMainPanelAccountRequestCurrent(requestContext) || isMainPanelAccountRequestCurrent(previous)) return previous
+          return { ...requestContext, relationshipReady: false }
+        })
         setPetRelationshipError(true)
       }
       await logDesktopDebug({
@@ -1286,7 +1272,7 @@ function MainPanelApp() {
         || document.visibilityState !== 'visible'
         || petDailySummaryLoading
         || isPetDailySummaryCurrent(petDailySummary)
-        || !isMainPanelAccountRequestCurrent(readyRelationshipContext)
+        || !isMainPanelAccountRequestCurrent(settledCompanionContext)
       ) return
       refreshing = true
       try {
@@ -1307,7 +1293,7 @@ function MainPanelApp() {
       unsubscribeResume?.()
       window.clearInterval(timer)
     }
-  }, [petDataReady, readyRelationshipContext, currentPetType, petDailySummary, petDailySummaryLoading])
+  }, [petDataReady, settledCompanionContext, currentPetType, petDailySummary, petDailySummaryLoading])
 
   const loadSessions = async ({ restoreLatest = false } = {}) => {
     if (sessionListLoadRef.current) return
@@ -1697,7 +1683,7 @@ function MainPanelApp() {
         setPetOnboardingBusy(runtimeReset.petOnboardingBusy)
         setPetOnboardingError(runtimeReset.petOnboardingError)
         setCompanionState(DEFAULT_COMPANION_STATE)
-        setReadyRelationshipContext(null)
+        setSettledCompanionContext(null)
         setPetRelationshipError(false)
         setPetRelationship(null)
         setPetDailySummary(null)
@@ -1719,9 +1705,10 @@ function MainPanelApp() {
         if (!adopted || !isMainPanelAccountRequestCurrent(requestContext)) return
         const relationship = normalizePetRelationship(adopted.relationship, currentPetType)
         activeAuthoritativeContextRef.current = adopted.authoritative
-        setReadyRelationshipContext({
+        setSettledCompanionContext({
           ...getCurrentMainPanelAccountContext(),
           epoch: accountRequestEpochRef.current,
+          relationshipReady: true,
         })
         setPetRelationshipError(false)
         setPetRelationship(relationship)
@@ -2651,7 +2638,7 @@ function MainPanelApp() {
         throw new Error('account-context-changed')
       }
       activeAuthoritativeContextRef.current = switchedCapability
-      setReadyRelationshipContext(null)
+      setSettledCompanionContext(null)
       setPetRelationship(null)
       setPetDailySummary(null)
       setUser((current) => (current ? { ...current, preferences: nextPreferences } : current))
@@ -3007,7 +2994,7 @@ function MainPanelApp() {
     setKnowledgeStatusText('')
     setKnowledgeSources([])
     setPetRelationship(null)
-    setReadyRelationshipContext(null)
+    setSettledCompanionContext(null)
     setPetRelationshipError(false)
     setPetDailySummary(null)
     setPetOnboardingState(null)
@@ -3059,7 +3046,7 @@ function MainPanelApp() {
     setKnowledgeStatusText('')
     setKnowledgeSources([])
     setPetRelationship(null)
-    setReadyRelationshipContext(null)
+    setSettledCompanionContext(null)
     setPetRelationshipError(false)
     setPetDailySummary(null)
     setPetOnboardingState(null)
@@ -3197,11 +3184,12 @@ function MainPanelApp() {
   const todaySection = (
     <section key="companion-today" className="main-today" id="companion-today" tabIndex={-1} aria-labelledby="companion-today-heading" data-e2e="companion-today">
       <h2 id="companion-today-heading"><Sprout size={17} aria-hidden="true" />{language === 'zh-CN' ? '今天一起' : 'Today together'}</h2>
+      <div ref={setFocusHandoffHost} />
       <DailyStepPanel
         key={`daily-step-${todayContextKey}`}
         language={language}
         accountContext={{ hasSession: authenticated, server: apiBaseUrl, userId: user?.id, petType: currentPetType }}
-        onFocus={petDataReady ? handleFocusTodayStep : undefined}
+        onFocus={localFocusReady ? handleFocusTodayStep : undefined}
         onRemind={canCreateTodayReminder ? (title) => setTodayReminderPrefill({ title, contextKey: todayContextKey }) : undefined}
       />
       <TodayReminderComposer
@@ -3215,10 +3203,13 @@ function MainPanelApp() {
       {petDataReady && <TodayReminderAgenda
         key={`today-agenda-${todayContextKey}`}
         language={language}
-        sources={reminderAgendaSources?.contextKey === todayContextKey ? reminderAgendaSources : null}
-        accountContext={{ userId: user?.id, petType: currentPetType }}
+        accountContext={{
+          ...getCurrentMainPanelAccountContext(),
+          server: apiBaseUrl,
+          relationshipId: petRelationship?.id ?? null,
+          epoch: accountRequestEpochRef.current,
+        }}
         onNavigate={openReminderAgendaTarget}
-        onRefresh={refreshReminderAgenda}
       />}
       <PetDailySummaryPanel
         language={language}
@@ -3377,8 +3368,7 @@ function MainPanelApp() {
                   )}
                 </section>
               )}
-              {petDataReady && <>
-              <FocusSessionPanel
+              {localFocusReady && <FocusSessionPanel
                 key={todayContextKey}
                 language={language}
                 accountContext={{
@@ -3389,7 +3379,10 @@ function MainPanelApp() {
                 stepIntent={focusStepIntent?.contextKey === todayContextKey ? focusStepIntent : null}
                 onStepIntentHandled={handleFocusStepIntent}
                 onOpenToday={focusTodaySection}
-              />
+                handoffHost={focusHandoffHost}
+                onOpenFocus={handleOpenFocus}
+              />}
+              {petDataReady && <>
               <PetWeeklySummaryPanel
                 key={`weekly-${user?.id || 'anonymous'}:${currentPetType}:${activeSessionSnapshotRef.current?.generation ?? 'none'}:${accountRequestEpochRef.current}`}
                 language={language}
@@ -3429,8 +3422,6 @@ function MainPanelApp() {
                   epoch: accountRequestEpochRef.current,
                 }}
                 onCompleted={handleReminderCompleted}
-                onDeliveredAgenda={reminderAgendaObservers.delivered}
-                onScheduledAgenda={reminderAgendaObservers.scheduled}
                 highlightReminderId={petOnboardingIsCurrent
                   ? petOnboardingState?.reminder_id
                   : null}
@@ -3445,7 +3436,6 @@ function MainPanelApp() {
                   relationshipId: petRelationship?.id ?? null,
                   epoch: accountRequestEpochRef.current,
                 }}
-                onAgendaSnapshot={reminderAgendaObservers.series}
               />
               </>}
               <VoiceSettingsPanel

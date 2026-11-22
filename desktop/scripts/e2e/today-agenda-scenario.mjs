@@ -37,7 +37,7 @@ function showAgendaDay(main, now) {
 
 function readAgendaRows(main) {
   return main.evaluate(`Array.from(document.querySelectorAll(${JSON.stringify(ITEM)}), (node) => ({
-    status: node.dataset.status, destination: node.dataset.destination,
+    status: node.dataset.status, destination: node.dataset.destination, targetId: node.dataset.targetId,
     time: node.querySelector('time')?.dateTime, text: node.textContent,
   }))`)
 }
@@ -78,14 +78,15 @@ export async function todayAgendaScenario(context) {
     await main.waitForSelector(`${AGENDA}[data-state="ready"]`)
     const rows = await readAgendaRows(main)
     const expected = [
-      { status: 'delivered', destination: 'delivered', time: clock.delivered, title: delivered.title },
-      { status: 'scheduled', destination: 'upcoming', time: clock.scheduled, title: scheduled.title },
-      { status: 'projected', destination: 'recurring', time: clock.projected, title: projected.title },
+      { status: 'delivered', destination: 'delivered', targetId: delivered.id, time: clock.delivered, title: delivered.title },
+      { status: 'scheduled', destination: 'upcoming', targetId: scheduled.id, time: clock.scheduled, title: scheduled.title },
+      { status: 'projected', destination: 'recurring', targetId: projected.id, time: clock.projected, title: projected.title },
     ]
     assertEqual(rows.length, expected.length, 'Out-of-scope or earlier reminder appeared as a today row')
     for (const [index, item] of expected.entries()) {
       assertEqual(rows[index].status, item.status, 'Unexpected today status or sort order')
       assertEqual(rows[index].destination, item.destination, 'Today row points to the wrong manager')
+      assertEqual(rows[index].targetId, String(item.targetId), 'Today row points to the wrong record')
       assertEqual(rows[index].time, item.time, 'Today row shows a different scheduled instant')
       assert(rows[index].text.includes(item.title), 'Today row shows the wrong reminder title')
     }
@@ -95,14 +96,14 @@ export async function todayAgendaScenario(context) {
     })
 
     const navigationStart = stub.requests.length
-    for (const [control, section] of [
-      [`${ITEM}[data-status="scheduled"]`, 'upcoming-reminders'],
-      [`${ITEM}[data-status="projected"]`, 'recurring-reminders'],
-      [EARLIER, 'upcoming-reminders'],
-      [`${ITEM}[data-status="delivered"]`, 'delivered-reminders'],
+    for (const [control, target] of [
+      [`${ITEM}[data-status="scheduled"][data-target-id="${scheduled.id}"]`, `#upcoming-reminders [data-reminder-row-id="${scheduled.id}"]`],
+      [`${ITEM}[data-status="projected"][data-target-id="${projected.id}"]`, `#recurring-reminders [data-reminder-series-id="${projected.id}"]`],
+      [EARLIER, '#upcoming-reminders'],
+      [`${ITEM}[data-status="delivered"][data-target-id="${delivered.id}"]`, `#delivered-reminders [data-reminder-row-id="${delivered.id}"]`],
     ]) {
       await main.click(control)
-      await waitFor(() => main.evaluate(`document.activeElement?.id === ${JSON.stringify(section)}`), { description: `agenda focuses ${section}` })
+      await waitFor(() => main.evaluate(`document.activeElement?.matches(${JSON.stringify(target)})`), { description: `agenda focuses ${target}` })
     }
     assert(!stub.requests.slice(navigationStart).some((request) => request.method === 'POST' && request.pathname.startsWith('/api/v1/reminders')), 'Navigation mutated reminders')
 

@@ -813,14 +813,16 @@ export async function reminderReconnectScenario(context) {
   const { logPath } = await pet.evaluate('window.desktopBridge.getLogPaths()')
   const readFailure = 'Reminder service unavailable after resume'
   const requestStart = context.stub.requests.length
-  const reminderReads = () => context.stub.requests.slice(requestStart).filter((request) => (
-    request.method === 'GET' && request.pathname === '/api/v1/reminders'
-    && new URLSearchParams(request.search).has('due_before')
-  ))
+  const isPetDueRead = (request) => {
+    const params = new URLSearchParams(request.search)
+    return request.method === 'GET' && request.pathname === '/api/v1/reminders'
+      && params.has('due_before') && params.get('triggered') === 'false'
+  }
+  const reminderReads = () => context.stub.requests.slice(requestStart).filter(isPetDueRead)
   const failedRead = context.stub.holdNext('GET', '/api/v1/reminders', {
     statusCode: 503,
     payload: { detail: readFailure },
-  })
+  }, isPetDueRead)
   account.reminders = [reminder]
   try {
     await callE2e(pet, 'simulateSystemResume')

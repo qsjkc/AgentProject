@@ -53,6 +53,32 @@ def build_local_occurrence(
     return candidate
 
 
+def _occurrence_calendar_date(
+    local_value: datetime,
+    *,
+    local_hour: int,
+    local_minute: int,
+    timezone_name: str,
+    weekdays: set[int],
+) -> date:
+    actual_date = local_value.date()
+    if (local_value.hour, local_value.minute) == (local_hour, local_minute):
+        return actual_date
+
+    # A late-night spring gap can move the saved instant into the following date.
+    previous_date = actual_date - timedelta(days=1)
+    if previous_date.weekday() in weekdays:
+        previous_slot = build_local_occurrence(
+            previous_date,
+            local_hour=local_hour,
+            local_minute=local_minute,
+            timezone_name=timezone_name,
+        )
+        if as_utc_naive(previous_slot) == as_utc_naive(local_value):
+            return previous_date
+    return actual_date
+
+
 def calculate_next_occurrence(
     after_utc: datetime,
     *,
@@ -62,8 +88,15 @@ def calculate_next_occurrence(
     weekdays: list[int],
 ) -> datetime:
     local_after = as_local(after_utc, timezone_name)
-    candidate_date = local_after.date() + timedelta(days=1)
+    cutoff = as_utc_naive(local_after)
     allowed_weekdays = set(weekdays)
+    candidate_date = _occurrence_calendar_date(
+        local_after,
+        local_hour=local_hour,
+        local_minute=local_minute,
+        timezone_name=timezone_name,
+        weekdays=allowed_weekdays,
+    ) + timedelta(days=1)
     for _ in range(8):
         if candidate_date.weekday() in allowed_weekdays:
             candidate_local = build_local_occurrence(
@@ -72,7 +105,9 @@ def calculate_next_occurrence(
                 local_minute=local_minute,
                 timezone_name=timezone_name,
             )
-            return as_utc_naive(candidate_local)
+            candidate = as_utc_naive(candidate_local)
+            if candidate > cutoff:
+                return candidate
         candidate_date += timedelta(days=1)
     raise ValueError("Recurrence rule has no reachable weekday")
 
@@ -142,7 +177,13 @@ def skip_paused_occurrences(series: ReminderSeries, *, now: datetime) -> None:
     if not weekdays or not weekdays.issubset(range(7)):
         raise ValueError("Recurrence rule has no reachable weekday")
 
-    first_date = as_local(series.next_occurrence_at, series.timezone).date()
+    first_date = _occurrence_calendar_date(
+        as_local(series.next_occurrence_at, series.timezone),
+        local_hour=series.local_hour,
+        local_minute=series.local_minute,
+        timezone_name=series.timezone,
+        weekdays=weekdays,
+    )
     current_date = as_local(now, series.timezone).date()
     # Whole weeks preserve the schedule, so even a years-long pause needs only
     # a bounded number of individual date calculations inside this transaction.

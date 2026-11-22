@@ -59,9 +59,8 @@ function getCopy(language) {
   }
 }
 
-export function RecurringReminderPanel({ language, petType, accountContext, onUpdated, onAgendaSnapshot }) {
-  const [agenda, setAgenda] = useState({ status: 'loading', rows: [] })
-  const seriesItems = agenda.rows.filter((item) => item.status !== 'canceled')
+export function RecurringReminderPanel({ language, petType, accountContext, onUpdated }) {
+  const [seriesItems, setSeriesItems] = useState([])
   const [loading, setLoading] = useState(true)
   const [savingId, setSavingId] = useState(null)
   const [error, setError] = useState('')
@@ -73,8 +72,6 @@ export function RecurringReminderPanel({ language, petType, accountContext, onUp
   const { loadGate, actionGate } = operationsRef.current
   currentContextRef.current = accountContext
   const copy = getCopy(language)
-
-  useEffect(() => { onAgendaSnapshot?.(agenda) }, [agenda, onAgendaSnapshot])
 
   const refreshQueued = useCallback(() => {
     if (!queuedRefreshRef.current) return
@@ -102,13 +99,10 @@ export function RecurringReminderPanel({ language, petType, accountContext, onUp
       ),
       onSuccess: (items) => {
         if (!Array.isArray(items)) throw new Error('invalid_reminder_series_list')
-        setAgenda({ status: 'ready', rows: items })
+        setSeriesItems(items.filter((item) => item.status !== 'canceled'))
         setError('')
       },
-      onError: () => {
-        setAgenda((current) => ({ ...current, status: 'error' }))
-        setError(copy.loadFailed)
-      },
+      onError: () => setError(copy.loadFailed),
       onFinally: () => setLoading(false),
     })
     operationsRef.current.finishLoad(requestContext)
@@ -171,10 +165,9 @@ export function RecurringReminderPanel({ language, petType, accountContext, onUp
         await captureApiOperationContext(requestContext, 'pet'),
       ),
       onSuccess: (updated) => {
-        setAgenda((current) => ({
-          ...current,
-          rows: current.rows.map((item) => item.id === series.id ? updated : item),
-        }))
+        setSeriesItems((current) => updated.status === 'canceled'
+          ? current.filter((item) => item.id !== series.id)
+          : current.map((item) => item.id === series.id ? updated : item))
         window.dispatchEvent(new Event('detachym:reminders-changed'))
         onUpdated?.(updated, requestContext)
       },
@@ -222,7 +215,8 @@ export function RecurringReminderPanel({ language, petType, accountContext, onUp
           {seriesItems.map((series) => {
             const isPaused = series.status === 'paused'
             return (
-              <div className="recurring-reminder-item" key={series.id} aria-busy={savingId === series.id}>
+              <div className="recurring-reminder-item" key={series.id} data-reminder-series-id={String(series.id)}
+                tabIndex={-1} role="group" aria-label={series.title} aria-busy={savingId === series.id}>
                 <div className="pending-reminder-copy">
                   <div className="pending-reminder-title">{series.title}</div>
                   <div className="recurring-reminder-schedule">

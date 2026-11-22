@@ -1,12 +1,16 @@
-import { useEffect, useId, useState } from 'react'
+import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import { ChevronRight } from 'lucide-react'
 
+import { captureApiOperationContext } from '../shared/api'
 import { getFocusHistoryRefreshDelay } from '../shared/focus-history'
+import { createAccountOperationGate } from '../shared/pet-account-context'
+import { getPendingReminders, getReminderSeries } from '../shared/reminders-api'
 import { getTodayReminderAgenda } from '../shared/today-reminder-agenda'
 import './today-reminder-agenda.css'
 
 const VISIBLE_ITEMS = 3
 const CLOCK_CHANGE_THRESHOLD_MS = 60_000
+const REFRESH_INTERVAL_MS = 30_000
 const COPY = {
   'zh-CN': {
     heading: '今日提醒',
@@ -75,25 +79,104 @@ function useAgendaClock(onRefresh) {
   return [now, setNow]
 }
 
-function readyRows(source) {
-  return source?.status === 'ready' ? source.rows : undefined
+function useAgendaSnapshot(accountContext) {
+  const [snapshot, setSnapshot] = useState({ day: null, status: 'loading', reminders: [], series: [] })
+  const contextRef = useRef(accountContext)
+  const refreshRef = useRef(null)
+  contextRef.current = accountContext
+  const refresh = useCallback(() => refreshRef.current?.(), [])
+  const petType = accountContext.petType
+
+  useEffect(() => {
+    const gate = createAccountOperationGate()
+    let active = true
+    let inFlight = false
+    let scheduled = false
+    let queued = false
+
+    const load = async () => {
+      inFlight = true
+      const request = gate.begin(contextRef.current)
+      const isCurrent = () => active && gate.isCurrent(request, contextRef.current)
+      const end = new Date(Date.now())
+      const day = end.toDateString()
+      end.setHours(24, 0, 0, 0)
+      try {
+        const operation = await captureApiOperationContext(request, 'pet')
+        if (!isCurrent()) return
+        // Materialization advances the series and inserts the reminder together.
+        // Read instances second so a materialized reminder replaces its projection in the same render.
+        const series = await getReminderSeries(petType, operation).catch(() => null)
+        if (!isCurrent()) return
+        const reminders = await getPendingReminders(petType, end, null, operation)
+        if (!Array.isArray(reminders)) throw new Error('invalid_reminder_list')
+        if (isCurrent()) setSnapshot((current) => ({
+          day, reminders, status: Array.isArray(series) ? 'ready' : 'error',
+          series: Array.isArray(series) ? series : current.day === day ? current.series : [],
+        }))
+      } catch {
+        if (isCurrent()) setSnapshot((current) => ({ ...current, status: 'error' }))
+      } finally {
+        inFlight = false
+        if (queued) {
+          queued = false
+          requestRefresh()
+        }
+      }
+    }
+
+    function requestRefresh() {
+      if (!active || scheduled) return
+      scheduled = true
+      queueMicrotask(() => {
+        scheduled = false
+        if (!active) return
+        if (inFlight) {
+          queued = true
+        } else {
+          void load()
+        }
+      })
+    }
+
+    const refreshIfVisible = () => { if (document.visibilityState === 'visible') requestRefresh() }
+    refreshRef.current = requestRefresh
+    requestRefresh()
+    const timer = window.setInterval(refreshIfVisible, REFRESH_INTERVAL_MS)
+    window.addEventListener('detachym:reminders-changed', requestRefresh)
+    window.addEventListener('detachym:reminder-series-changed', requestRefresh)
+    window.addEventListener('focus', refreshIfVisible)
+    document.addEventListener('visibilitychange', refreshIfVisible)
+    return () => {
+      active = false
+      gate.invalidate()
+      refreshRef.current = null
+      window.clearInterval(timer)
+      window.removeEventListener('detachym:reminders-changed', requestRefresh)
+      window.removeEventListener('detachym:reminder-series-changed', requestRefresh)
+      window.removeEventListener('focus', refreshIfVisible)
+      document.removeEventListener('visibilitychange', refreshIfVisible)
+    }
+  }, [petType])
+
+  return { snapshot, refresh }
 }
 
-export function TodayReminderAgenda({ language, sources, accountContext, onNavigate, onRefresh }) {
+export function TodayReminderAgenda({ language, accountContext, onNavigate }) {
   const headingId = useId()
   const locale = language === 'zh-CN' ? 'zh-CN' : 'en'
   const copy = COPY[locale]
-  const [now, setNow] = useAgendaClock(onRefresh)
+  const { snapshot, refresh } = useAgendaSnapshot(accountContext)
+  const [now, setNow] = useAgendaClock(refresh)
   const timeFormat = new Intl.DateTimeFormat(locale, { hour: 'numeric', minute: '2-digit' })
-  const delivered = sources?.delivered
-  const scheduled = sources?.scheduled
-  const series = sources?.series
+  const dayIsCurrent = snapshot.day === new Date(now).toDateString()
   const { items, earlierUnfinished, earlierDestination } = getTodayReminderAgenda({
-    delivered: readyRows(delivered), scheduled: readyRows(scheduled), series: readyRows(series), accountContext, now,
+    scheduled: dayIsCurrent ? snapshot.reminders : [],
+    series: dayIsCurrent ? snapshot.series : [],
+    accountContext, now,
   })
-  const statuses = [delivered, scheduled, series].map((source) => source?.status ?? 'loading')
-  const state = statuses.includes('error') ? 'error'
-    : statuses.includes('loading') ? 'loading'
+  const state = snapshot.status === 'error' ? 'error'
+    : !dayIsCurrent || snapshot.status === 'loading' ? 'loading'
       : items.length ? 'ready' : 'empty'
   const firstHidden = items[VISIBLE_ITEMS]
 
@@ -106,7 +189,8 @@ export function TodayReminderAgenda({ language, sources, accountContext, onNavig
           {items.slice(0, VISIBLE_ITEMS).map((item) => (
             <li key={item.key}>
               <button type="button" className="today-agenda-item" data-e2e="today-agenda-item"
-                data-status={item.status} data-destination={item.destination} onClick={() => onNavigate(item.destination)}>
+                data-status={item.status} data-destination={item.destination} data-target-id={item.targetId}
+                onClick={() => onNavigate(item.destination, item.targetId)}>
                 <time dateTime={new Date(item.remindAt).toISOString()}>{timeFormat.format(item.remindAt)}</time>
                 <span className="today-agenda-item-copy">
                   <span className="today-agenda-item-title">{item.title}</span>
@@ -127,9 +211,9 @@ export function TodayReminderAgenda({ language, sources, accountContext, onNavig
         <button type="button" className="today-agenda-link" data-e2e="today-agenda-earlier"
           onClick={() => onNavigate(earlierDestination || 'delivered')}>{copy.earlier(earlierUnfinished)}</button>
       )}
-      {state === 'error' && onRefresh && (
+      {state === 'error' && (
         <button type="button" className="today-agenda-link" data-e2e="today-agenda-retry"
-          onClick={() => { setNow(Date.now()); onRefresh() }}>{copy.retry}</button>
+          onClick={() => { setNow(Date.now()); refresh() }}>{copy.retry}</button>
       )}
     </section>
   )
