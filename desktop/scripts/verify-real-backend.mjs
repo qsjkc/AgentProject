@@ -321,12 +321,13 @@ async function waitForEnabled(page, selector, description) {
     return Boolean(button && !button.disabled);
   })()`), { description })
 }
-async function clickEnabled(page, selector) {
+async function clickEnabled(page, selector, { confirmMovedPointer = false } = {}) {
   // Raw CDP dispatches pointer input even to disabled buttons. Match a real
   // available user action; perform exactly one click and verify its outcome.
   await waitForEnabled(page, selector, `enabled action ${selector}`)
   const encoded = JSON.stringify(selector)
   await page.evaluate(`document.querySelector(${encoded})?.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' })`)
+  const movePointer = ({ x, y }) => page.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y, button: 'none', buttons: 0 })
   let previousRect = null
   const point = await waitFor(async () => {
     const candidate = await page.evaluate(`(() => {
@@ -342,9 +343,19 @@ async function clickEnabled(page, selector) {
     const stable = candidate && previousRect && ['x', 'y', 'width', 'height']
       .every((key) => Math.abs(candidate[key] - previousRect[key]) < 0.25)
     previousRect = candidate
-    return stable ? candidate : null
+    if (!stable) return null
+    if (confirmMovedPointer) {
+      // Hover and late dashboard updates can move or disable the control before the press.
+      await movePointer(candidate)
+      const stillHit = await page.evaluate(`(() => {
+        const button = document.querySelector(${encoded});
+        return Boolean(button && !button.disabled && button.contains(document.elementFromPoint(${candidate.x}, ${candidate.y})));
+      })()`)
+      if (!stillHit) return null
+    }
+    return candidate
   }, { description: `stable visible pointer target ${selector}` })
-  await page.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: point.x, y: point.y, button: 'none', buttons: 0 })
+  if (!confirmMovedPointer) await movePointer(point)
   await page.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: point.x, y: point.y, button: 'left', buttons: 1, clickCount: 1 })
   await page.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: point.x, y: point.y, button: 'left', buttons: 0, clickCount: 1 })
   return point
@@ -371,7 +382,7 @@ async function selectActualPet(petType) {
   try {
     await pet.evaluate('window.desktopBridge.openMainPanel()')
     attempt.phase = 'activate-pet-option'
-    await clickEnabled(main, `[data-e2e="pet-option-${petType}"]`)
+    await clickEnabled(main, `[data-e2e="pet-option-${petType}"]`, { confirmMovedPointer: true })
     attempt.phase = 'observe-desktop-state'
     await waitFor(async () => {
       const observed = await pet.evaluate(`window.desktopBridge.getPetState().then(s => ({ petType: s.petType, expectedAccount: s.userId === ${identities.a} }))`)
