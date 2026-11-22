@@ -2852,6 +2852,9 @@ function PetApp() {
         acknowledge: async () => {
           if (!isCurrent()) return false
           await markReminderTriggered(reminder.id, operationContext)
+          if (isCurrent()) {
+            void window.desktopBridge?.publishReminderListsChanged?.(operationContext)?.catch(() => undefined)
+          }
           return true
         },
       })

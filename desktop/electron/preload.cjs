@@ -288,6 +288,16 @@ const desktopBridge = {
     ipcRenderer.on('desktop:pet-reminder-event', listener)
     return () => ipcRenderer.removeListener('desktop:pet-reminder-event', listener)
   },
+  publishReminderListsChanged: async (expectedContext) => {
+    const renewedContext = await renewExpectedContext(expectedContext, 'pet')
+    if (!renewedContext?.authoritative?.id) return false
+    return (await invokeForRendererInstance('desktop:publish-reminder-lists-changed', renewedContext)) === true
+  },
+  onReminderListsChanged: (callback) => {
+    const listener = () => callback()
+    ipcRenderer.on('desktop:reminder-lists-changed', listener)
+    return () => ipcRenderer.removeListener('desktop:reminder-lists-changed', listener)
+  },
   scheduleReminderWakeup,
   onReminderWakeup: (callback) => {
     const listener = () => callback()

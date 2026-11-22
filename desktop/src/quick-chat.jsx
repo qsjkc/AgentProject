@@ -396,10 +396,12 @@ function QuickChatApp() {
         reminderCreated = true
         if (
           !reminderGateRef.current.isCurrent(reminderContext, petContextRef.current)
+          || reminder?.pet_type !== reminderContext.petType
           || Number(reminder.user_id) !== Number(reminderContext.userId)
         ) {
           return
         }
+        void window.desktopBridge?.publishReminderListsChanged?.(operationContext)?.catch(() => undefined)
         const confirmedRemindAt = new Date(reminder.remind_at)
         const timeText = confirmedRemindAt.toLocaleString(language === 'zh-CN' ? 'zh-CN' : 'en-US', {
           month: 'numeric',

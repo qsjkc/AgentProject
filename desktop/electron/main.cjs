@@ -2984,6 +2984,14 @@ function registerIpc() {
       sendReminderEventToPetForRenderer(event, payload, expectedContext)
     ),
   )
+  ipcMain.handle('desktop:publish-reminder-lists-changed', (event, expectedContext, rendererInstanceNonce) => {
+    if (!getCurrentRendererRole(event, rendererInstanceNonce)) return false
+    const authorization = authorizeRendererAccountMutation(event, expectedContext, ['pet', 'quick-chat'], { requiredScope: 'pet' })
+    if (!authorization.ok || !isApiServerCurrent(expectedContext)) return false
+    if (!mainPanelWindow || mainPanelWindow.isDestroyed() || mainPanelWindow.webContents.isLoading()) return false
+    mainPanelWindow.webContents.send('desktop:reminder-lists-changed')
+    return true
+  })
   ipcMain.handle('desktop:schedule-reminder-wakeup', async (
     event, at, expectedContext, sequence, rendererInstanceNonce,
   ) => {

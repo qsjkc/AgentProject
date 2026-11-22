@@ -770,6 +770,7 @@ function MainPanelApp() {
   const intentOverrideRef = useRef(null)
   const intentConsumerRef = useRef(null)
   const relationshipRequestRef = useRef(0)
+  const failedCompanionSyncRef = useRef(null)
   const dailySummaryRequestRef = useRef(0)
   const accountRequestEpochRef = useRef(0)
   const activeSessionTokenRef = useRef(null)
@@ -1134,6 +1135,7 @@ function MainPanelApp() {
       epoch: accountRequestEpochRef.current,
       session: activeSessionSnapshotRef.current,
     }
+    failedCompanionSyncRef.current = null
     setPetRelationshipLoading(true)
     setPetRelationshipError(false)
 
@@ -1199,6 +1201,7 @@ function MainPanelApp() {
         relationshipRequestRef.current === requestId
         && isMainPanelAccountRequestCurrent(requestContext)
       ) {
+        failedCompanionSyncRef.current = requestContext
         if (!cachedRelationship) setPetRelationship(null)
         // An optional relationship read can fail after the pet scope is already validated.
         if (operationContext) setSettledCompanionContext((previous) => {
@@ -1502,6 +1505,10 @@ function MainPanelApp() {
     }
   }, [])
 
+  useEffect(() => window.desktopBridge?.onReminderListsChanged?.(() => {
+    window.dispatchEvent(new Event('detachym:reminders-changed'))
+  }), [])
+
   useEffect(() => {
     const handleVisibilityChange = () => {
       setDocumentVisible(document.visibilityState === 'visible')
@@ -1714,6 +1721,7 @@ function MainPanelApp() {
           epoch: accountRequestEpochRef.current,
           relationshipReady: true,
         })
+        failedCompanionSyncRef.current = null
         setPetRelationshipError(false)
         setPetRelationship(relationship)
         void loadPetDailySummary(currentPetType)
@@ -3107,16 +3115,27 @@ function MainPanelApp() {
   }
 
   const handleRetryCompanionSync = async () => {
-    if (petRelationshipLoading) return
-    const requestContext = {
-      ...getCurrentMainPanelAccountContext(),
-      epoch: accountRequestEpochRef.current,
-    }
+    const requestContext = failedCompanionSyncRef.current
+    if (petRelationshipLoading || !isMainPanelAccountRequestCurrent(requestContext)) return
+    // Starting the load consumes the failure before any concurrent event can retry it.
     const ready = await loadPetRelationship(requestContext.petType)
     if (ready && isMainPanelAccountRequestCurrent(requestContext)) {
       void loadPetDailySummary(requestContext.petType)
     }
   }
+
+  useEffect(() => {
+    if (!authenticated || !petRelationshipError || petRelationshipLoading) return undefined
+    const retry = () => { void handleRetryCompanionSync() }
+    window.addEventListener('online', retry)
+    window.addEventListener('focus', retry)
+    const unsubscribeResume = window.desktopBridge?.onSystemResume?.(retry)
+    return () => {
+      window.removeEventListener('online', retry)
+      window.removeEventListener('focus', retry)
+      unsubscribeResume?.()
+    }
+  }, [authenticated, petRelationshipError, petRelationshipLoading])
 
   if (!initialized) {
     return (
