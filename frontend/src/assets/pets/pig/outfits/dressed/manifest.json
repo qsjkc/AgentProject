@@ -1,5 +1,6 @@
 {
   "schemaVersion": 1,
+  "sourcePngCommit": "41aa5939ffd4b678cecc490ce74f8ab741a40a21",
   "petType": "pig",
   "actions": [
     "idle",
@@ -15,7 +16,7 @@
   ],
   "sprites": {
     "scarf__none__none": {
-      "file": "scarf__none__none.png",
+      "file": "scarf__none__none.webp",
       "width": 1374,
       "height": 1145,
       "frames": [
@@ -202,7 +203,7 @@
       ]
     },
     "none__star_hat__none": {
-      "file": "none__star_hat__none.png",
+      "file": "none__star_hat__none.webp",
       "width": 1374,
       "height": 1145,
       "frames": [
@@ -389,7 +390,7 @@
       ]
     },
     "none__sleep_cap__none": {
-      "file": "none__sleep_cap__none.png",
+      "file": "none__sleep_cap__none.webp",
       "width": 1374,
       "height": 1145,
       "frames": [
@@ -576,7 +577,7 @@
       ]
     },
     "none__none__bell": {
-      "file": "none__none__bell.png",
+      "file": "none__none__bell.webp",
       "width": 1374,
       "height": 1145,
       "frames": [
@@ -763,7 +764,7 @@
       ]
     },
     "scarf__star_hat__work_badge": {
-      "file": "scarf__star_hat__work_badge.png",
+      "file": "scarf__star_hat__work_badge.webp",
       "width": 1374,
       "height": 1145,
       "frames": [
@@ -950,7 +951,7 @@
       ]
     },
     "none__none__work_badge": {
-      "file": "none__none__work_badge.png",
+      "file": "none__none__work_badge.webp",
       "width": 1374,
       "height": 1145,
       "frames": [
@@ -1137,7 +1138,7 @@
       ]
     },
     "scarf__none__bell": {
-      "file": "scarf__none__bell.png",
+      "file": "scarf__none__bell.webp",
       "width": 1374,
       "height": 1145,
       "frames": [
@@ -1324,7 +1325,7 @@
       ]
     },
     "scarf__none__work_badge": {
-      "file": "scarf__none__work_badge.png",
+      "file": "scarf__none__work_badge.webp",
       "width": 1374,
       "height": 1145,
       "frames": [
@@ -1511,7 +1512,7 @@
       ]
     },
     "scarf__star_hat__none": {
-      "file": "scarf__star_hat__none.png",
+      "file": "scarf__star_hat__none.webp",
       "width": 1374,
       "height": 1145,
       "frames": [
@@ -1698,7 +1699,7 @@
       ]
     },
     "scarf__sleep_cap__none": {
-      "file": "scarf__sleep_cap__none.png",
+      "file": "scarf__sleep_cap__none.webp",
       "width": 1374,
       "height": 1145,
       "frames": [
@@ -1885,7 +1886,7 @@
       ]
     },
     "none__sleep_cap__bell": {
-      "file": "none__sleep_cap__bell.png",
+      "file": "none__sleep_cap__bell.webp",
       "width": 1374,
       "height": 1145,
       "frames": [
@@ -2072,7 +2073,7 @@
       ]
     },
     "none__sleep_cap__work_badge": {
-      "file": "none__sleep_cap__work_badge.png",
+      "file": "none__sleep_cap__work_badge.webp",
       "width": 1374,
       "height": 1145,
       "frames": [
@@ -2259,7 +2260,7 @@
       ]
     },
     "none__star_hat__bell": {
-      "file": "none__star_hat__bell.png",
+      "file": "none__star_hat__bell.webp",
       "width": 1374,
       "height": 1145,
       "frames": [
@@ -2446,7 +2447,7 @@
       ]
     },
     "none__star_hat__work_badge": {
-      "file": "none__star_hat__work_badge.png",
+      "file": "none__star_hat__work_badge.webp",
       "width": 1374,
       "height": 1145,
       "frames": [
@@ -2633,7 +2634,7 @@
       ]
     },
     "scarf__sleep_cap__bell": {
-      "file": "scarf__sleep_cap__bell.png",
+      "file": "scarf__sleep_cap__bell.webp",
       "width": 1374,
       "height": 1145,
       "frames": [
@@ -2820,7 +2821,7 @@
       ]
     },
     "scarf__sleep_cap__work_badge": {
-      "file": "scarf__sleep_cap__work_badge.png",
+      "file": "scarf__sleep_cap__work_badge.webp",
       "width": 1374,
       "height": 1145,
       "frames": [
@@ -3007,7 +3008,7 @@
       ]
     },
     "scarf__star_hat__bell": {
-      "file": "scarf__star_hat__bell.png",
+      "file": "scarf__star_hat__bell.webp",
       "width": 1374,
       "height": 1145,
       "frames": [
@@ -3384,6 +3385,8 @@
         }
       ],
       "sha256": "57febd6f981decc2ed0086001ca7061551c845d1a09fc87813123bb9f09058d1",
+      "webpSha256": "e86a726fac1e51e675508a28b6bb8529c664d8a84478b1e186b7025f1232c928",
+      "rgbaSha256": "fb75c106651531e13ccff46ae104099d9e3e15826bf6ed1bf19afc5f214608bb",
       "frameHashes": [
         "ed12ffc60948cc692622eed91147aa156c988ec2ac6d16ce52da041b9ab3c983",
         "3d770742e7974eabcee621ca7c991d9d48f4957256b68c70d475b38fe4cdad42",
@@ -3649,6 +3652,8 @@
         }
       ],
       "sha256": "8582c9742381e1e02db5484f1dbaf7a249b63bca78aa224a9ae2d751a9c4ec6f",
+      "webpSha256": "a6aa0a945ece4cb075d86d100bfbc2a844cc2416e803cff20b1f5a70906ce91c",
+      "rgbaSha256": "6d4b1f56e1c8ef4a0e63036d4918ce37b2fd71b075e3eee2b7cae59bd0c09864",
       "frameHashes": [
         "6d20099ca893db205f90656a87bf1e660d403acae5911f1630adeb7d94e51e79",
         "555507f56936cdccafca380ce3ae2c756a7eb14f92b6e3418fb3e18227c76df6",
@@ -3914,6 +3919,8 @@
         }
       ],
       "sha256": "64613b8b0f506c953012d47d3aa8d0788b62755da25af68883a57834b6763668",
+      "webpSha256": "276ef13584c0e66e8ee7c9dfa691e1d6d7a93e1da7d31048122c79bf2d9b8ea6",
+      "rgbaSha256": "e417455277016d62224e539314d6d99a997de521897e7aec2526bb6d27332b6e",
       "frameHashes": [
         "d9cd870583c96b8c141765bbb1287b069718cb0b034a80997d38f86d2c817e8f",
         "bf266067a0c3dae77aeac0634ea8a12925eb7afad0645043b9aebd749e2f64e8",
@@ -4179,6 +4186,8 @@
         }
       ],
       "sha256": "2c0073a2d9e6b9be07e191c95ace3260423df2220c46f8fc5ea9be26f423d925",
+      "webpSha256": "a660823f3fc34cc4edb9e11e47cd38a60f02efa44b05d5d35d174381053c3ebc",
+      "rgbaSha256": "5033383cec6807a3b27d7d5be5428b662dbed7b1b44b36368706d408b7076a3c",
       "frameHashes": [
         "35c701bc7aced841c98a3628e28d161f5bd9f360670f1d13c9ecfec115d73639",
         "f8a0aec2761f289bc16737e581e35a4ae17fde101b6f2e93fe3a900095a2d8c0",
@@ -4444,6 +4453,8 @@
         }
       ],
       "sha256": "9a23506b345fe023fb46e6695b11b5c8acf68b194ab492ed6a3917656af10726",
+      "webpSha256": "67a8eeb85d9e22f54a2c6a95acdb6467782d4a33d8a8c6574bc9c3996c36e3b1",
+      "rgbaSha256": "8f95399e500614888afab78d53b7480f490f36d8b8b92b4cc27e9be40f4337fa",
       "frameHashes": [
         "99bb40484cf246ebc6f18c9dc5bdd9c8c0c6e35b22c2d3aa3449d53a91802084",
         "eb20b5c72bd0ad6dff6950eac54ed3bbee83c56d9fc54f57734f1943940f3e08",
@@ -4709,6 +4720,8 @@
         }
       ],
       "sha256": "023642be17f651e934f2d169b8a467092278f97227a7be3cd3c951378f3c1639",
+      "webpSha256": "4b69d989d0bbabe3142b2997066da573c5872fb9ed57888896938967615cf2ee",
+      "rgbaSha256": "1f6231a6b420e564879b9133dc69c0961b1576b346af582df9e807ba3b5171a1",
       "frameHashes": [
         "1251810285cc40446a0b9ba17145305a981813b5ff2f985d51eeac14360c43a4",
         "0cd9f082e569d850ccc2fa4559908a04ffe6ef9eacdff44024a8379b5e0b48af",
@@ -4974,6 +4987,8 @@
         }
       ],
       "sha256": "39f728b0a59190af37235ea1af3d56c37b16ab5844eacc9e3fe2bd77e7e8ed82",
+      "webpSha256": "d141e2646d30262ca7c06b2e1d85928a5f8880abdc55774aefc35eaaf56b5d19",
+      "rgbaSha256": "a77a88715de7a2a25e4c01e8d59646c51e7f901d2cd8a96d0f13da8d517a9f22",
       "frameHashes": [
         "6277b6530b65bfa7577d17af5a79d46941827241fe9831b1b76d09b6d8463dd8",
         "b55de679fc92a71f6f71e2da8ba0f4f16ffa3428a6e25151feeb310a3b6a7569",
@@ -5239,6 +5254,8 @@
         }
       ],
       "sha256": "f59f1de3699db73a8dd92b1f3aaca170c472cfb8c40757b838409b295614d3f4",
+      "webpSha256": "4ee884d0637712e0905ca877cc491720ffeab6a404a217d68f852d354ae7d6c5",
+      "rgbaSha256": "21153893a37d91f038a951aa3152e6c0db2d7c53ad222814eac5d596d2d4cb39",
       "frameHashes": [
         "0de5275d40339b66bc1af91a097028e2987fd9dc5b15ab6a69cbba7ccc74e4ea",
         "fec1bc100547e257d9c08389350be7800c0bab101fd9a72791aadd6f9d9e42d1",
@@ -5504,6 +5521,8 @@
         }
       ],
       "sha256": "9d54173b92507467e5ea0ed209d6ab0f5a8607516cc9c7c2d2c964a290e7abf3",
+      "webpSha256": "6f54741cabdc0a444486581109b7a5ddd026bce53aa145252013328aacb830fd",
+      "rgbaSha256": "4058ae87f6caff00c747e309e2fa7bb80b7366eb8af692ab5d73c86460a17ad5",
       "frameHashes": [
         "d110115c5c0617e729d0671e007f059639fa1214bfb56f64afc2a931a2d9087d",
         "cbdb53e2d70c92199994ed9aab88e398b3e17f37871bca89cd2c1c503a3da601",
@@ -5769,6 +5788,8 @@
         }
       ],
       "sha256": "517a7cdd3ac78af3d1bd2af9686a20952e69575afbba78a2d130be5683acafaf",
+      "webpSha256": "a23de17abd25e12c77e11183e829223d0e0676028d363cfdbb3b78cc91be5d8c",
+      "rgbaSha256": "872672fb48f11edf57bfe8c4e964d58908b7889127b9492be1356afa10d35222",
       "frameHashes": [
         "f7435ebac586ff7405550b06d1d82c3b7f62be5230767d58ee05737cc6a972da",
         "566b4afe7dd4de515f2ed1c9fc79d813ab992ec0171e432f6d1643d833cfe047",
@@ -6034,6 +6055,8 @@
         }
       ],
       "sha256": "173ea3eb27dab111bdb98a8c3f52c0fbeb2356167f8f7eae727b744f1674fcd0",
+      "webpSha256": "5627f14862314c1eec514434f42ab63c346a0739eeaa61db414ccceba1c98220",
+      "rgbaSha256": "25e995e8c5085a0cd63c93025bac8fd3a4cadb1e5a3c9379dc6b95c2619053bd",
       "frameHashes": [
         "872d8fb254327382b8d21d02052e6773704125752ebaf3c3af7f033ec3576767",
         "7920a3a0cba0e08bd976ee4c3e3861a30e1776552520ea2c486e0e13c575a177",
@@ -6299,6 +6322,8 @@
         }
       ],
       "sha256": "5c70cbd87162e9ac313cea69da425e5e2575703ac474456228e49e3ad61e02c3",
+      "webpSha256": "7fd8770891c34d14070f13da122a065162d9abad7aa3e43543a503fb5a388e72",
+      "rgbaSha256": "8f33ad7b50003c31005d857c3947a6df23310c743c4d0de94b7a5759e1fbfd89",
       "frameHashes": [
         "6c5e7ea7a1d17eaebdec44043b313481eef1ef71ded6d8ea3351d545dfe604cd",
         "17572b61c3ffb9a81dc5f1b9a34c91eb9ab83a40036fca239f4986afb93128c1",
@@ -6564,6 +6589,8 @@
         }
       ],
       "sha256": "0ac24f1fd9e8279077d9863a807f9b364542bde8b70d5490271f6fd3fefbec2a",
+      "webpSha256": "8efb95a199e3535c0c2e823747d996a0e1b0902e64f348e76728b3180f534632",
+      "rgbaSha256": "a22f9f1b8005cf246ad78a46b72fdb8be2f533c91de9615cb9aeabda29ed454b",
       "frameHashes": [
         "eba86a3df095b6d35a7ef31cf0d5c35b391a6fb8759c7bd82e57da7dcfb62314",
         "0400df0ddd2e16e2a9d51564c0cc591d6704eaf871de084c01b2df1ad1ca6c3c",
@@ -6829,6 +6856,8 @@
         }
       ],
       "sha256": "ed9a781640d088accceb3e9db2834ff51a347b4d4b771dd7042b41fc389a894e",
+      "webpSha256": "acda670741f9a9d8b0526e686fd6a76c735c83474b5aefa97de35ec97c79c23b",
+      "rgbaSha256": "51feabb14c64f035069588ff6ddd42f190b4f18ccb9be78eee94af56f3e09a64",
       "frameHashes": [
         "13e6db8257048be53a785051fd930d8dd3c64f7c16d1e180a3194ec16b8280b2",
         "d6effa21dd3574a7df8732b23e2c3139bb6ce5d92443fb5790f1aa00a20d6367",
@@ -7094,6 +7123,8 @@
         }
       ],
       "sha256": "3a234ab35a5344cb23312ef79fc61dbb12db0fa9ba1a8181a5504651411fb6e7",
+      "webpSha256": "800c4f46ec99bf925ddcba6bbbb0a196b195356a17f6e519697b6bfca0cd9f6e",
+      "rgbaSha256": "4cf3f5299e0701a08435f4debb6649c40c9b5b43ff36e936c641d43c1bfd54dd",
       "frameHashes": [
         "db05fc477c2f10e09b09b0774028e2102f6365e662d24cd34a4bd67d24e2dfa9",
         "807278d88cb1cd3f5f3935b942ab520a05162a3736fe6640187090ca6faeec2e",
@@ -7359,6 +7390,8 @@
         }
       ],
       "sha256": "b3fdb7036c965ae611feba18f44d5620d3d6d3ace4678d36f6c9a18181d0e911",
+      "webpSha256": "db71d1de177ec698860a7ef1249781b15860347087e47e51e1f36501afcd08fe",
+      "rgbaSha256": "ce8f6e3beee5d18f65acc5ddfb2c7f72f88d5a696ea4400ddd2ed861ebb6c4c6",
       "frameHashes": [
         "d02823314bd68d95d56eb2dc4386145b5e17fe00584dcaf5865d955f94aa9143",
         "031ae24afc5d11f791e680d9c0f4f12df715e7e2cec12fd9a33072774332869d",
@@ -7625,6 +7658,8 @@
         }
       ],
       "sha256": "95c58754ec58f85dc0b8dcbb1cf4fe0f875e8252ae0b279779a69196454a5f84",
+      "webpSha256": "5e728ff20b1855506ff3c6e0a217a7663f1460ecf17cc6c3d878873e3d04a56a",
+      "rgbaSha256": "f012d73f3cd7b93fd06671235a448ee3b7fe836767278edcf82a07281f0850d2",
       "frameHashes": [
         "f11ec92990619ebe824ed20eee37a71e2a1f1976b65734357cc4f9e3e4322f6a",
         "648162d0b1cd4d3d51d75771dacb8630888fa7de9e967233edcb736bdb9f959f",
