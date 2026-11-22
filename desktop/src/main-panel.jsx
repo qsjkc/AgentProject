@@ -862,6 +862,13 @@ function MainPanelApp() {
     setTab('chat')
     setTodayNavigation({ contextKey: todayContextKey })
   }, [todayContextKey])
+  const handleOpenFocus = useCallback(() => {
+    intentConsumerRef.current.cancel()
+    pendingFocusNavigationRef.current = true
+    tabRef.current = 'chat'
+    setTab('chat')
+    setFocusNavigationVersion((value) => value + 1)
+  }, [])
 
   useEffect(() => {
     if (!authenticated || !apiBaseUrl || !user?.id) return undefined
@@ -870,10 +877,12 @@ function MainPanelApp() {
         || request.userId !== activeUserIdRef.current
         || request.petType !== activePetTypeRef.current
         || request.generation !== activeSessionSnapshotRef.current?.generation) return false
+      // Preload rechecks the exact saved completion before committing the navigation.
+      if (request.focusCompletion) return { commit: handleOpenFocus }
       requestTodayNavigation()
       return true
     })
-  }, [apiBaseUrl, authenticated, requestTodayNavigation, user?.id])
+  }, [apiBaseUrl, authenticated, handleOpenFocus, requestTodayNavigation, user?.id])
 
   useEffect(() => {
     if (!todayNavigation || todayNavigation.contextKey !== todayContextKey || effectiveTab !== 'chat') return undefined
@@ -3092,14 +3101,6 @@ function MainPanelApp() {
     await openQuickChat()
     await logDesktopDebug({ event: 'main-panel-open-quick-chat' })
     setStatusText(language === 'zh-CN' ? '快捷聊天已打开。' : 'Quick chat opened.')
-  }
-
-  const handleOpenFocus = () => {
-    intentConsumerRef.current.cancel()
-    pendingFocusNavigationRef.current = true
-    tabRef.current = 'chat'
-    setTab('chat')
-    setFocusNavigationVersion((value) => value + 1)
   }
 
   const handleFocusTodayStep = (title, origin) => {

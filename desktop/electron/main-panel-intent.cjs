@@ -1,6 +1,6 @@
 const { randomUUID } = require('node:crypto')
 
-const MAX_RETAINED_REMINDER_NOTIFICATIONS = 32
+const MAX_RETAINED_NOTIFICATIONS = 32
 const MAX_ACCEPTED_REMINDER_OCCURRENCES = 256
 
 function isSameTodayNavigationContext(current, expected) {
@@ -11,10 +11,18 @@ function isSameTodayNavigationContext(current, expected) {
     && expected.generation === current.generation)
 }
 
-function createReminderNotificationNavigation({ readContext, openToday }) {
+function isSameFocusCompletion(state, expected) {
+  return state?.status === 'completed'
+    && typeof expected?.id === 'string' && Boolean(expected.id)
+    && Number.isSafeInteger(expected.revision)
+    && state.id === expected.id && state.revision === expected.revision
+}
+
+function createNotificationNavigation({
+  readContext, open, isCurrent = (expected) => isSameTodayNavigationContext(readContext(), expected),
+}) {
   const retained = new Map()
-  return (notification) => {
-    const context = readContext()
+  return (notification, context = readContext()) => {
     if (!context) return
 
     const release = () => {
@@ -24,13 +32,14 @@ function createReminderNotificationNavigation({ readContext, openToday }) {
     }
     const onClick = () => {
       release()
-      if (isSameTodayNavigationContext(readContext(), context)) openToday(context)
+      if (isCurrent(context)) open(context)
     }
     notification.once('click', onClick)
     notification.once('failed', release)
     // A timed-out Windows banner can still be clicked in Action Center.
     retained.set(notification, release)
-    if (retained.size > MAX_RETAINED_REMINDER_NOTIFICATIONS) retained.values().next().value()
+    if (retained.size > MAX_RETAINED_NOTIFICATIONS) retained.values().next().value()
+    return release
   }
 }
 
@@ -334,8 +343,9 @@ function createMainPanelIntentListenerRegistry({
 module.exports = {
   createMainPanelIntentCoordinator,
   createMainPanelIntentListenerRegistry,
-  createReminderNotificationNavigation,
+  createNotificationNavigation,
   createWindowsReminderNotificationPresenter,
+  isSameFocusCompletion,
   isSameTodayNavigationContext,
   showWindowsReminderNotification,
 }

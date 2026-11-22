@@ -416,6 +416,7 @@ if (e2eEnabled) {
     showWindow: (role) => invokeE2eControl('showWindow', role),
     hideWindow: (role) => invokeE2eControl('hideWindow', role),
     clickTrayToday: () => invokeE2eControl('clickTrayToday'),
+    clickFocusCompletionNotification: () => invokeE2eControl('clickFocusCompletionNotification'),
     setReminderNotificationOutcome: (outcome) => invokeE2eControl('setReminderNotificationOutcome', outcome),
     setReminderNotificationReplyHold: (hold) => invokeE2eControl('setReminderNotificationReplyHold', hold),
     simulateSystemResume: () => invokeE2eControl('simulateSystemResume'),

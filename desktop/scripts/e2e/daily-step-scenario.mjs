@@ -244,6 +244,13 @@ export async function dailyStepScenario(context) {
   await main.click('[data-e2e="daily-step-focus"]')
   await waitFor(async () => await readIntention() === title, { description: 'linked step prepared for a second focus' })
   await main.click('[data-e2e="focus-start"]')
+  await main.waitForSelector(`${FOCUS_PANEL}[data-focus-status="running"][aria-busy="false"]`)
+  await main.click('[data-e2e="daily-step-edit"]')
+  await main.input('[data-e2e="daily-step-input"]', `  ${title}  `)
+  await main.click('[data-e2e="daily-step-save"]')
+  await waitFor(() => main.evaluate(`document.activeElement?.dataset.e2e === 'daily-step-edit'`), {
+    description: 'saving an unchanged step restores its Edit shortcut focus',
+  })
   await finishFocusFromCheckpoint(context, true)
   await main.waitForSelector(FOCUS_COMPLETE_STEP)
   await expectStep(main, 'planned', title)

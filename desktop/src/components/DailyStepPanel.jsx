@@ -243,7 +243,12 @@ function DailyStep({ language, storageKey, date, isToday, onFocus, onRemind, cha
       {editing || !step ? (
         <form onSubmit={(event) => {
           event.preventDefault()
-          if (title) apply({ title, completed: step?.completed ?? false }, editRef)
+          if (!title || !isToday(date)) return
+          if (title === step?.title) {
+            cancel()
+            return
+          }
+          apply({ title, completed: step?.completed ?? false }, editRef)
         }}>
           <label className="daily-step-input">
             {copy.prompt}

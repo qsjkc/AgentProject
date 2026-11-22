@@ -26,6 +26,7 @@ import {
 import { FULL_SCENARIO_ORDER as BASE_SCENARIO_ORDER, REQUIRED_E2E_BRIDGE_API, REQUIRED_SELECTORS, SCENARIOS as BASE_SCENARIOS } from './p1k-scenarios.mjs'
 import { dressedPetScenario, petParityScenario } from './pet-parity-scenarios.mjs'
 import { focusHistoryScenario, prepareFocusHistoryFixture } from './focus-history-scenarios.mjs'
+import { focusCompletionNotificationScenario } from './focus-completion-notification-scenario.mjs'
 import { capabilityRenewalScenario, prepareCapabilityRenewalFixture } from './capability-renewal-scenario.mjs'
 import { desktopReleaseScenario } from './desktop-release-scenario.mjs'
 import { sessionRecoveryScenario, optionalDashboardRecoveryScenario, sessionRecoveryBoundaryScenario } from './session-recovery-scenarios.mjs'
@@ -44,6 +45,7 @@ const ADDITIONAL_SCENARIOS = Object.freeze({
   'pet-parity': petParityScenario,
   'dressed-pets': dressedPetScenario,
   'focus-history': focusHistoryScenario,
+  'focus-completion-notification': focusCompletionNotificationScenario,
   'capability-renewal': capabilityRenewalScenario,
   'desktop-release': desktopReleaseScenario,
   'session-recovery': sessionRecoveryScenario,
