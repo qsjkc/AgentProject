@@ -243,6 +243,13 @@ export function isPetOnboardingContextCurrent({
   )
 }
 
+export function shouldSamplePetOnboardingIdle(state, documentVisible, nowMs = Date.now()) {
+  if (!documentVisible || state?.status !== PET_ONBOARDING_STATUS.ACTIVE || !Number.isFinite(nowMs)) {
+    return false
+  }
+  return !state.snoozed_until || Date.parse(state.snoozed_until) <= nowMs
+}
+
 export function isPetOnboardingSafe({
   petType,
   hasSession,
@@ -269,7 +276,6 @@ export function isPetOnboardingSafe({
   const relationshipUserId = normalizePositiveInteger(relationship?.user_id)
   const idleSeconds = Number(systemIdleSeconds)
   const nowMs = now instanceof Date ? now.getTime() : new Date(now).getTime()
-  const snoozedUntilMs = Date.parse(state?.snoozed_until || '')
   return Boolean(
     PET_TYPES.includes(petType)
     && hasSession
@@ -278,11 +284,9 @@ export function isPetOnboardingSafe({
     && state?.pet_type === petType
     && relationshipId !== null
     && relationshipUserId === expectedUserId
-    && state
-    && state.status === PET_ONBOARDING_STATUS.ACTIVE
+    && shouldSamplePetOnboardingIdle(state, visibilityState === 'visible', nowMs)
     && state.user_id === expectedUserId
     && state.relationship_id === relationshipId
-    && visibilityState === 'visible'
     && Number.isFinite(idleSeconds)
     && idleSeconds >= 0
     && idleSeconds < 60
@@ -297,8 +301,6 @@ export function isPetOnboardingSafe({
     && !milestoneRequestInFlight
     && !companionRequestInFlight
     && !activeGuide
-    && Number.isFinite(nowMs)
-    && (!Number.isFinite(snoozedUntilMs) || snoozedUntilMs <= nowMs)
   )
 }
 
@@ -310,22 +312,22 @@ export function getPetOnboardingEngagementDelta({
   state,
 }) {
   const normalizedState = normalizePetOnboardingStateResponse(state)
-  const elapsed = Number(currentTickMs) - Number(previousTickMs)
-  const snoozedUntilMs = Date.parse(normalizedState?.snoozed_until || '')
+  const current = Number(currentTickMs)
+  const previous = Number(previousTickMs)
+  const idleSeconds = Number(systemIdleSeconds)
   if (
-    !normalizedState
-    || normalizedState.status !== PET_ONBOARDING_STATUS.ACTIVE
-    || !documentVisible
-    || !Number.isFinite(Number(systemIdleSeconds))
-    || Number(systemIdleSeconds) < 0
-    || Number(systemIdleSeconds) >= 60
-    || (Number.isFinite(snoozedUntilMs) && snoozedUntilMs > Number(currentTickMs))
-    || !Number.isFinite(elapsed)
-    || elapsed <= 0
+    !shouldSamplePetOnboardingIdle(normalizedState, documentVisible, current)
+    || !Number.isFinite(idleSeconds)
+    || idleSeconds < 0
+    || idleSeconds >= 60
+    || !Number.isFinite(previous)
   ) {
     return 0
   }
-  return Math.min(1000, Math.floor(elapsed))
+  const eligibleStart = normalizedState.snoozed_until
+    ? Math.max(previous, Date.parse(normalizedState.snoozed_until))
+    : previous
+  return Math.max(0, Math.min(1000, Math.floor(current - eligibleStart)))
 }
 
 export function getPetOnboardingCopy(stepId, language, relationship) {

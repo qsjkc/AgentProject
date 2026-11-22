@@ -41,6 +41,7 @@ import { todayFocusHandoffScenario } from './today-focus-handoff-scenario.mjs'
 import { focusDuringCompanionSyncScenario } from './focus-during-companion-sync-scenario.mjs'
 import { companionPreferenceRaceScenario } from './companion-preference-race-scenario.mjs'
 import { petDragScenario } from './pet-drag-scenario.mjs'
+import { rendererCrashRecoveryScenario } from './renderer-crash-recovery-scenario.mjs'
 import { startStubServer } from './stub-server.mjs'
 
 const ADDITIONAL_SCENARIOS = Object.freeze({
@@ -64,6 +65,7 @@ const ADDITIONAL_SCENARIOS = Object.freeze({
   'companion-preference-race': companionPreferenceRaceScenario,
   'pet-drag': petDragScenario,
   'daily-step-tomorrow': dailyStepTomorrowScenario,
+  'renderer-crash-recovery': rendererCrashRecoveryScenario,
 })
 const SCENARIOS = Object.freeze({ ...BASE_SCENARIOS, ...ADDITIONAL_SCENARIOS })
 const FULL_SCENARIO_ORDER = Object.freeze([...BASE_SCENARIO_ORDER, ...Object.keys(ADDITIONAL_SCENARIOS)])

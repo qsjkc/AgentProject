@@ -127,6 +127,7 @@ import {
   PET_ONBOARDING_CAPABILITIES as RENDERER_ONBOARDING_CAPABILITIES,
   PET_ONBOARDING_STEPS as RENDERER_ONBOARDING_STEPS,
   shouldRecordPetOnboardingInteraction,
+  shouldSamplePetOnboardingIdle,
 } from '../src/shared/pet-onboarding-state.js'
 import {
   createPetMilestoneClaimToken,
@@ -2117,6 +2118,19 @@ assert.equal(
   false,
 )
 
+const engagementSampleMs = onboardingNow.getTime()
+const snoozedOnboardingState = {
+  ...rendererOnboardingState,
+  snoozed_until: new Date(engagementSampleMs + 800).toISOString(),
+}
+assert.equal(shouldSamplePetOnboardingIdle(rendererOnboardingState, true, engagementSampleMs), true)
+assert.equal(shouldSamplePetOnboardingIdle(rendererOnboardingState, false, engagementSampleMs), false)
+for (const status of [PET_ONBOARDING_STATUS.FINISHED, PET_ONBOARDING_STATUS.DISMISSED]) {
+  assert.equal(shouldSamplePetOnboardingIdle({ ...rendererOnboardingState, status }, true, engagementSampleMs), false)
+}
+assert.equal(shouldSamplePetOnboardingIdle(snoozedOnboardingState, true, engagementSampleMs + 799), false)
+assert.equal(shouldSamplePetOnboardingIdle(snoozedOnboardingState, true, engagementSampleMs + 800), true)
+
 assert.equal(getPetOnboardingEngagementDelta({
   previousTickMs: 1000,
   currentTickMs: 1900,
@@ -2154,6 +2168,27 @@ assert.equal(getPetOnboardingEngagementDelta({
     ...rendererOnboardingState,
     snoozed_until: new Date(onboardingNow.getTime() + 5000).toISOString(),
   },
+}), 0)
+assert.equal(getPetOnboardingEngagementDelta({
+  previousTickMs: engagementSampleMs,
+  currentTickMs: engagementSampleMs + 800,
+  documentVisible: true,
+  systemIdleSeconds: 4,
+  state: snoozedOnboardingState,
+}), 0)
+assert.equal(getPetOnboardingEngagementDelta({
+  previousTickMs: engagementSampleMs,
+  currentTickMs: engagementSampleMs + 1000,
+  documentVisible: true,
+  systemIdleSeconds: 4,
+  state: snoozedOnboardingState,
+}), 200)
+assert.equal(getPetOnboardingEngagementDelta({
+  previousTickMs: engagementSampleMs + 1000,
+  currentTickMs: engagementSampleMs,
+  documentVisible: true,
+  systemIdleSeconds: 4,
+  state: rendererOnboardingState,
 }), 0)
 
 const meetCopyZh = getPetOnboardingCopy(RENDERER_ONBOARDING_STEPS.MEET_PET, 'zh-CN')

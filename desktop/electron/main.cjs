@@ -800,6 +800,11 @@ async function loadWindow(windowInstance, fileName) {
   await windowInstance.loadFile(getRendererEntry(fileName))
 }
 
+function reloadCrashedRenderer(windowInstance) {
+  const contents = windowInstance.webContents
+  if (contents.isCrashed() && !contents.isLoadingMainFrame()) contents.reload()
+}
+
 function persistBounds(key, windowInstance, options = { saveSize: true }) {
   const persistence = createBoundsPersistence({
     windowInstance,
@@ -1994,6 +1999,7 @@ function showPetWindow({ focus = false } = {}) {
   if (!petWindow || petWindow.isDestroyed()) {
     return null
   }
+  reloadCrashedRenderer(petWindow)
 
   const bounds = { ...petWindow.getBounds(), ...PET_WINDOW_SIZE }
   const restoredBounds = restoreWindowBounds(screen, bounds, bounds, { resizeToFit: false, allowAcrossDisplays: true })
@@ -2091,6 +2097,7 @@ function resetPetPosition() {
   if (!petWindow || petWindow.isDestroyed()) {
     return nextPosition
   }
+  reloadCrashedRenderer(petWindow)
 
   petWindow.setBounds(nextPosition)
   petWindow.setAlwaysOnTop(true, 'screen-saver')
@@ -2286,6 +2293,7 @@ function openQuickChat() {
   if (!quickChatWindow || !petWindow) {
     return false
   }
+  reloadCrashedRenderer(quickChatWindow)
 
   const nextPosition = getQuickChatPosition(QUICK_CHAT_WIDTH, QUICK_CHAT_HEIGHT)
   quickChatWindow.setBounds({ ...nextPosition, ...QUICK_CHAT_WINDOW_SIZE })
@@ -2323,6 +2331,7 @@ function openMainPanel(options = {}) {
   if (!mainPanelWindow || mainPanelWindow.isDestroyed()) {
     return false
   }
+  reloadCrashedRenderer(mainPanelWindow)
 
   if (mainPanelWindow.isMinimized()) mainPanelWindow.restore()
   recoverWindowBounds(mainPanelWindow, screen)
@@ -2364,6 +2373,7 @@ async function openMainPanelForRenderer(event, options = {}) {
     createMainPanelWindow()
     if (!mainPanelWindow || mainPanelWindow.isDestroyed()) return false
     const consumerWindow = mainPanelWindow
+    reloadCrashedRenderer(consumerWindow)
     if (!await waitForRendererInstance(consumerWindow)) return false
     if (
       consumerWindow !== mainPanelWindow
