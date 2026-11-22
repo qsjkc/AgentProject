@@ -48,7 +48,11 @@ const {
   createStableAccountContextKey,
   isExactSessionSnapshot,
 } = require('./account-boundary.cjs')
-const { createMainPanelIntentCoordinator } = require('./main-panel-intent.cjs')
+const {
+  createMainPanelIntentCoordinator,
+  createReminderNotificationNavigation,
+  isSameTodayNavigationContext,
+} = require('./main-panel-intent.cjs')
 const { createFocusSessionController } = require('./focus-session.cjs')
 const { getDesktopDownloadPage } = require('./desktop-release.cjs')
 const { createReminderWakeupController } = require('./reminder-wakeup.cjs')
@@ -671,13 +675,13 @@ function getTodayNavigationContext() {
 }
 
 function isTodayNavigationContextCurrent(expected) {
-  const current = getTodayNavigationContext()
-  return Boolean(current && expected
-    && expected.server === current.server
-    && expected.userId === current.userId
-    && expected.petType === current.petType
-    && expected.generation === current.generation)
+  return isSameTodayNavigationContext(getTodayNavigationContext(), expected)
 }
+
+const bindReminderNotificationNavigation = createReminderNotificationNavigation({
+  readContext: () => quitting ? null : getTodayNavigationContext(),
+  openToday: openTodayForContext,
+})
 
 function getMainPanelTodayCoordinator() {
   if (!mainPanelTodayCoordinator) {
@@ -2296,12 +2300,15 @@ function openMainPanel(options = {}) {
   return true
 }
 
+function openTodayForContext(context) {
+  if (!openMainPanel() || !context) return false
+  return getMainPanelTodayCoordinator().request('today', { context })
+}
+
 function openTodayForRenderer(event, rendererInstanceNonce) {
   const role = getCurrentRendererRole(event, rendererInstanceNonce)
   if (role !== 'pet' && role !== 'quick-chat') return false
-  const context = getTodayNavigationContext()
-  if (!openMainPanel() || !context) return false
-  return getMainPanelTodayCoordinator().request('today', { context })
+  return openTodayForContext(getTodayNavigationContext())
 }
 
 async function openMainPanelForRenderer(event, options = {}) {
@@ -3175,6 +3182,9 @@ function registerIpc() {
       title: payload?.title || 'Detachym',
       body: payload?.body || '',
     })
+    if (senderRole === 'pet' && payload?.reminderServer !== undefined) {
+      bindReminderNotificationNavigation(notification)
+    }
     notification.show()
     return true
   })
