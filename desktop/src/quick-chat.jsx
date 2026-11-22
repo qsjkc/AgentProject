@@ -160,24 +160,16 @@ function QuickChatApp() {
           return
         }
 
-        const preferences = await desktopApi.getPreferences(operationContext)
+        // The server preference can change before Electron completes the pet switch.
+        await desktopApi.getPreferences(operationContext)
         if (!active || requestId !== syncId || syncEpochRef.current !== syncEpoch) {
           return
         }
         setSyncError(false)
 
-        const nextPetType = preferences?.pet_type || 'cat'
-        setPetType(nextPetType)
-        petContextRef.current = {
-          hasSession: true,
-          petType: nextPetType,
-          userId: petState?.userId ?? null,
-          session: operationContext.session,
-          authoritative: operationContext.authoritative,
-        }
         await logDesktopDebug({
           event: 'quick-chat-sync-session',
-          petType: preferences?.pet_type || petState?.petType || 'cat',
+          petType: petState?.petType || 'cat',
           hasToken: Boolean(token),
           hasApiBaseUrl: Boolean(apiBaseUrl),
         })
