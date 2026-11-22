@@ -18,31 +18,43 @@ const requestBody = (request) => {
 }
 
 async function selectPet(context, petType, { requireNewAccountOnboarding = true } = {}) {
-  await callE2e(context.pages.main, 'showWindow', 'main-panel')
+  const { main, pet } = context.pages
+  await callE2e(main, 'showWindow', 'main-panel')
   // The dashboard mounts before the login relationship capability is adopted.
   // Wait for that initial handoff (and any preceding switch) before asking the
   // real selector to start a new account-scoped request.
-  await expectSnapshot(context.pages.main, (snapshot) => (
+  await expectSnapshot(main, (snapshot) => (
     snapshot.account?.userId === USERS.A.id
     && snapshot.relationship?.pet_type === snapshot.account?.petType
     && snapshot.relationship?.user_id === USERS.A.id
     && snapshot.renderer?.[0]?.relationshipId === snapshot.relationship?.id
     && snapshot.relationshipCapabilityAdopted === true
   ), 'current relationship ready before switching pets')
-  await waitFor(() => context.pages.main.evaluate(`(() => {
-    const target = document.querySelector('[data-e2e="pet-option-${petType}"]')
-    return target && !target.disabled
-      && Boolean(document.querySelector('[data-e2e="pet-relationship-summary"]'))
-      && !document.querySelector('.main-companion-sync')
-  })()`), { description: `${petType} selector ready after relationship sync` })
-  await context.pages.main.click(`[data-e2e="pet-option-${petType}"]`)
-  await expectSnapshot(context.pages.main, (snapshot) => (
+  const selector = `[data-e2e="pet-option-${petType}"]`
+  await main.bringToFront()
+  await waitFor(() => main.evaluate(`(() => {
+    const button = document.querySelector(${JSON.stringify(selector)})
+    if (!(button instanceof HTMLButtonElement) || button.matches(':disabled') || !document.hasFocus()
+      || !document.querySelector('[data-e2e="pet-relationship-summary"]')
+      || document.querySelector('.main-companion-sync')) return false
+    button.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' })
+    const rect = button.getBoundingClientRect()
+    if (rect.width <= 0 || rect.height <= 0 || rect.top < 0 || rect.left < 0
+      || rect.bottom > window.innerHeight || rect.right > window.innerWidth
+      || getComputedStyle(button).visibility !== 'visible') return false
+    button.focus({ preventScroll: true })
+    return document.activeElement === button && !button.matches(':disabled')
+  })()`), { description: `focused visible enabled ${petType} button after relationship sync` })
+  const enter = { key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 }
+  await main.send('Input.dispatchKeyEvent', { ...enter, type: 'keyDown', text: '\r', unmodifiedText: '\r' })
+  await main.send('Input.dispatchKeyEvent', { ...enter, type: 'keyUp' })
+  await expectSnapshot(main, (snapshot) => (
     snapshot.account?.petType === petType
     && snapshot.relationship?.pet_type === petType
     && snapshot.relationship?.id === createRelationship(USERS.A, petType).id
     && snapshot.renderer?.[0]?.relationshipId === snapshot.relationship.id
   ), `${petType} selected and relationship hydrated`)
-  await expectSnapshot(context.pages.pet, (snapshot) => (
+  await expectSnapshot(pet, (snapshot) => (
     snapshot.account?.petType === petType
     && snapshot.relationship?.pet_type === petType
     && snapshot.relationship?.user_id === USERS.A.id

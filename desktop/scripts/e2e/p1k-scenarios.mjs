@@ -1075,6 +1075,8 @@ export async function quickChatReminderSyncScenario(context) {
     const recurringRow = `#recurring-reminders [data-reminder-series-id="${seriesId}"]`
     assertEqual(await main.evaluate(`Boolean(document.querySelector(${JSON.stringify(recurringRow)}))`), false,
       'The recurring row appeared before the reminder was saved')
+    assertEqual(await main.evaluate('window.readReminderUpdateCount()'), 1,
+      'The pending recurring write published a refresh before committing')
     const next = new Date(first)
     next.setDate(next.getDate() + 1)
     const occurrence = createReminderRecord({
@@ -1096,11 +1098,12 @@ export async function quickChatReminderSyncScenario(context) {
     const recurringAgendaItem = `[data-e2e="today-agenda-item"][data-destination="recurring"][data-target-id="${seriesId}"]`
     await main.waitForSelector(recurringAgendaItem, { timeoutMs: 5000 })
     await main.waitForSelector(recurringRow, { timeoutMs: 5000 })
+    // Focusing the main window to navigate can independently refresh Today.
+    assertEqual(stub.requests.slice(recurringReadsStart).filter(({ method, pathname }) => method === 'GET' && pathname === seriesPath).length,
+      2, 'Today and the recurring list should each refresh once for this write')
     await main.click(recurringAgendaItem)
     await waitFor(() => main.evaluate(`document.activeElement === document.querySelector(${JSON.stringify(recurringRow)})`),
       { timeoutMs: 5000, description: 'the Quick Chat reminder immediately focuses its exact recurring row' })
-    assertEqual(stub.requests.slice(recurringReadsStart).filter(({ method, pathname }) => method === 'GET' && pathname === seriesPath).length,
-      2, 'Today and the recurring list should each refresh once for this write')
     assertEqual(await main.evaluate('window.readReminderUpdateCount()'), 2, 'Each committed Quick Chat reminder publishes one refresh')
     return { todayUpdated: true, upcomingUpdated: true, refreshBeforeRelationship: true, confirmationRetained: true,
       reminderId: persisted.id, recurringRowFocused: true, seriesId }
