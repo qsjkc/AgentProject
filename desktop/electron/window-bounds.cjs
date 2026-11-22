@@ -11,6 +11,12 @@ function normalizeWindowBounds(bounds = {}, defaults = {}) {
   }
 }
 
+function windowBoundsMatch(current, target, sizeTolerance = 0) {
+  return current.x === target.x && current.y === target.y
+    && Math.abs(current.width - target.width) <= sizeTolerance
+    && Math.abs(current.height - target.height) <= sizeTolerance
+}
+
 function fitWindowBounds(bounds, workArea, { resizeToFit = true } = {}) {
   const requested = normalizeWindowBounds(bounds)
   const area = normalizeWindowBounds(workArea)
@@ -72,6 +78,26 @@ function fitPetDragBounds(screen, bounds, cursor) {
   return fitWindowAcrossWorkAreas(requested, screen.getDisplayNearestPoint(cursor), screen, { resizeToFit: false })
 }
 
+function createQuickChatPlacement({ screen, size, savedBounds, getAnchor }) {
+  const anchor = getAnchor()
+  // Older profiles saved both manual and docked positions without a mode.
+  const hasPosition = Number.isFinite(savedBounds.x) && Number.isFinite(savedBounds.y)
+  const atAnchor = Math.abs(savedBounds.x - anchor.x) <= 1 && Math.abs(savedBounds.y - anchor.y) <= 1
+  let manual = hasPosition && (savedBounds.placement === 'manual' || (savedBounds.placement !== 'docked' && !atAnchor))
+  const fitManual = (bounds) => restoreWindowBounds(screen, { ...bounds, ...size }, size,
+    { resizeToFit: false, allowAcrossDisplays: true })
+
+  return {
+    initialBounds: manual ? fitManual(savedBounds) : { ...anchor, ...size },
+    isManual: () => manual,
+    noteManualMove(previous, next) {
+      if (previous.x !== next.x || previous.y !== next.y) manual = true
+    },
+    resolveBounds: (current) => manual ? fitManual(current) : { ...getAnchor(), ...size },
+    serialize: (bounds) => ({ ...bounds, ...size, placement: manual ? 'manual' : 'docked' }),
+  }
+}
+
 function recoverWindowBounds(windowInstance, screen, options = {}) {
   if (
     !windowInstance || windowInstance.isDestroyed()
@@ -80,7 +106,7 @@ function recoverWindowBounds(windowInstance, screen, options = {}) {
   const previous = windowInstance.getBounds()
   const requested = { ...previous, ...options.fixedSize }
   const next = restoreWindowBounds(screen, requested, requested, options)
-  if (Object.keys(next).every((key) => next[key] === previous[key])) return false
+  if (windowBoundsMatch(previous, next, options.sizeTolerance)) return false
   windowInstance.setBounds(next)
   return true
 }
@@ -92,6 +118,7 @@ function createBoundsPersistence({
   read,
   write,
   saveSize = true,
+  serialize = (bounds) => bounds,
   delayMs = 200,
   setTimer = setTimeout,
   clearTimer = clearTimeout,
@@ -107,7 +134,7 @@ function createBoundsPersistence({
     const bounds = pending
     pending = null
     const previous = read() || {}
-    const next = saveSize ? bounds : { ...previous, x: bounds.x, y: bounds.y }
+    const next = serialize(saveSize ? bounds : { ...previous, x: bounds.x, y: bounds.y })
     if (Object.keys(next).some((key) => next[key] !== previous[key])) write(next)
   }
   const capture = () => {
@@ -140,8 +167,10 @@ function createBoundsPersistence({
 
 module.exports = {
   createBoundsPersistence,
+  createQuickChatPlacement,
   fitPetDragBounds,
   fitWindowBounds,
   recoverWindowBounds,
   restoreWindowBounds,
+  windowBoundsMatch,
 }
