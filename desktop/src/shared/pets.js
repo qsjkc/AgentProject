@@ -1,42 +1,41 @@
 import catExcited from '../../../frontend/src/assets/pets/cat/excited.png'
-import catHappy from '../../../frontend/src/assets/pets/cat/happy.png'
-import catIdle from '../../../frontend/src/assets/pets/cat/idle.png'
 import catSad from '../../../frontend/src/assets/pets/cat/sad.png'
 import dogExcited from '../../../frontend/src/assets/pets/dog/excited.png'
-import dogHappy from '../../../frontend/src/assets/pets/dog/happy.png'
-import dogIdle from '../../../frontend/src/assets/pets/dog/idle.png'
 import dogSad from '../../../frontend/src/assets/pets/dog/sad.png'
 import pigExcited from '../../../frontend/src/assets/pets/pig/excited.png'
-import pigHappy from '../../../frontend/src/assets/pets/pig/happy.png'
-import pigIdle from '../../../frontend/src/assets/pets/pig/idle.png'
 import pigSad from '../../../frontend/src/assets/pets/pig/sad.png'
+
+import { getPetLabelKey } from './pet-labels'
+import { getPetPortrait } from './pet-portraits'
 
 export const PET_MOODS = ['idle', 'happy', 'excited', 'sad']
 
+// Renderer entries import the label and portrait helpers directly so Vite
+// does not emit the full mood image set when only an idle or happy portrait is used.
 export const petVisualMap = {
   cat: {
-    labelKey: 'petCat',
+    labelKey: getPetLabelKey('cat'),
     images: {
-      idle: catIdle,
-      happy: catHappy,
+      idle: getPetPortrait('cat'),
+      happy: getPetPortrait('cat', 'happy'),
       excited: catExcited,
       sad: catSad,
     },
   },
   dog: {
-    labelKey: 'petDog',
+    labelKey: getPetLabelKey('dog'),
     images: {
-      idle: dogIdle,
-      happy: dogHappy,
+      idle: getPetPortrait('dog'),
+      happy: getPetPortrait('dog', 'happy'),
       excited: dogExcited,
       sad: dogSad,
     },
   },
   pig: {
-    labelKey: 'petPig',
+    labelKey: getPetLabelKey('pig'),
     images: {
-      idle: pigIdle,
-      happy: pigHappy,
+      idle: getPetPortrait('pig'),
+      happy: getPetPortrait('pig', 'happy'),
       excited: pigExcited,
       sad: pigSad,
     },

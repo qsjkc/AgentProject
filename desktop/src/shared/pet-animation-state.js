@@ -28,6 +28,7 @@ const LOCKED_ACTIONS = new Set([
 const LOOPING_ACTIONS = new Set([
   ANIMATION_ACTIONS.IDLE,
   ANIMATION_ACTIONS.SLEEPING,
+  ANIMATION_ACTIONS.DRAG,
 ])
 const COMPANION_ACTIONS = new Set([
   ANIMATION_ACTIONS.RUN,
@@ -96,6 +97,8 @@ export function petAnimationReducer(state, event) {
       return transition(ANIMATION_ACTIONS.DRAG)
     case 'PET_DRAG_RELEASE':
       return transition(ANIMATION_ACTIONS.HAPPY)
+    case 'PET_DRAG_CANCEL':
+      return state.action === ANIMATION_ACTIONS.DRAG ? transition(ANIMATION_ACTIONS.IDLE) : state
     case 'PET_PAT':
       return transition(ANIMATION_ACTIONS.PAT)
     case 'PET_FEED':

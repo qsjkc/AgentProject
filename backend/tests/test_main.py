@@ -224,24 +224,36 @@ async def test_register_rejects_existing_email_and_chat_accepts_pet_type(client:
 
 
 @pytest.mark.asyncio
-async def test_public_release_endpoint_reflects_download_file(client: AsyncClient):
+async def test_public_release_endpoint_reflects_download_file(client: AsyncClient, monkeypatch):
     from app.core.config import settings  # noqa: E402
 
+    monkeypatch.setattr(settings, "DESKTOP_RELEASE_FILE", "test-public-release-x64.exe")
     release_response = await client.get("/api/v1/public/version/win-x64")
     assert release_response.status_code == 200
     assert release_response.json()["available"] is False
+    assert release_response.json()["published_at"] is None
 
     release_file = Path(settings.DOWNLOAD_DIR) / settings.DESKTOP_RELEASE_FILE
     release_file.parent.mkdir(parents=True, exist_ok=True)
+    release_file.write_bytes(b"")
+    empty_response = await client.get("/api/v1/public/version/win-x64")
+    assert empty_response.status_code == 200
+    assert empty_response.json()["available"] is False
+    assert empty_response.json()["published_at"] is None
+
     release_file.write_bytes(b"binary")
 
     refreshed_response = await client.get("/api/v1/public/version/win-x64")
     assert refreshed_response.status_code == 200
-    assert refreshed_response.json()["available"] is True
-    assert refreshed_response.json()["filename"] == settings.DESKTOP_RELEASE_FILE
-    published_at = datetime.fromisoformat(refreshed_response.json()["published_at"])
+    release = refreshed_response.json()
+    assert release["available"] is True
+    assert release["filename"] == settings.DESKTOP_RELEASE_FILE
+    published_at = datetime.fromisoformat(release["published_at"])
     assert published_at.utcoffset().total_seconds() == 0
     assert abs(published_at.timestamp() - release_file.stat().st_mtime) < 0.001
+    installation = await client.get(release["download_url"])
+    assert installation.status_code == 200
+    assert installation.content == b"binary"
 
 
 @pytest.mark.asyncio

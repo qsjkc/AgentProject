@@ -5,6 +5,7 @@ import {
   createReminderDeliveryController,
   createReminderPollController,
   getReminderPollPlan,
+  isReminderWakeScopeCurrent,
   isTransientReminderReadError,
   REMINDER_BACKLOG_DELAY_MS,
   REMINDER_RECONCILE_MS,
@@ -147,6 +148,21 @@ function receiptProfile() {
 
 const reminderContext = { server: 'https://reminders.example/api/v1', userId: 1, petType: 'pig' }
 const dueReminder = row(17, 999_900, { user_id: 1, pet_type: 'pig' })
+const retryPresentation = { retry: true, retryOnPresentationAvailable: true }
+
+test('an unmute pulse requires the exact authenticated origin, user, pet and generation', () => {
+  const { server, ...pet } = reminderContext
+  const context = { ...pet, hasSession: true, session: { generation: 3 } }
+  const scope = { ...reminderContext, generation: 3 }
+  assert.equal(isReminderWakeScopeCurrent(scope, context, server), true)
+  for (const stale of [null, {}, { ...scope, generation: 2 }, { ...scope, generation: '3' },
+    { ...scope, petType: 'cat' }, { ...scope, userId: 2 }, { ...scope, server: 'https://another.example/api/v1' }]) {
+    assert.equal(isReminderWakeScopeCurrent(stale, context, server), false)
+  }
+  assert.equal(isReminderWakeScopeCurrent(scope, { ...context, hasSession: false }, server), false)
+  assert.equal(isReminderWakeScopeCurrent({ ...scope, generation: undefined }, { ...context, session: null }, server), false)
+  assert.equal(isReminderWakeScopeCurrent(scope, context, ''), false)
+})
 
 test('a failed trigger acknowledgment retries after renderer reload without replaying either channel', async () => {
   const profile = receiptProfile()
@@ -179,7 +195,8 @@ test('an unavailable presentation channel does not consume an unseen reminder', 
     present: () => {},
     acknowledge: () => { acknowledgements++; return true },
   }
-  assert.deepEqual(await controller.deliver(attempt), { retry: true })
+  assert.deepEqual(await controller.deliver(attempt), retryPresentation)
+  assert.deepEqual(await controller.deliver({ ...attempt, context: { ...reminderContext, userId: 2 } }), { retry: true })
   assert.equal(acknowledgements, 0)
   assert.deepEqual(profile.receipts(), [])
 
@@ -330,7 +347,7 @@ for (const failure of ['muted', 'acknowledgment']) {
         if (reads > 1) return {}
         await read.promise
         if (failure === 'acknowledgment') throw Object.assign(new Error('Trigger unavailable'), { status: 503 })
-        return { retry: true }
+        return retryPresentation
       },
       schedule: async (at) => schedules.push(at),
     })
@@ -351,6 +368,78 @@ for (const failure of ['muted', 'acknowledgment']) {
 }
 
 const retryRead = { retry: true, retryOnReconnect: true }
+
+test('unmuting reads again before the presentation cooldown and coalesces repeated toggles', async () => {
+  let now = 1000
+  let reads = 0
+  const schedules = []
+  const retry = deferred()
+  const controller = createReminderPollController({
+    now: () => now,
+    poll: () => ++reads === 2 ? retry.promise : retryPresentation,
+    schedule: (at) => schedules.push(at),
+  })
+  await controller.request()
+  now = 1100
+  const earlyRead = controller.request({ presentationAvailable: true })
+  await Promise.resolve()
+  assert.equal(reads, 2)
+  assert.equal(controller.request({ presentationAvailable: true }), earlyRead)
+  retry.resolve(retryPresentation)
+  await earlyRead
+  await controller.request({ presentationAvailable: true })
+  assert.equal(reads, 2)
+  assert.deepEqual(schedules, [31_000, 31_100, 31_100])
+  now = 31_100
+  await controller.request()
+  await controller.request({ presentationAvailable: true })
+  assert.equal(reads, 4, 'A newly elapsed cooldown permits another explicit early retry')
+})
+
+test('unmuting during a held, unseen presentation queues one fresh read', async () => {
+  const held = deferred()
+  let reads = 0
+  const schedules = []
+  const controller = createReminderPollController({
+    now: () => 1000,
+    poll: () => ++reads === 1 ? held.promise : { nextAt: 1250 },
+    schedule: (at) => schedules.push(at),
+  })
+  const waiting = controller.request()
+  await Promise.resolve()
+  assert.equal(controller.request({ presentationAvailable: true }), waiting)
+  assert.equal(controller.request({ reconnected: true }), waiting)
+  held.resolve(retryPresentation)
+  await waiting
+  assert.equal(reads, 2)
+  assert.deepEqual(schedules, [1250])
+})
+
+for (const failure of ['network', 'acknowledgment']) {
+  test(`unmuting does not bypass a ${failure} cooldown`, async () => {
+    const held = deferred()
+    let reads = 0
+    const schedules = []
+    const controller = createReminderPollController({
+      now: () => 1000,
+      poll: async () => {
+        reads += 1
+        await held.promise
+        if (failure === 'acknowledgment') throw new Error('Trigger unavailable')
+        return retryRead
+      },
+      schedule: (at) => schedules.push(at),
+    })
+    const waiting = controller.request()
+    await Promise.resolve()
+    assert.equal(controller.request({ presentationAvailable: true }), waiting)
+    held.resolve()
+    await waiting
+    await controller.request({ presentationAvailable: true })
+    assert.equal(reads, 1)
+    assert.deepEqual(schedules, [31_000, 31_000])
+  })
+}
 
 test('a reminder read can retry on browser network failures, timeouts and temporary HTTP failures', () => {
   assert.equal(isTransientReminderReadError(new TypeError('Failed to fetch')), true)

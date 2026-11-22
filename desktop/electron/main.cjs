@@ -51,14 +51,16 @@ const {
 } = require('./account-boundary.cjs')
 const {
   createMainPanelIntentCoordinator,
-  createReminderNotificationNavigation,
+  createNotificationNavigation,
+  createWindowsReminderNotificationPresenter,
+  isSameFocusCompletion,
   isSameTodayNavigationContext,
-  showWindowsReminderNotification,
 } = require('./main-panel-intent.cjs')
-const { createFocusSessionController } = require('./focus-session.cjs')
+const { createFocusAccountKey, createFocusSessionController } = require('./focus-session.cjs')
 const { getDesktopDownloadPage } = require('./desktop-release.cjs')
 const { createReminderWakeupController } = require('./reminder-wakeup.cjs')
 const { createLoginAttemptController } = require('./login-attempt.cjs')
+const { createPetDragController } = require('./pet-drag.cjs')
 const {
   createBoundsPersistence,
   fitWindowBounds,
@@ -141,6 +143,9 @@ const PET_VISIBLE_WIDTH = 126
 const PET_VISIBLE_HEIGHT = 148
 const QUICK_CHAT_WIDTH = 430
 const QUICK_CHAT_HEIGHT = 420
+const PET_WINDOW_SIZE = { width: PET_WINDOW_WIDTH, height: PET_WINDOW_HEIGHT }
+const QUICK_CHAT_WINDOW_SIZE = { width: QUICK_CHAT_WIDTH, height: QUICK_CHAT_HEIGHT }
+const petDrag = createPetDragController({ getWindow: () => petWindow, screen, windowSize: PET_WINDOW_SIZE })
 const MAIN_PANEL_WIDTH = 1100
 const MAIN_PANEL_HEIGHT = 780
 const MAIN_PANEL_INTENT_READY_TIMEOUT_MS = 5000
@@ -151,14 +156,19 @@ const e2eRuntime = {
   lastCompletedRequest: null,
   activityJournal: [],
   reminderNotification: { outcome: 'show', attempts: 0 },
+  focusCompletionNotification: null,
+  trayMenu: null,
 }
 
+const TRAY_OPEN_TODAY_ID = 'tray-open-today'
+const TRAY_MUTE_NOTIFICATIONS_ID = 'tray-mute-notifications'
 const trayMessages = {
   'zh-CN': {
     trayTooltip: 'Detachym 桌宠',
     showPet: '显示桌宠',
     resetPetPosition: '重置桌宠位置',
     openMainPanel: '打开主面板',
+    openToday: '今天一起',
     toggleQuickChat: '切换快捷聊天',
     autoLaunch: '开机启动',
     muteNotifications: '静音通知',
@@ -169,6 +179,7 @@ const trayMessages = {
     showPet: 'Show Desktop Pet',
     resetPetPosition: 'Reset Pet Position',
     openMainPanel: 'Open Main Panel',
+    openToday: 'Today together',
     toggleQuickChat: 'Toggle Quick Chat',
     autoLaunch: 'Launch at Startup',
     muteNotifications: 'Mute Notifications',
@@ -435,20 +446,28 @@ function getFocusSessionController() {
       createId: randomUUID,
       onChange: broadcastFocusSession,
       onComplete: (snapshot) => {
-        if (isE2e || getStore().get('mute') || !Notification.isSupported()) return
+        if (getStore().get('mute') || (!isE2e && !Notification.isSupported())) return
+        let releaseNavigation
         try {
           const zh = normalizeLanguage(getStore().get('language')) === 'zh-CN'
           const petName = { pig: '小猪', cat: '猫咪', dog: '小狗' }[snapshot.petType] || '伙伴'
-          const notification = new Notification({
+          const options = {
             title: zh ? '这一小段，我们完成啦' : 'We finished this little stretch',
             body: zh ? `${petName}陪你一起歇一会儿。喝口水，伸个懒腰吧。` : `Take a breath with your ${snapshot.petType}. Some water and a stretch?`,
+          }
+          const notification = isE2e ? new EventEmitter() : new Notification(options)
+          const { server, userId, petType, generation, state } = snapshot
+          releaseNavigation = bindFocusCompletionNavigation(notification, {
+            server, userId, petType, generation,
+            focusCompletion: { id: state.id, revision: state.revision },
           })
-          notification.once('click', () => {
-            const current = getFocusSessionController().current()
-            if (current.server === snapshot.server && current.userId === snapshot.userId && current.petType === snapshot.petType && current.generation === snapshot.generation) openMainPanel()
-          })
+          if (isE2e) {
+            e2eRuntime.focusCompletionNotification = notification
+            return
+          }
           notification.show()
         } catch (error) {
+          releaseNavigation?.()
           logDesktop('focus-notification-failed', { message: error?.message || 'unknown' })
         }
       },
@@ -481,9 +500,9 @@ function getReminderWakeupController() {
   return reminderWakeupController
 }
 
-function requestPetReminderRefresh() {
+function requestPetReminderRefresh(unmuteScope = null) {
   if (petWindow && !petWindow.isDestroyed() && !petWindow.webContents.isLoading()) {
-    petWindow.webContents.send('desktop:reminder-wakeup')
+    petWindow.webContents.send('desktop:reminder-wakeup', unmuteScope)
   }
 }
 
@@ -678,12 +697,29 @@ function getTodayNavigationContext() {
 }
 
 function isTodayNavigationContextCurrent(expected) {
-  return isSameTodayNavigationContext(getTodayNavigationContext(), expected)
+  const current = getTodayNavigationContext()
+  if (quitting || !isSameTodayNavigationContext(current, expected)) return false
+  if (expected.focusCompletion === undefined) return true
+  const key = createFocusAccountKey({ ...current, hasSession: true })
+  // Completion is persisted before the notification is shown. Reading it must not settle another timer.
+  return isSameFocusCompletion(getStore().get('focusSessions')?.[key], expected.focusCompletion)
 }
 
-const bindReminderNotificationNavigation = createReminderNotificationNavigation({
+const bindReminderNotificationNavigation = createNotificationNavigation({
   readContext: () => quitting ? null : getTodayNavigationContext(),
-  openToday: openTodayForContext,
+  open: openTodayForContext,
+})
+
+const bindFocusCompletionNavigation = createNotificationNavigation({
+  isCurrent: isTodayNavigationContextCurrent,
+  open: (context) => {
+    if (openMainPanel()) void getMainPanelTodayCoordinator().request('focus', { context })
+  },
+})
+
+const presentWindowsReminderNotification = createWindowsReminderNotificationPresenter({
+  bindNavigation: bindReminderNotificationNavigation,
+  isMuted: () => Boolean(getStore().get('mute')),
 })
 
 function getMainPanelTodayCoordinator() {
@@ -786,13 +822,14 @@ function clampWindowPosition(x, y, width, height, displayOverride = null) {
 }
 
 function recoverDesktopWindowPositions() {
-  recoverWindowBounds(petWindow, screen, { resizeToFit: false })
-  recoverWindowBounds(quickChatWindow, screen, { resizeToFit: false })
+  recoverWindowBounds(petWindow, screen, { resizeToFit: false, allowAcrossDisplays: true, fixedSize: PET_WINDOW_SIZE })
+  recoverWindowBounds(quickChatWindow, screen, { resizeToFit: false, fixedSize: QUICK_CHAT_WINDOW_SIZE })
   recoverWindowBounds(mainPanelWindow, screen)
   syncQuickChatPosition()
 }
 
 function scheduleDisplayRecovery() {
+  petDrag.cancel()
   if (displayRecoveryTimer !== null) clearTimeout(displayRecoveryTimer)
   displayRecoveryTimer = setTimeout(() => {
     displayRecoveryTimer = null
@@ -803,12 +840,11 @@ function scheduleDisplayRecovery() {
 function getPetBounds() {
   const petBounds = getStore().get('petBounds') || {}
   const bounds = {
-    width: PET_WINDOW_WIDTH,
-    height: PET_WINDOW_HEIGHT,
+    ...PET_WINDOW_SIZE,
     x: Number.isFinite(petBounds.x) ? petBounds.x : 90,
     y: Number.isFinite(petBounds.y) ? petBounds.y : 90,
   }
-  return restoreWindowBounds(screen, bounds, bounds, { resizeToFit: false })
+  return restoreWindowBounds(screen, bounds, bounds, { resizeToFit: false, allowAcrossDisplays: true })
 }
 
 function getPetState() {
@@ -1229,17 +1265,20 @@ function attachRendererCapabilityLifecycle(windowInstance) {
   if (!sender) return
   sender.on('did-start-navigation', (_event, _url, _isInPlace, isMainFrame) => {
     if (isMainFrame !== false) {
+      if (windowInstance === petWindow) petDrag.cancel()
       loginAttempts.cancelOwner(sender)
       operationCapabilities.revokeSender(sender)
       reminderWakeupController?.cancelOwner(sender)
     }
   })
   sender.on('render-process-gone', () => {
+    if (windowInstance === petWindow) petDrag.cancel()
     loginAttempts.cancelOwner(sender)
     operationCapabilities.revokeSender(sender)
     reminderWakeupController?.cancelOwner(sender)
   })
   sender.once('destroyed', () => {
+    if (windowInstance === petWindow) petDrag.cancel()
     loginAttempts.cancelOwner(sender)
     operationCapabilities.revokeSender(sender)
     reminderWakeupController?.cancelOwner(sender)
@@ -1906,24 +1945,12 @@ function broadcastPetState(payload = {}) {
   return nextState
 }
 
-function setPetPosition(x, y) {
-  if (!petWindow || petWindow.isDestroyed()) {
-    return null
-  }
-
-  const currentBounds = petWindow.getBounds()
-  const nextPosition = clampWindowPosition(x, y, currentBounds.width, currentBounds.height)
-  petWindow.setPosition(nextPosition.x, nextPosition.y)
-  syncQuickChatPosition()
-  return nextPosition
-}
-
 function getQuickChatAnchorPosition(width, height) {
   if (!petWindow || petWindow.isDestroyed()) {
     return clampWindowPosition(120, 120, width, height)
   }
 
-  const petBounds = petWindow.getBounds()
+  const petBounds = { ...petWindow.getBounds(), ...PET_WINDOW_SIZE }
   const petCenter = {
     x: petBounds.x + Math.round(petBounds.width / 2),
     y: petBounds.y + Math.round(petBounds.height / 2),
@@ -1953,8 +1980,10 @@ function syncQuickChatPosition() {
   }
 
   const quickBounds = quickChatWindow.getBounds()
-  const nextPosition = getQuickChatAnchorPosition(quickBounds.width, quickBounds.height)
-  quickChatWindow.setPosition(nextPosition.x, nextPosition.y)
+  const nextPosition = getQuickChatAnchorPosition(QUICK_CHAT_WIDTH, QUICK_CHAT_HEIGHT)
+  if (nextPosition.x !== quickBounds.x || nextPosition.y !== quickBounds.y) {
+    quickChatWindow.setBounds({ ...nextPosition, ...QUICK_CHAT_WINDOW_SIZE })
+  }
   return nextPosition
 }
 
@@ -1966,10 +1995,13 @@ function showPetWindow({ focus = false } = {}) {
     return null
   }
 
-  const bounds = petWindow.getBounds()
-  const nextPosition = clampWindowPosition(bounds.x, bounds.y, bounds.width, bounds.height)
-  petWindow.setBounds({ ...bounds, ...nextPosition })
-  getStore().set('petBounds', { ...bounds, ...nextPosition })
+  const bounds = { ...petWindow.getBounds(), ...PET_WINDOW_SIZE }
+  const restoredBounds = restoreWindowBounds(screen, bounds, bounds, { resizeToFit: false, allowAcrossDisplays: true })
+  if (restoredBounds.x !== bounds.x || restoredBounds.y !== bounds.y) {
+    petDrag.cancel()
+    petWindow.setBounds(restoredBounds)
+  }
+  getStore().set('petBounds', restoredBounds)
 
   if (!petWindow.isVisible()) {
     petWindow.show()
@@ -2050,6 +2082,7 @@ function registerVoiceGlobalShortcut() {
 }
 
 function resetPetPosition() {
+  petDrag.cancel()
   const nextPosition = restoreWindowBounds(screen, {
     width: PET_WINDOW_WIDTH, height: PET_WINDOW_HEIGHT, x: 90, y: 90,
   }, {}, { resizeToFit: false })
@@ -2099,15 +2132,18 @@ function createPetWindow() {
   petWindow.setAlwaysOnTop(true, 'screen-saver')
   persistBounds('petBounds', petWindow, { saveSize: false })
   petWindow.on('close', (event) => {
+    petDrag.cancel()
     if (!quitting) {
       event.preventDefault()
       petWindow.hide()
     }
   })
+  petWindow.on('hide', petDrag.cancel)
+  petWindow.once('closed', petDrag.cancel)
   petWindow.on('move', () => {
     syncQuickChatPosition()
   })
-  petWindow.on('show', requestPetReminderRefresh)
+  petWindow.on('show', () => requestPetReminderRefresh())
   petWindow.webContents.on('did-finish-load', () => {
     sendPetStateToWindow(petWindow, getPetState())
     sendVoiceSettingsToWindow(petWindow, getVoiceSettings())
@@ -2251,10 +2287,8 @@ function openQuickChat() {
     return false
   }
 
-  const quickBounds = quickChatWindow.getBounds()
-  const nextPosition = getQuickChatPosition(quickBounds.width, quickBounds.height)
-  quickChatWindow.setSize(quickBounds.width, quickBounds.height)
-  quickChatWindow.setPosition(nextPosition.x, nextPosition.y)
+  const nextPosition = getQuickChatPosition(QUICK_CHAT_WIDTH, QUICK_CHAT_HEIGHT)
+  quickChatWindow.setBounds({ ...nextPosition, ...QUICK_CHAT_WINDOW_SIZE })
   getStore().set('quickBounds', { ...getStore().get('quickBounds'), x: nextPosition.x, y: nextPosition.y })
   sendPetStateToWindow(quickChatWindow, getPetState())
   sendVoiceSettingsToWindow(quickChatWindow, getVoiceSettings())
@@ -2400,6 +2434,11 @@ function buildTrayMenu() {
     { label: messages.showPet, click: () => showPetWindow() },
     { label: messages.resetPetPosition, click: () => resetPetPosition() },
     { label: messages.openMainPanel, click: openMainPanel },
+    {
+      id: TRAY_OPEN_TODAY_ID,
+      label: messages.openToday,
+      click: () => void openTodayForContext(getTodayNavigationContext()),
+    },
     { label: messages.toggleQuickChat, click: toggleQuickChat },
     {
       label: messages.autoLaunch,
@@ -2411,11 +2450,17 @@ function buildTrayMenu() {
       },
     },
     {
+      id: TRAY_MUTE_NOTIFICATIONS_ID,
       label: messages.muteNotifications,
       type: 'checkbox',
       checked: Boolean(getStore().get('mute')),
       click: ({ checked }) => {
+        const wasMuted = Boolean(getStore().get('mute'))
         getStore().set('mute', checked)
+        if (wasMuted && !checked) {
+          const scope = getTodayNavigationContext()
+          if (scope) requestPetReminderRefresh(scope)
+        }
       },
     },
     { type: 'separator' },
@@ -2434,8 +2479,7 @@ function createTray() {
     return
   }
   tray = new Tray(getTrayIcon())
-  tray.setToolTip(getLanguageMessages().trayTooltip)
-  tray.setContextMenu(buildTrayMenu())
+  refreshTray()
   tray.on('double-click', openMainPanel)
 }
 
@@ -2445,7 +2489,9 @@ function refreshTray() {
   }
 
   tray.setToolTip(getLanguageMessages().trayTooltip)
-  tray.setContextMenu(buildTrayMenu())
+  const menu = buildTrayMenu()
+  tray.setContextMenu(menu)
+  if (isE2e) e2eRuntime.trayMenu = menu
 }
 
 function switchPetFromMainPanel(payload = {}) {
@@ -2679,6 +2725,10 @@ function getE2eSnapshot() {
       : null,
     activityJournal: e2eRuntime.activityJournal.map((entry) => ({ ...entry })),
     reminderNotificationAttempts: e2eRuntime.reminderNotification.attempts,
+    reminderNotificationReplyHeld: Boolean(e2eRuntime.reminderNotification.releaseReply),
+    notificationsMuted: Boolean(getStore().get('mute')),
+    focusCompletionClickPending: Boolean(e2eRuntime.focusCompletionNotification?.listenerCount('click')),
+    companionNavigationPending: Boolean(mainPanelTodayCoordinator?.hasPending()),
   }
 }
 
@@ -2708,7 +2758,9 @@ function applyE2eAccountFixture(fixture = {}, { reset = false } = {}) {
     e2eRuntime.intent = { contextUserId: null, lastResult: null }
     e2eRuntime.lastCompletedRequest = null
     e2eRuntime.activityJournal = []
+    e2eRuntime.reminderNotification.releaseReply?.(true)
     e2eRuntime.reminderNotification = { outcome: 'show', attempts: 0 }
+    e2eRuntime.focusCompletionNotification = null
     getStore().set('petOnboardingStates', {})
     getStore().set('apiBaseUrl', defaultApiBaseUrl)
   }
@@ -2858,9 +2910,32 @@ async function handleE2eControl(event, method, ...args) {
   if (method === 'simulateSystemResume') return powerMonitor.emit('resume')
   if (method === 'showWindow') return showE2eWindow(args[0])
   if (method === 'hideWindow') return hideE2eWindow(args[0])
+  if (method === 'clickTrayToday') {
+    const item = e2eRuntime.trayMenu?.getMenuItemById(TRAY_OPEN_TODAY_ID)
+    if (!item?.enabled || !item.visible) return false
+    item.click({}, null, null)
+    return item.label
+  }
+  if (method === 'clickTrayMuteNotifications') {
+    const item = e2eRuntime.trayMenu?.getMenuItemById(TRAY_MUTE_NOTIFICATIONS_ID)
+    if (!item?.enabled || !item.visible) return false
+    item.click({}, null, null)
+    return true
+  }
+  if (method === 'clickFocusCompletionNotification') {
+    return e2eRuntime.focusCompletionNotification?.emit('click') ?? false
+  }
   if (method === 'setReminderNotificationOutcome') {
     if (!['show', 'failed'].includes(args[0])) return false
     e2eRuntime.reminderNotification.outcome = args[0]
+    return true
+  }
+  if (method === 'setReminderNotificationReplyHold') {
+    if (typeof args[0] !== 'boolean') return false
+    const state = e2eRuntime.reminderNotification
+    state.releaseReply?.(true)
+    state.releaseReply = null
+    state.holdNextReply = args[0]
     return true
   }
   if (method === 'prepareOnboarding') return prepareE2ePetOnboarding(args[0])
@@ -2953,6 +3028,14 @@ function registerIpc() {
       sendReminderEventToPetForRenderer(event, payload, expectedContext)
     ),
   )
+  ipcMain.handle('desktop:publish-reminder-lists-changed', (event, expectedContext, rendererInstanceNonce) => {
+    if (!getCurrentRendererRole(event, rendererInstanceNonce)) return false
+    const authorization = authorizeRendererAccountMutation(event, expectedContext, ['pet', 'quick-chat'], { requiredScope: 'pet' })
+    if (!authorization.ok || !isApiServerCurrent(expectedContext)) return false
+    if (!mainPanelWindow || mainPanelWindow.isDestroyed() || mainPanelWindow.webContents.isLoading()) return false
+    mainPanelWindow.webContents.send('desktop:reminder-lists-changed')
+    return true
+  })
   ipcMain.handle('desktop:schedule-reminder-wakeup', async (
     event, at, expectedContext, sequence, rendererInstanceNonce,
   ) => {
@@ -3166,11 +3249,12 @@ function registerIpc() {
       return 0
     }
   })
-  ipcMain.handle('desktop:set-pet-position', async (_event, position) => {
-    if (!position || typeof position !== 'object') {
-      return null
-    }
-    return setPetPosition(position.x, position.y)
+  ipcMain.on('desktop:pet-drag', (event, phase, payload, rendererInstanceNonce) => {
+    if (quitting || getCurrentRendererRole(event, rendererInstanceNonce) !== 'pet'
+      || event.senderFrame !== event.sender.mainFrame || !payload || typeof payload !== 'object') return
+    if (phase === 'begin') petDrag.begin(payload)
+    if (phase === 'move') petDrag.move(payload)
+    if (phase === 'end') petDrag.end(payload)
   })
 
   ipcMain.handle('desktop:show-notification', async (event, payload, expectedContext) => {
@@ -3193,25 +3277,25 @@ function registerIpc() {
     if (payload?.reminderServer !== undefined && !isApiServerCurrent({ server: payload.reminderServer })) {
       return false
     }
-    if (getStore().get('mute')) {
-      return false
-    }
-
     const isPetReminder = senderRole === 'pet' && payload?.reminderServer !== undefined
-    const requiresConfirmation = isPetReminder && (process.platform === 'win32' || isE2e)
     const options = {
       title: payload?.title || 'Detachym',
       body: payload?.body || '',
     }
-    let notification
-    try {
-      notification = isPetReminder && isE2e ? createE2eReminderNotification() : new Notification(options)
-    } catch (error) {
-      if (requiresConfirmation) return false
-      throw error
+    if (isPetReminder && (process.platform === 'win32' || isE2e)) {
+      const accepted = presentWindowsReminderNotification(getTodayNavigationContext(), payload, () => (
+        isE2e ? createE2eReminderNotification() : new Notification(options)
+      ))
+      const state = e2eRuntime.reminderNotification
+      if (accepted && isE2e && state.holdNextReply) {
+        state.holdNextReply = false
+        return new Promise((resolve) => { state.releaseReply = resolve })
+      }
+      return accepted
     }
-    if (requiresConfirmation) return showWindowsReminderNotification(notification, bindReminderNotificationNavigation)
 
+    if (getStore().get('mute')) return false
+    const notification = new Notification(options)
     if (isPetReminder) bindReminderNotificationNavigation(notification)
     notification.show()
     return true

@@ -93,8 +93,10 @@ export async function todayAgendaScenario(context) {
       assert(rows[index].text.includes(item.title), 'Today row shows the wrong reminder title')
     }
     assert(/今日送达|Delivered today/.test(rows[0].text), 'Overnight row does not label the displayed delivery time')
-    assert(await main.evaluate(`document.querySelector(${JSON.stringify(EARLIER)}).textContent.includes('1')`),
-      'Earlier count should keep the untriggered backlog only')
+    assert(await main.evaluate(`(() => {
+      const node = document.querySelector(${JSON.stringify(EARLIER)})
+      return node?.tagName === 'BUTTON' && node.textContent.includes('1')
+    })()`), 'Single-category earlier backlog should keep its direct action and count')
     assert(await main.evaluate(`!document.querySelector(${JSON.stringify(AGENDA)}).textContent.includes(${JSON.stringify(otherPet.title)})`), 'Today agenda includes a different pet’s reminder')
     await waitFor(() => stub.requests.slice(refreshStart).some((request) => request.method === 'GET' && request.pathname === SERIES), {
       description: 'a device calendar change refreshes the existing reminder sources',

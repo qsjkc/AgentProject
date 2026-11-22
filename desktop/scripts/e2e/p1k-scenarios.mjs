@@ -17,6 +17,7 @@ export const REQUIRED_E2E_BRIDGE_API = Object.freeze({
     'snapshot',
     'showWindow',
     'setReminderNotificationOutcome',
+    'setReminderNotificationReplyHold',
     'prepareOnboarding',
     'expireOperationCapabilities',
     'switchAccount',
@@ -780,19 +781,104 @@ export async function hiddenReminderDeadlineScenario(context) {
   }
 }
 
+function observeReminderListUpdates(main) {
+  return main.evaluate(`(() => {
+    let updates = 0
+    const unsubscribe = window.desktopBridge.onReminderListsChanged(() => { updates += 1 })
+    window.readReminderUpdateCount = () => updates
+    window.stopReminderUpdateObservation = () => {
+      unsubscribe()
+      delete window.readReminderUpdateCount
+      delete window.stopReminderUpdateObservation
+    }
+  })()`)
+}
+
+export async function unmuteReminderScenario(context) {
+  await resetAuthenticated(context)
+  const { pet } = context.pages
+  const account = context.stub.fixture.accounts.get(USERS.A.id)
+  const originalReminders = account.reminders
+  const originalMuted = (await callE2e(pet, 'snapshot')).notificationsMuted
+  const toggle = () => callE2e(pet, 'clickTrayMuteNotifications')
+  account.reminders = []
+  try {
+    if (!originalMuted) assertEqual(await toggle(), true, 'The actual tray mute callback is available')
+    await expectSnapshot(pet, (snapshot) => snapshot.notificationsMuted === true, 'the tray persisted mute')
+    await callE2e(pet, 'hideWindow', 'pet')
+    await waitFor(() => pet.evaluate("document.visibilityState === 'hidden'"), { description: 'pet remains hidden for the muted reminder' })
+    const reminder = createReminderRecord({
+      user: USERS.A, id: context.stub.fixture.nextReminderId++, title: '取消静音后的待处理提醒',
+      petType: 'pig', remindAt: new Date(Date.now() - 1000),
+    })
+    const before = await callE2e(pet, 'snapshot')
+    const readStart = context.stub.requests.length
+    account.reminders = [reminder]
+    await callE2e(pet, 'flushReminderPoll')
+    assert(context.stub.requests.slice(readStart).some((request) => request.method === 'GET'
+      && request.pathname === '/api/v1/reminders' && new URLSearchParams(request.search).has('due_before')),
+      'The hidden pet must read the due reminder before unmuting')
+    assert(!reminder.triggered_at, 'The muted, hidden reminder was acknowledged without presentation')
+    assertEqual((await callE2e(pet, 'snapshot')).reminderNotificationAttempts, before.reminderNotificationAttempts,
+      'The muted channel submitted a native notification')
+
+    const unmutedAt = Date.now()
+    assertEqual(await toggle(), true, 'The actual tray unmute callback is available')
+    await expectSnapshot(pet, (snapshot) => snapshot.notificationsMuted === false, 'the tray persisted unmute')
+    await waitFor(() => reminder.triggered_at, { timeoutMs: 5000, description: 'unmute resumes a hidden reminder before regular reconciliation' })
+    const latencyMs = Date.parse(reminder.triggered_at) - unmutedAt
+    assert(latencyMs >= 0 && latencyMs <= 5000, 'The resumed reminder missed the five-second window', { latencyMs })
+    assertEqual((await callE2e(pet, 'snapshot')).reminderNotificationAttempts - before.reminderNotificationAttempts, 1,
+      'Unmute submitted the native notification more than once')
+    assertEqual(context.stub.requests.filter((request) => request.method === 'POST'
+      && request.pathname === `/api/v1/reminders/${reminder.id}/trigger`).length, 1, 'Unmute acknowledged the occurrence exactly once')
+    assertEqual(reminder.status, 'pending', 'Unmute must keep the reminder available for explicit completion')
+    assert(await pet.evaluate("document.visibilityState === 'hidden'"), 'The unmute check must not reveal the pet')
+    return { actualTrayCallback: true, hidden: true, nativeSubmissions: 1, acknowledgments: 1, latencyMs }
+  } finally {
+    account.reminders = originalReminders
+    if ((await callE2e(pet, 'snapshot')).notificationsMuted !== originalMuted) await toggle()
+    await callE2e(pet, 'showWindow', 'pet')
+  }
+}
+
 export async function reminderConfirmationRetryScenario(context) {
   await resetAuthenticated(context)
-  const pet = context.pages.pet
+  const { main, pet } = context.pages
   await waitFor(() => pet.evaluate("document.visibilityState === 'visible'"), { description: 'pet visible for overdue reminder' })
   const account = context.stub.fixture.accounts.get(USERS.A.id)
   const previousReminders = account.reminders
+  const today = new Date().setHours(0, 0, 0, 0)
   const reminder = createReminderRecord({
     user: USERS.A,
     id: context.stub.fixture.nextReminderId++,
     title: '等待确认的会话恢复提醒',
-    remindAt: new Date(Date.now() - 1000),
+    remindAt: new Date(Math.max(today, Date.now() - 1000)),
   })
   const route = `/api/v1/reminders/${reminder.id}/trigger`
+  const agendaItem = `[data-e2e="today-agenda-item"][data-target-id="${reminder.id}"]`
+  const dueItem = `${agendaItem}[data-status="due"]`
+  const deliveredItem = `${agendaItem}[data-status="delivered"]`
+  const upcomingRow = `#upcoming-reminders [data-reminder-row-id="${reminder.id}"]`
+  const deliveredRow = `#delivered-reminders [data-reminder-row-id="${reminder.id}"]`
+  const tryPublishFrom = (page, role, otherServer = false) => page.evaluate(`(async () => {
+    const bridge = window.desktopBridge
+    const server = await bridge.getApiBaseUrl()
+    const expected = { userId: ${USERS.A.id}, petType: 'pig', session: await bridge.getSessionSnapshot() }
+    let unsubscribe
+    const published = new Promise((resolve, reject) => {
+      unsubscribe = bridge.onPetRelationshipChanged(({ authoritative }) => {
+        if (!authoritative?.id) return resolve(null)
+        bridge.publishReminderListsChanged({ ...expected, authoritative, server: ${otherServer} ? server + '/other' : server }).then(resolve, reject)
+      })
+    })
+    try {
+      if (!await bridge.e2e.broadcastRelationshipTo(${JSON.stringify(role)}, ${JSON.stringify(createRelationship(USERS.A))})) return null
+      return await published
+    } finally {
+      unsubscribe()
+    }
+  })()`)
   const triggerAttempts = () => context.stub.requests.filter((request) => request.method === 'POST' && request.pathname === route).length
   const failedTrigger = context.stub.holdNext('POST', route, {
     statusCode: 503,
@@ -808,9 +894,17 @@ export async function reminderConfirmationRetryScenario(context) {
   try {
     await withTimeout(failedTrigger.arrived, 15_000, 'first attempt to acknowledge overdue reminder')
     assert(await pet.evaluate(`document.querySelector('.pet-bubble')?.textContent.includes(${JSON.stringify(reminder.title)})`), 'The first overdue reminder did not display a bubble')
+    await observeReminderListUpdates(main)
+    await main.evaluate("window.dispatchEvent(new Event('detachym:reminders-changed'))")
+    await main.waitForSelector(dueItem)
+    await main.waitForSelector(upcomingRow)
+    assertEqual(await tryPublishFrom(main, 'main-panel'), false, 'A main-panel capability cannot publish pet reminder acknowledgment')
+    assertEqual(await tryPublishFrom(pet, 'pet', true), false, 'A pet capability cannot publish acknowledgment for another server')
     failedTrigger.release()
     await firstPoll
     assert(!reminder.triggered_at, 'The failed acknowledgment nevertheless triggered the reminder')
+    assertEqual(await main.evaluate('window.readReminderUpdateCount()'), 0, 'Failed or unauthorized acknowledgments refreshed the main panel')
+    assert(await main.evaluate(`Boolean(document.querySelector(${JSON.stringify(dueItem)}))`), 'Main lost the due reminder before acknowledgment')
 
     // Force a fresh renderer with the same profile before the acknowledgment retry.
     // The runner does not re-seed the login, local storage, or the reminder.
@@ -820,16 +914,152 @@ export async function reminderConfirmationRetryScenario(context) {
     successfulTrigger.release()
     await waitFor(() => reminder.triggered_at, { description: 'overdue reminder acknowledgment persisted' })
     await callE2e(pet, 'flushReminderPoll')
+    await waitFor(() => main.evaluate(`Boolean(document.querySelector(${JSON.stringify(deliveredItem)}))
+      && Boolean(document.querySelector(${JSON.stringify(deliveredRow)}))
+      && !document.querySelector(${JSON.stringify(upcomingRow)})`), {
+      timeoutMs: 5000, description: 'the open main panel refreshes both reminder lists after pet acknowledgment',
+    })
+    assertEqual(await main.evaluate('window.readReminderUpdateCount()'), 1, 'The successful retry did not publish exactly one main-panel refresh')
+    await main.click(deliveredItem)
+    assert(await main.evaluate(`document.activeElement === document.querySelector(${JSON.stringify(deliveredRow)})`), 'The refreshed Today item did not focus the delivered reminder')
     assertEqual(triggerAttempts(), 2, 'Exactly one retry should confirm the reminder')
     const receipts = await presentations()
     assertEqual(receipts.length, 1, 'The acknowledgment retry emitted another presentation')
     assert(receipts[0].bubbleShown && receipts[0].nativeShown, 'The first presentation did not cover both channels', receipts[0])
-    return { triggerAttempts: triggerAttempts(), presentations: receipts.length, sameProfileReload: true }
+    return { triggerAttempts: triggerAttempts(), presentations: receipts.length, sameProfileReload: true, mainPanelRefreshed: true, unauthorizedRefreshRejected: true }
   } finally {
     failedTrigger.release()
     successfulTrigger.release()
     await firstPoll.catch(() => {})
+    await main.evaluate('window.stopReminderUpdateObservation?.()').catch(() => {})
     account.reminders = previousReminders
+  }
+}
+
+export async function quickChatReminderSyncScenario(context) {
+  const { main, quick } = context.pages
+  const { stub } = context
+  const account = stub.fixture.accounts.get(USERS.A.id)
+  const previousReminders = account.reminders
+  const remindersPath = '/api/v1/reminders'
+  const title = '检查窗边的花'
+  const draft = `明天12:00提醒我${title}`
+  let save
+  let relationshipRefresh
+  account.reminders = []
+  try {
+    await resetAuthenticated(context)
+    await main.waitForSelector('[data-e2e="today-reminder-agenda"][data-state="empty"]')
+    await main.waitForSelector('[data-e2e="upcoming-reminder-empty"]')
+    await callE2e(quick, 'showWindow', 'quick-chat')
+    await quick.reload()
+    await quick.waitForSelector(REQUIRED_SELECTORS.quickChatInput)
+    assertEqual(await main.evaluate('document.visibilityState'), 'visible', 'Quick Chat closed the main panel')
+    await observeReminderListUpdates(main)
+
+    save = stub.holdNext('POST', remindersPath)
+    await quick.input(REQUIRED_SELECTORS.quickChatInput, draft)
+    await quick.click(REQUIRED_SELECTORS.quickChatSend)
+    const request = await withTimeout(save.arrived, 5000, 'held Quick Chat reminder creation')
+    const submitted = JSON.parse(request.body)
+    assertEqual(submitted.pet_type, 'pig', 'Quick Chat used an unrelated pet context')
+    assertEqual(submitted.title, title, 'Quick Chat changed the reminder title')
+
+    // Show the pending reminder's date in Today before the API saves it. The pet's real clock stays unchanged.
+    const day = new Date(submitted.remind_at)
+    const morning = new Date(day).setHours(9, 0, 0, 0)
+    day.setHours(24, 0, 0, 0)
+    const beforeCalendarChange = stub.requests.length
+    await main.evaluate(`(() => {
+      const realNow = Date.now
+      window.restoreQuickReminderClock = () => { Date.now = realNow; delete window.restoreQuickReminderClock }
+      Date.now = () => ${morning}
+      window.dispatchEvent(new Event('focus'))
+    })()`)
+    await waitFor(() => stub.requests.slice(beforeCalendarChange).some(({ method, pathname, search }) => (
+      method === 'GET' && pathname === remindersPath && new URLSearchParams(search).get('due_before') === day.toISOString()
+    )), { description: 'the open agenda reads the submitted reminder’s local day' })
+    await main.waitForSelector('[data-e2e="today-reminder-agenda"][data-state="empty"]')
+    assertEqual(await main.evaluate('window.readReminderUpdateCount()'), 0, 'An uncommitted reminder refreshed the main panel')
+
+    relationshipRefresh = stub.holdNext('GET', '/api/v1/pets/pig/relationship', {
+      statusCode: 503, payload: { detail: 'Temporary relationship refresh failure' },
+    })
+    save.release()
+    const persisted = await waitFor(() => account.reminders.find(({ source_text }) => source_text === draft), {
+      timeoutMs: 5000, description: 'Quick Chat saves one owned reminder',
+    })
+    assertEqual(persisted.user_id, USERS.A.id, 'Quick Chat saved the reminder to another account')
+    assertEqual(persisted.remind_at, submitted.remind_at, 'Quick Chat changed the reminder time')
+    await withTimeout(relationshipRefresh.arrived, 5000, 'optional post-create relationship refresh')
+
+    const agendaItem = `[data-e2e="today-agenda-item"][data-status="scheduled"][data-target-id="${persisted.id}"]`
+    const upcomingRow = `#upcoming-reminders [data-reminder-row-id="${persisted.id}"]`
+    await waitFor(() => main.evaluate(`document.querySelector(${JSON.stringify(agendaItem)})?.textContent.includes(${JSON.stringify(title)})
+      && document.querySelector(${JSON.stringify(upcomingRow)})?.textContent.includes(${JSON.stringify(title)})`), {
+      timeoutMs: 5000, description: 'Today and Upcoming update while the optional relationship refresh is held',
+    })
+    assertEqual(await main.evaluate('window.readReminderUpdateCount()'), 1, 'The committed Quick Chat reminder must publish exactly one refresh')
+    assert(await quick.evaluate(`document.querySelector(${JSON.stringify(REQUIRED_SELECTORS.quickChatSend)}).disabled`), 'The relationship refresh was not still pending')
+    relationshipRefresh.release()
+    await waitFor(() => quick.evaluate(`!document.querySelector(${JSON.stringify(REQUIRED_SELECTORS.quickChatSend)}).disabled
+      && document.querySelector(${JSON.stringify(REQUIRED_SELECTORS.quickChatAssistantMessage)})?.textContent.includes(${JSON.stringify(title)})`), {
+      description: 'the confirmed Quick Chat message survives the relationship failure',
+    })
+    assertEqual(account.reminders.length, 1, 'Quick Chat created duplicate reminders')
+    return { todayUpdated: true, upcomingUpdated: true, refreshBeforeRelationship: true, confirmationRetained: true, reminderId: persisted.id }
+  } finally {
+    save?.release()
+    relationshipRefresh?.release()
+    await main.evaluate('window.stopReminderUpdateObservation?.(); window.restoreQuickReminderClock?.()').catch(() => {})
+    account.reminders = previousReminders
+  }
+}
+
+export async function reminderNotificationReceiptRecoveryScenario(context) {
+  await resetAuthenticated(context)
+  const { main, pet } = context.pages
+  const account = context.stub.fixture.accounts.get(USERS.A.id)
+  const previousReminders = account.reminders
+  account.reminders = []
+  const reminder = createReminderRecord({
+    user: USERS.A,
+    id: context.stub.fixture.nextReminderId++, title: '系统接受后重载的提醒',
+    remindAt: new Date(Date.now() - 1000),
+  })
+  const triggerAttempts = () => context.stub.requests.filter((request) => (
+    request.method === 'POST' && request.pathname === `/api/v1/reminders/${reminder.id}/trigger`
+  )).length
+
+  try {
+    await callE2e(main, 'hideWindow', 'pet')
+    await waitFor(() => pet.evaluate("document.visibilityState === 'hidden'"), { description: 'pet hidden for first submission' })
+    assertEqual(await callE2e(main, 'setReminderNotificationReplyHold', true), true, 'Fixture can hold a successful native reply')
+    const before = (await callE2e(main, 'snapshot')).reminderNotificationAttempts
+    account.reminders = [reminder]
+    await pet.evaluate('void window.desktopBridge.e2e.flushReminderPoll()')
+    const held = await expectSnapshot(main, (snapshot) => snapshot.reminderNotificationReplyHeld, 'accepted native notification with held IPC reply')
+    assertEqual(held.reminderNotificationAttempts, before + 1, 'The held reply follows exactly one simulated native submission')
+    const hasReceipt = await pet.evaluate(`JSON.parse(localStorage.getItem('detachym.pending-reminder-receipts.v1') || '[]')
+      .some((record) => record[3] === ${reminder.id} && record[4] === ${JSON.stringify(reminder.remind_at)})`)
+    assertEqual(hasReceipt, false, 'The renderer saved a receipt before receiving acceptance')
+    assertEqual(triggerAttempts(), 0, 'The renderer triggered the reminder before receiving acceptance')
+
+    await callE2e(main, 'setReminderNotificationOutcome', 'failed')
+    await pet.reload()
+    assert(await pet.evaluate("document.visibilityState === 'hidden'"), 'Pet became visible after reloading')
+    await waitFor(() => reminder.triggered_at, { description: 'reloaded hidden pet acknowledges previously accepted notification' })
+    await callE2e(pet, 'flushReminderPoll')
+    const after = await callE2e(main, 'snapshot')
+    assertEqual(after.reminderNotificationAttempts, held.reminderNotificationAttempts, 'Reload submitted the same notification twice')
+    assertEqual(triggerAttempts(), 1, 'Reload did not trigger the reminder exactly once')
+    assert(!await pet.evaluate(`document.querySelector('.pet-bubble')?.textContent.includes(${JSON.stringify(reminder.title)})`), 'Hidden recovery showed the reminder bubble')
+    return { simulatedNativeSubmissions: after.reminderNotificationAttempts - before, triggerAttempts: triggerAttempts(), hiddenReload: true, receiptMissingBeforeReload: true }
+  } finally {
+    account.reminders = previousReminders
+    await callE2e(main, 'setReminderNotificationReplyHold', false)
+    await callE2e(main, 'setReminderNotificationOutcome', 'show')
+    await callE2e(main, 'showWindow', 'pet')
   }
 }
 
@@ -1476,7 +1706,10 @@ export const SCENARIOS = Object.freeze({
   'reduced-motion': reducedMotionScenario,
   'failed-knowledge-upload': failedKnowledgeUploadScenario,
   'hidden-reminder-deadline': hiddenReminderDeadlineScenario,
+  'unmute-reminder': withProactiveCompanionDisabled(unmuteReminderScenario),
   'reminder-confirmation-retry': reminderConfirmationRetryScenario,
+  'quick-chat-reminder-sync': quickChatReminderSyncScenario,
+  'reminder-notification-receipt-recovery': reminderNotificationReceiptRecoveryScenario,
   'reminder-reconnect': withProactiveCompanionDisabled(reminderReconnectScenario),
   'conversation-return': conversationReturnScenario,
   'quick-chat-refresh-recovery': quickChatRefreshRecoveryScenario,

@@ -77,7 +77,8 @@ import {
   rewardPetRelationship,
   updatePetOutfit,
 } from './shared/pet-relationships-api'
-import { getPetVisual } from './shared/pets'
+import { getPetLabelKey } from './shared/pet-labels'
+import { getPetPortrait } from './shared/pet-portraits'
 import {
   createPetOnboardingContextKey,
   createPetOnboardingSampleReminderPayload,
@@ -393,7 +394,7 @@ function LoginView({
           <LanguageSelector language={language} onChange={onLanguageChange} compact />
         </div>
         <div className="desktop-login-brand">
-          <img src={getPetVisual('pig', 'happy').image} alt="" />
+          <img src={getPetPortrait('pig', 'happy')} alt="" />
           <h1>{t(language, 'desktopTitle')}</h1>
         </div>
         <p className="desktop-login-intro">{t(language, 'desktopIntro')}</p>
@@ -474,8 +475,7 @@ function PetPreferencePicker({ language, activePetType, onSelect, saving }) {
       <div className="sidebar-copy">{t(language, 'petSelectionHint')}</div>
       <div className="pet-option-grid">
         {PET_OPTIONS.map((option) => {
-          const petVisual = getPetVisual(option, 'idle')
-          const petLabel = t(language, petVisual.labelKey)
+          const petLabel = t(language, getPetLabelKey(option))
           const isActive = option === activePetType
 
           return (
@@ -487,7 +487,7 @@ function PetPreferencePicker({ language, activePetType, onSelect, saving }) {
               onClick={() => onSelect(option)}
               disabled={saving}
             >
-              <img className="pet-option-image" src={petVisual.image} alt={petLabel} />
+              <img className="pet-option-image" src={getPetPortrait(option)} alt={petLabel} />
               <span className="pet-option-label">{petLabel}</span>
             </button>
           )
@@ -770,6 +770,7 @@ function MainPanelApp() {
   const intentOverrideRef = useRef(null)
   const intentConsumerRef = useRef(null)
   const relationshipRequestRef = useRef(0)
+  const failedCompanionSyncRef = useRef(null)
   const dailySummaryRequestRef = useRef(0)
   const accountRequestEpochRef = useRef(0)
   const activeSessionTokenRef = useRef(null)
@@ -807,7 +808,7 @@ function MainPanelApp() {
   const currentPetType = user?.preferences?.pet_type ?? 'cat'
   const reminderDraftFeedback = getReminderParseFeedback(reminderDraftError, language)
   useEffect(() => { setReminderDraftError(null) }, [prompt, currentPetType, activeSessionId])
-  const currentPetLabel = useMemo(() => t(language, getPetVisual(currentPetType, 'idle').labelKey), [currentPetType, language])
+  const currentPetLabel = useMemo(() => t(language, getPetLabelKey(currentPetType)), [currentPetType, language])
   const petOnboardingContextKey = useMemo(() => createPetOnboardingContextKey({
     userId: user?.id,
     relationshipId: petRelationship?.id,
@@ -861,6 +862,13 @@ function MainPanelApp() {
     setTab('chat')
     setTodayNavigation({ contextKey: todayContextKey })
   }, [todayContextKey])
+  const handleOpenFocus = useCallback(() => {
+    intentConsumerRef.current.cancel()
+    pendingFocusNavigationRef.current = true
+    tabRef.current = 'chat'
+    setTab('chat')
+    setFocusNavigationVersion((value) => value + 1)
+  }, [])
 
   useEffect(() => {
     if (!authenticated || !apiBaseUrl || !user?.id) return undefined
@@ -869,10 +877,12 @@ function MainPanelApp() {
         || request.userId !== activeUserIdRef.current
         || request.petType !== activePetTypeRef.current
         || request.generation !== activeSessionSnapshotRef.current?.generation) return false
+      // Preload rechecks the exact saved completion before committing the navigation.
+      if (request.focusCompletion) return { commit: handleOpenFocus }
       requestTodayNavigation()
       return true
     })
-  }, [apiBaseUrl, authenticated, requestTodayNavigation, user?.id])
+  }, [apiBaseUrl, authenticated, handleOpenFocus, requestTodayNavigation, user?.id])
 
   useEffect(() => {
     if (!todayNavigation || todayNavigation.contextKey !== todayContextKey || effectiveTab !== 'chat') return undefined
@@ -1134,6 +1144,7 @@ function MainPanelApp() {
       epoch: accountRequestEpochRef.current,
       session: activeSessionSnapshotRef.current,
     }
+    failedCompanionSyncRef.current = null
     setPetRelationshipLoading(true)
     setPetRelationshipError(false)
 
@@ -1199,6 +1210,7 @@ function MainPanelApp() {
         relationshipRequestRef.current === requestId
         && isMainPanelAccountRequestCurrent(requestContext)
       ) {
+        failedCompanionSyncRef.current = requestContext
         if (!cachedRelationship) setPetRelationship(null)
         // An optional relationship read can fail after the pet scope is already validated.
         if (operationContext) setSettledCompanionContext((previous) => {
@@ -1502,6 +1514,10 @@ function MainPanelApp() {
     }
   }, [])
 
+  useEffect(() => window.desktopBridge?.onReminderListsChanged?.(() => {
+    window.dispatchEvent(new Event('detachym:reminders-changed'))
+  }), [])
+
   useEffect(() => {
     const handleVisibilityChange = () => {
       setDocumentVisible(document.visibilityState === 'visible')
@@ -1714,6 +1730,7 @@ function MainPanelApp() {
           epoch: accountRequestEpochRef.current,
           relationshipReady: true,
         })
+        failedCompanionSyncRef.current = null
         setPetRelationshipError(false)
         setPetRelationship(relationship)
         void loadPetDailySummary(currentPetType)
@@ -3086,14 +3103,6 @@ function MainPanelApp() {
     setStatusText(language === 'zh-CN' ? '快捷聊天已打开。' : 'Quick chat opened.')
   }
 
-  const handleOpenFocus = () => {
-    intentConsumerRef.current.cancel()
-    pendingFocusNavigationRef.current = true
-    tabRef.current = 'chat'
-    setTab('chat')
-    setFocusNavigationVersion((value) => value + 1)
-  }
-
   const handleFocusTodayStep = (title, origin) => {
     setFocusStepIntent({ title, origin, contextKey: todayContextKey })
     handleOpenFocus()
@@ -3107,16 +3116,27 @@ function MainPanelApp() {
   }
 
   const handleRetryCompanionSync = async () => {
-    if (petRelationshipLoading) return
-    const requestContext = {
-      ...getCurrentMainPanelAccountContext(),
-      epoch: accountRequestEpochRef.current,
-    }
+    const requestContext = failedCompanionSyncRef.current
+    if (petRelationshipLoading || !isMainPanelAccountRequestCurrent(requestContext)) return
+    // Starting the load consumes the failure before any concurrent event can retry it.
     const ready = await loadPetRelationship(requestContext.petType)
     if (ready && isMainPanelAccountRequestCurrent(requestContext)) {
       void loadPetDailySummary(requestContext.petType)
     }
   }
+
+  useEffect(() => {
+    if (!authenticated || !petRelationshipError || petRelationshipLoading) return undefined
+    const retry = () => { void handleRetryCompanionSync() }
+    window.addEventListener('online', retry)
+    window.addEventListener('focus', retry)
+    const unsubscribeResume = window.desktopBridge?.onSystemResume?.(retry)
+    return () => {
+      window.removeEventListener('online', retry)
+      window.removeEventListener('focus', retry)
+      unsubscribeResume?.()
+    }
+  }, [authenticated, petRelationshipError, petRelationshipLoading])
 
   if (!initialized) {
     return (
@@ -3148,7 +3168,7 @@ function MainPanelApp() {
               <LanguageSelector language={language} onChange={updateLanguage} compact />
             </div>
             <div className="desktop-login-brand">
-              <img src={getPetVisual('pig', 'happy').image} alt="" />
+              <img src={getPetPortrait('pig', 'happy')} alt="" />
               <h1>{language === 'zh-CN' ? '恢复登录' : 'Restore your session'}</h1>
             </div>
             <p className="desktop-login-intro" role="status">
@@ -3257,7 +3277,7 @@ function MainPanelApp() {
         <header className="main-product-header">
           <div className="main-header-top">
             <div className="main-brand">
-              <img src={getPetVisual(currentPetType, 'happy').image} alt="" />
+              <img src={getPetPortrait(currentPetType, 'happy')} alt="" />
               <div>
                 <div className="main-brand-label">Detachym · {currentPetLabel}</div>
                 <h1>{language === 'zh-CN' ? '今天，也一起慢慢来' : 'A little company for your day'}</h1>

@@ -214,10 +214,8 @@ jobs:
           npm run build
       - run: npm run test:e2e:runner
       - run: npm run build:renderer
-      - run: npm run test:e2e
-      - run: npm run pack
-      - run: npm run test:packaged
-      - run: npm run test:packaged:real-backend
+      - name: Run desktop acceptance while the real registration code expires
+        run: npm run test:packaged:real-backend -- --ci-prepare
       - name: Upload Electron evidence
         if: always()
         uses: actions/upload-artifact@v4

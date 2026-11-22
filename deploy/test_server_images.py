@@ -8,6 +8,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import sys
 import tarfile
 import tempfile
 import textwrap
@@ -621,6 +622,7 @@ class ServerImageManifestTests(unittest.TestCase):
 
 class RemoteImageDeploymentTests(unittest.TestCase):
     SOURCE_SHA = "a" * 40
+    RUN_ID = "12345"
 
     @classmethod
     def setUpClass(cls):
@@ -644,6 +646,10 @@ class RemoteImageDeploymentTests(unittest.TestCase):
         mocks = r'''
 READINESS_ATTEMPTS=0
 python3() {
+  if [[ "$1" == -c ]]; then
+    "$TEST_PYTHON_BIN" "$@"
+    return
+  fi
   printf 'python3:%s\n' "$2" >> "$TEST_LOG"
   if [[ "$TEST_FAIL" == "$2" ]]; then return 41; fi
   if [[ "$*" == *--running* ]]; then
@@ -688,7 +694,8 @@ sleep() { :; }
                 "UNRELATED_SETTING=keep-me\n"
             )
             log = root / "commands.log"
-            env = {**os.environ, "DEPLOY_SOURCE_SHA": self.SOURCE_SHA,
+            env = {**os.environ, "DEPLOY_SOURCE_SHA": self.SOURCE_SHA, "DEPLOY_RUN_ID": self.RUN_ID,
+                   "TEST_PYTHON_BIN": Path(sys.executable).as_posix(),
                    "TEST_LOG": log.as_posix(), "TEST_FAIL": failure,
                    "TEST_READINESS_FAILURES": str(readiness_failures),
                    "DESKTOP_RELEASE_VERSION": "1.1.0-rc.5", "DESKTOP_RELEASE_FILE": filename,
@@ -716,6 +723,7 @@ sleep() { :; }
         self.assertIn("docker:compose ps", calls, "Container status check was skipped")
         self.assertIsNotNone(result.provenance, "Running image provenance was not written")
         self.assertEqual(result.provenance["status"], "passed")
+        self.assertEqual(result.provenance["workflowRunId"], self.RUN_ID)
         self.assertLess(calls.index("curl"), calls.index("docker:compose ps"))
         self.assertEqual(calls[-1], "python3:inspect")
 

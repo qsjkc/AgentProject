@@ -1,9 +1,10 @@
 // Real Electron UI -> real FastAPI -> disposable SQLite. No production writes.
 import { spawn, execFile } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
+import { once } from 'node:events'
 import { mkdir, mkdtemp, readFile, writeFile, rm, access, readdir } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, isAbsolute, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import { assert, waitFor, serializeError } from './e2e/assertions.mjs'
@@ -15,6 +16,15 @@ const root = fileURLToPath(new URL('../..', import.meta.url))
 const desktop = join(root, 'desktop')
 const packaged = process.argv.includes('--packaged')
 const registrationOnly = process.argv.includes('--registration-only')
+const ciPrepare = process.argv.includes('--ci-prepare')
+const npmCli = process.env.npm_execpath
+if (ciPrepare) {
+  assert(process.platform === 'win32' && packaged && !registrationOnly,
+    '--ci-prepare requires Windows packaged acceptance')
+  assert(npmCli && isAbsolute(npmCli) && basename(npmCli) === 'npm-cli.js',
+    '--ci-prepare must be started through npm')
+  await access(npmCli)
+}
 const timeZoneOverride = process.argv.find((value) => value.startsWith('--timezone='))?.slice('--timezone='.length)
 if (timeZoneOverride) new Intl.DateTimeFormat('en', { timeZone: timeZoneOverride })
 const expectedVersion = JSON.parse(await readFile(join(desktop, 'package.json'), 'utf8')).version
@@ -24,13 +34,14 @@ const artifacts = join(desktop, 'artifacts/e2e', `real-backend-${Date.now()}`)
 const password = `Acceptance-${randomBytes(12).toString('hex')}`
 const secret = randomBytes(32).toString('hex')
 const execAsync = promisify(execFile)
-const report = { status: 'running', backend: 'real-local-fastapi-sqlite', packaged, registrationOnly, checks: [], artifacts }
+const report = { status: 'running', backend: 'real-local-fastapi-sqlite', packaged, registrationOnly, checks: [], petSwitches: [], artifacts }
 report.evidenceScope = { registration: 'real Web UI and FastAPI, no seeded accounts', email: 'local SMTP STARTTLS/AUTH capture; not external inbox delivery', growth: 'real earned XP and outfits; long-term level thresholds covered separately by backend tests' }
 const identities = {}
 let backend
 let electron
 let browser
 let registrationPage
+let preparationChild
 let expiringMessage
 let backendPort
 let pages = {}
@@ -64,6 +75,39 @@ async function stopProcess(child) {
     }
   }
   await waitFor(() => child.exitCode !== null || child.signalCode !== null, { description: 'owned process exit' })
+}
+
+async function prepareWindowsAcceptance() {
+  const interrupt = new AbortController()
+  const abortPreparation = (signal) => interrupt.abort(new Error(`Windows acceptance preparation interrupted by ${signal}`))
+  process.on('SIGINT', abortPreparation)
+  process.on('SIGTERM', abortPreparation)
+  report.ciPreparation = []
+  try {
+    for (const script of ['test:e2e', 'pack', 'test:packaged']) {
+      interrupt.signal.throwIfAborted()
+      const step = { script, status: 'failed' }
+      report.ciPreparation.push(step)
+      const startedAt = performance.now()
+      console.log(`[real-backend] CI preparation: npm run ${script}`)
+      try {
+        preparationChild = launchProcess(process.execPath, [npmCli, 'run', script], {
+          cwd: desktop, env: processEnv, stdio: ['ignore', 'inherit', 'inherit'],
+        })
+        const [code, signal] = await once(preparationChild, 'close', { signal: interrupt.signal })
+        preparationChild = null
+        assert(code === 0, `npm run ${script} exited with ${signal ?? code}`)
+        step.status = 'passed'
+      } finally {
+        step.elapsedMs = Math.round(performance.now() - startedAt)
+      }
+    }
+    await access(join(desktop, 'dist/releases/win-unpacked/resources/app.asar'))
+    interrupt.signal.throwIfAborted()
+  } finally {
+    process.off('SIGINT', abortPreparation)
+    process.off('SIGTERM', abortPreparation)
+  }
 }
 
 async function startBackend() {
@@ -277,12 +321,13 @@ async function waitForEnabled(page, selector, description) {
     return Boolean(button && !button.disabled);
   })()`), { description })
 }
-async function clickEnabled(page, selector) {
+async function clickEnabled(page, selector, { confirmMovedPointer = false } = {}) {
   // Raw CDP dispatches pointer input even to disabled buttons. Match a real
   // available user action; perform exactly one click and verify its outcome.
   await waitForEnabled(page, selector, `enabled action ${selector}`)
   const encoded = JSON.stringify(selector)
   await page.evaluate(`document.querySelector(${encoded})?.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' })`)
+  const movePointer = ({ x, y }) => page.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y, button: 'none', buttons: 0 })
   let previousRect = null
   const point = await waitFor(async () => {
     const candidate = await page.evaluate(`(() => {
@@ -298,12 +343,39 @@ async function clickEnabled(page, selector) {
     const stable = candidate && previousRect && ['x', 'y', 'width', 'height']
       .every((key) => Math.abs(candidate[key] - previousRect[key]) < 0.25)
     previousRect = candidate
-    return stable ? candidate : null
+    if (!stable) return null
+    if (confirmMovedPointer) {
+      // Hover and late dashboard updates can move or disable the control before the press.
+      await movePointer(candidate)
+      const stillHit = await page.evaluate(`(() => {
+        const button = document.querySelector(${encoded});
+        return Boolean(button && !button.disabled && button.contains(document.elementFromPoint(${candidate.x}, ${candidate.y})));
+      })()`)
+      if (!stillHit) return null
+    }
+    return candidate
   }, { description: `stable visible pointer target ${selector}` })
-  await page.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: point.x, y: point.y, button: 'none', buttons: 0 })
+  if (!confirmMovedPointer) await movePointer(point)
   await page.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: point.x, y: point.y, button: 'left', buttons: 1, clickCount: 1 })
   await page.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: point.x, y: point.y, button: 'left', buttons: 0, clickCount: 1 })
   return point
+}
+async function pressEnterOnButton(page, selector) {
+  await page.bringToFront()
+  await waitFor(() => page.evaluate(`(() => {
+    const button = document.querySelector(${JSON.stringify(selector)});
+    if (!(button instanceof HTMLButtonElement) || button.matches(':disabled') || !document.hasFocus()) return false;
+    button.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
+    const rect = button.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0 || rect.top < 0 || rect.left < 0
+      || rect.bottom > window.innerHeight || rect.right > window.innerWidth
+      || getComputedStyle(button).visibility !== 'visible') return false;
+    button.focus({ preventScroll: true });
+    return document.activeElement === button && !button.matches(':disabled');
+  })()`), { description: `focused visible enabled button ${selector}` })
+  const enter = { key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 }
+  await page.send('Input.dispatchKeyEvent', { ...enter, type: 'keyDown', text: '\r', unmodifiedText: '\r' })
+  await page.send('Input.dispatchKeyEvent', { ...enter, type: 'keyUp' })
 }
 async function record(name, run) {
   console.log(`[real-backend] ${name} started`)
@@ -317,12 +389,37 @@ async function record(name, run) {
   }
 }
 
-async function selectActualPet(petType) {
-  await pages['pet.html'].evaluate('window.desktopBridge.openMainPanel()')
-  await clickEnabled(pages['main-panel.html'], `[data-e2e="pet-option-${petType}"]`)
-  await waitFor(() => pages['pet.html'].evaluate(`window.desktopBridge.getPetState().then(s => s.petType === ${JSON.stringify(petType)} && s.userId === ${identities.a})`),
-    { description: `${petType} desktop state` })
-  await pages['main-panel.html'].waitForSelector(`[data-e2e="pet-relationship-summary"].relationship-summary-${petType}`)
+async function selectActualPet(petType, { keyboard = false } = {}) {
+  const main = pages['main-panel.html']
+  const pet = pages['pet.html']
+  const attempt = { petType, activation: keyboard ? 'keyboard-enter' : 'pointer', phase: 'open-main-panel' }
+  report.petSwitches.push(attempt)
+  const networkStart = main.diagnostics.network.length
+  const unsubscribeDialog = main.on('Page.javascriptDialogOpening', ({ type }) => { attempt.dialogType = type })
+  try {
+    await pet.evaluate('window.desktopBridge.openMainPanel()')
+    attempt.phase = 'activate-pet-option'
+    const option = `[data-e2e="pet-option-${petType}"]`
+    if (keyboard) await pressEnterOnButton(main, option)
+    else await clickEnabled(main, option, { confirmMovedPointer: true })
+    attempt.phase = 'observe-desktop-state'
+    await waitFor(async () => {
+      const observed = await pet.evaluate(`window.desktopBridge.getPetState().then(s => ({ petType: s.petType, expectedAccount: s.userId === ${identities.a} }))`)
+      attempt.observedPetType = observed.petType
+      attempt.expectedAccount = observed.expectedAccount
+      return observed.petType === petType && observed.expectedAccount
+    }, { description: `${petType} desktop state` })
+    attempt.phase = 'observe-relationship'
+    await main.waitForSelector(`[data-e2e="pet-relationship-summary"].relationship-summary-${petType}`)
+    attempt.phase = 'complete'
+  } catch (error) {
+    const requests = main.diagnostics.network.slice(networkStart)
+    attempt.pendingSummaryRequested = requests.some(({ request }) => request?.url?.startsWith(`${baseUrl()}/reminders/pending-summary?`))
+    attempt.preferencesUpdateRequested = requests.some(({ request }) => request?.method === 'PUT' && request.url === `${baseUrl()}/users/me/preferences`)
+    throw error
+  } finally {
+    unsubscribeDialog()
+  }
 }
 
 async function assertOnboardingCompleted(petType) {
@@ -345,7 +442,8 @@ async function readOnboardingFacts() {
 }
 
 async function patReadyPet(petType, token) {
-  await pages['main-panel.html'].evaluate('window.desktopBridge.hideMainPanel()')
+  // Invoke from the pet so the CDP reply does not depend on the window being hidden.
+  assert(await pages['pet.html'].evaluate('window.desktopBridge.hideMainPanel()'), `${petType} care could not hide the main panel`)
   await pages['pet.html'].bringToFront()
   await waitFor(async () => (await readOnboardingFacts()).some((state) => (
     state.user_id === identities.a && state.pet_type === petType && state.status === 'active'
@@ -434,6 +532,7 @@ try {
     expiringMessage = await receivedCode('accept-expired@example.com')
     return { accountsSeeded: false, smtpStartTls: true, smtpAuthenticated: true, expiryClock: 'natural five-minute server TTL' }
   })
+  if (ciPrepare) await prepareWindowsAcceptance()
   await launchRegistrationBrowser()
   await record('Web registration A with received code, wrong-code rejection and auto-login', () => registerViaWeb('a'))
   await record('Web registration B independently with received code', () => registerViaWeb('b'))
@@ -543,7 +642,7 @@ try {
   }
   await record('switching among three pets restores independent completed state', async () => {
     for (const petType of ['cat', 'dog', 'pig']) {
-      await selectActualPet(petType)
+      await selectActualPet(petType, { keyboard: true })
       await assertOnboardingCompleted(petType)
       const relationship = await api(`/pets/${petType}/relationship`, tokenA)
       assert(relationship.outfit.equipped_outfits.neck === `${petType}_basic_scarf`, 'Pet switch lost or mixed outfit state')
@@ -681,6 +780,8 @@ try {
     const beforeRows = await api('/reminders?pet_type=pig', tokenA)
     const draft = '十七分钟后提醒我伸个懒腰'
     await main.input('[data-e2e="main-chat-input"]', draft)
+    assert(await main.evaluate(`document.querySelector('[data-e2e="main-chat-input"]').value === ${JSON.stringify(draft)}`),
+      'Relative reminder input changed before submission')
     const beforeTime = Date.now()
     await clickEnabled(main, '[data-e2e="main-chat-send"]')
     const relative = await waitFor(async () => (await api('/reminders?pet_type=pig', tokenA)).find((row) => row.source_text === draft), { description: 'real relative reminder' })
@@ -802,7 +903,7 @@ try {
   const cleanupErrors = []
   report.contextEvents = await collectContextEvents().catch(() => [])
   report.onboardingStates = await readOnboardingFacts().catch(() => [])
-  for (const cleanup of [stopRegistrationBrowser, stopDesktop, () => stopProcess(backend),
+  for (const cleanup of [() => stopProcess(preparationChild), stopRegistrationBrowser, stopDesktop, () => stopProcess(backend),
     () => removeSafeUserDataPath(userData), () => removeSafeUserDataPath(runtime)]) {
     try { await cleanup() } catch (error) { cleanupErrors.push(serializeError(error)) }
   }

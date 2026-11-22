@@ -14,6 +14,12 @@ async function invokeForRendererInstance(channel, ...args) {
   return ipcRenderer.invoke(channel, ...args, rendererInstanceNonce)
 }
 
+function sendPetDrag(phase, payload) {
+  void rendererInstanceReady.then((ready) => {
+    if (ready) ipcRenderer.send('desktop:pet-drag', phase, payload, rendererInstanceNonce)
+  }).catch(() => {})
+}
+
 let e2eIntentAckMode = 'normal'
 let heldMainPanelIntent = null
 let pendingRelationshipCapabilityId = null
@@ -21,6 +27,7 @@ let e2eRelationship = null
 let e2eRelationshipCapabilityAdopted = false
 const e2eRelationshipRefreshListeners = new Set()
 const e2eReminderPollListeners = new Set()
+const e2eCompanionPollListeners = new Set()
 const e2eSnapshotReaders = new Set()
 let reminderWakeupSequence = 0
 
@@ -288,9 +295,19 @@ const desktopBridge = {
     ipcRenderer.on('desktop:pet-reminder-event', listener)
     return () => ipcRenderer.removeListener('desktop:pet-reminder-event', listener)
   },
+  publishReminderListsChanged: async (expectedContext) => {
+    const renewedContext = await renewExpectedContext(expectedContext, 'pet')
+    if (!renewedContext?.authoritative?.id) return false
+    return (await invokeForRendererInstance('desktop:publish-reminder-lists-changed', renewedContext)) === true
+  },
+  onReminderListsChanged: (callback) => {
+    const listener = () => callback()
+    ipcRenderer.on('desktop:reminder-lists-changed', listener)
+    return () => ipcRenderer.removeListener('desktop:reminder-lists-changed', listener)
+  },
   scheduleReminderWakeup,
   onReminderWakeup: (callback) => {
-    const listener = () => callback()
+    const listener = (_event, unmuteScope) => callback(unmuteScope)
     ipcRenderer.on('desktop:reminder-wakeup', listener)
     return () => ipcRenderer.removeListener('desktop:reminder-wakeup', listener)
   },
@@ -370,7 +387,9 @@ const desktopBridge = {
     )
   ),
   getPetBounds: () => ipcRenderer.invoke('desktop:get-pet-bounds'),
-  setPetPosition: (position) => ipcRenderer.invoke('desktop:set-pet-position', position),
+  beginPetDrag: (payload) => sendPetDrag('begin', payload),
+  movePetDrag: (payload) => sendPetDrag('move', payload),
+  endPetDrag: (payload) => sendPetDrag('end', payload),
   getSessionToken: () => ipcRenderer.invoke('desktop:get-session-token'),
   getSessionSnapshot: () => ipcRenderer.invoke('desktop:get-session-snapshot'),
   setSessionToken: (token, attempt) => invokeForRendererInstance('desktop:set-session-token', token, attempt),
@@ -405,7 +424,11 @@ if (e2eEnabled) {
     },
     showWindow: (role) => invokeE2eControl('showWindow', role),
     hideWindow: (role) => invokeE2eControl('hideWindow', role),
+    clickTrayToday: () => invokeE2eControl('clickTrayToday'),
+    clickTrayMuteNotifications: () => invokeE2eControl('clickTrayMuteNotifications'),
+    clickFocusCompletionNotification: () => invokeE2eControl('clickFocusCompletionNotification'),
     setReminderNotificationOutcome: (outcome) => invokeE2eControl('setReminderNotificationOutcome', outcome),
+    setReminderNotificationReplyHold: (hold) => invokeE2eControl('setReminderNotificationReplyHold', hold),
     simulateSystemResume: () => invokeE2eControl('simulateSystemResume'),
     prepareOnboarding: (options) => invokeE2eControl('prepareOnboarding', options),
     expireOperationCapabilities: () => invokeE2eControl('expireOperationCapabilities'),
@@ -437,6 +460,12 @@ if (e2eEnabled) {
       )
       return results.length > 0 && results.every((result) => result.status === 'fulfilled')
     },
+    flushCompanionPoll: async () => {
+      const results = await Promise.allSettled(
+        [...e2eCompanionPollListeners].map((listener) => listener()),
+      )
+      return results.length > 0 && results.every((result) => result.status === 'fulfilled')
+    },
     triggerRelationshipRefresh: async () => {
       const results = await Promise.allSettled(
         [...e2eRelationshipRefreshListeners].map((listener) => listener()),
@@ -447,6 +476,11 @@ if (e2eEnabled) {
       if (typeof callback !== 'function') return () => undefined
       e2eReminderPollListeners.add(callback)
       return () => e2eReminderPollListeners.delete(callback)
+    },
+    onFlushCompanionPoll: (callback) => {
+      if (typeof callback !== 'function') return () => undefined
+      e2eCompanionPollListeners.add(callback)
+      return () => e2eCompanionPollListeners.delete(callback)
     },
     onRelationshipRefresh: (callback) => {
       if (typeof callback !== 'function') return () => undefined

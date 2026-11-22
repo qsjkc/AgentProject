@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 
-import { getPetAnimation } from '../shared/pet-animation-config'
+import { getPetAnimation } from '../shared/pet-animation'
 import { getDressedPetAnimation } from '../shared/pet-dressed-assets'
 import { isLoopingPetAnimation } from '../shared/pet-animation-state'
 import { createPetAnimationPlayback } from '../shared/pet-animation-playback'

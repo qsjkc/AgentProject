@@ -26,6 +26,7 @@ import {
 import { FULL_SCENARIO_ORDER as BASE_SCENARIO_ORDER, REQUIRED_E2E_BRIDGE_API, REQUIRED_SELECTORS, SCENARIOS as BASE_SCENARIOS } from './p1k-scenarios.mjs'
 import { dressedPetScenario, petParityScenario } from './pet-parity-scenarios.mjs'
 import { focusHistoryScenario, prepareFocusHistoryFixture } from './focus-history-scenarios.mjs'
+import { focusCompletionNotificationScenario } from './focus-completion-notification-scenario.mjs'
 import { capabilityRenewalScenario, prepareCapabilityRenewalFixture } from './capability-renewal-scenario.mjs'
 import { desktopReleaseScenario } from './desktop-release-scenario.mjs'
 import { sessionRecoveryScenario, optionalDashboardRecoveryScenario, sessionRecoveryBoundaryScenario } from './session-recovery-scenarios.mjs'
@@ -38,12 +39,15 @@ import { todayAgendaConsistencyScenario } from './today-agenda-consistency-scena
 import { todayAgendaRowTargetScenario } from './today-agenda-row-target-scenario.mjs'
 import { todayFocusHandoffScenario } from './today-focus-handoff-scenario.mjs'
 import { focusDuringCompanionSyncScenario } from './focus-during-companion-sync-scenario.mjs'
+import { companionPreferenceRaceScenario } from './companion-preference-race-scenario.mjs'
+import { petDragScenario } from './pet-drag-scenario.mjs'
 import { startStubServer } from './stub-server.mjs'
 
 const ADDITIONAL_SCENARIOS = Object.freeze({
   'pet-parity': petParityScenario,
   'dressed-pets': dressedPetScenario,
   'focus-history': focusHistoryScenario,
+  'focus-completion-notification': focusCompletionNotificationScenario,
   'capability-renewal': capabilityRenewalScenario,
   'desktop-release': desktopReleaseScenario,
   'session-recovery': sessionRecoveryScenario,
@@ -57,6 +61,8 @@ const ADDITIONAL_SCENARIOS = Object.freeze({
   'today-agenda-consistency': todayAgendaConsistencyScenario,
   'today-agenda-row-target': todayAgendaRowTargetScenario,
   'focus-during-companion-sync': focusDuringCompanionSyncScenario,
+  'companion-preference-race': companionPreferenceRaceScenario,
+  'pet-drag': petDragScenario,
   'daily-step-tomorrow': dailyStepTomorrowScenario,
 })
 const SCENARIOS = Object.freeze({ ...BASE_SCENARIOS, ...ADDITIONAL_SCENARIOS })

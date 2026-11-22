@@ -1,6 +1,7 @@
 const { randomUUID } = require('node:crypto')
 
-const MAX_RETAINED_REMINDER_NOTIFICATIONS = 32
+const MAX_RETAINED_NOTIFICATIONS = 32
+const MAX_ACCEPTED_REMINDER_OCCURRENCES = 256
 
 function isSameTodayNavigationContext(current, expected) {
   return Boolean(current && expected
@@ -10,10 +11,18 @@ function isSameTodayNavigationContext(current, expected) {
     && expected.generation === current.generation)
 }
 
-function createReminderNotificationNavigation({ readContext, openToday }) {
+function isSameFocusCompletion(state, expected) {
+  return state?.status === 'completed'
+    && typeof expected?.id === 'string' && Boolean(expected.id)
+    && Number.isSafeInteger(expected.revision)
+    && state.id === expected.id && state.revision === expected.revision
+}
+
+function createNotificationNavigation({
+  readContext, open, isCurrent = (expected) => isSameTodayNavigationContext(readContext(), expected),
+}) {
   const retained = new Map()
-  return (notification) => {
-    const context = readContext()
+  return (notification, context = readContext()) => {
     if (!context) return
 
     const release = () => {
@@ -23,13 +32,14 @@ function createReminderNotificationNavigation({ readContext, openToday }) {
     }
     const onClick = () => {
       release()
-      if (isSameTodayNavigationContext(readContext(), context)) openToday(context)
+      if (isCurrent(context)) open(context)
     }
     notification.once('click', onClick)
     notification.once('failed', release)
     // A timed-out Windows banner can still be clicked in Action Center.
     retained.set(notification, release)
-    if (retained.size > MAX_RETAINED_REMINDER_NOTIFICATIONS) retained.values().next().value()
+    if (retained.size > MAX_RETAINED_NOTIFICATIONS) retained.values().next().value()
+    return release
   }
 }
 
@@ -53,6 +63,34 @@ function showWindowsReminderNotification(notification, bindNavigation) {
   // Windows posts click and later failure callbacks to the UI thread. Retain only accepted toasts.
   bindNavigation(notification)
   return true
+}
+
+function createWindowsReminderNotificationPresenter({ bindNavigation, isMuted }) {
+  const accepted = new Set()
+  return (context, payload, createNotification) => {
+    const { reminderId, reminderTime } = payload
+    // Match the renderer's occurrence receipt and keep sub-millisecond precision.
+    const key = context && Number.isSafeInteger(reminderId) && reminderId > 0
+      && typeof reminderTime === 'string' && reminderTime.length <= 64 && Number.isFinite(Date.parse(reminderTime))
+      ? JSON.stringify([context.server, context.userId, context.petType, context.generation, reminderId, reminderTime])
+      : null
+    // A cached receipt acknowledges an already accepted toast without submitting another one.
+    if (key && accepted.has(key)) return true
+    if (isMuted()) return false
+
+    let notification
+    try {
+      notification = createNotification()
+    } catch {
+      return false
+    }
+    if (!showWindowsReminderNotification(notification, bindNavigation)) return false
+    if (key) {
+      accepted.add(key)
+      if (accepted.size > MAX_ACCEPTED_REMINDER_OCCURRENCES) accepted.delete(accepted.values().next().value)
+    }
+    return true
+  }
 }
 
 function createMainPanelIntentCoordinator({
@@ -305,7 +343,9 @@ function createMainPanelIntentListenerRegistry({
 module.exports = {
   createMainPanelIntentCoordinator,
   createMainPanelIntentListenerRegistry,
-  createReminderNotificationNavigation,
+  createNotificationNavigation,
+  createWindowsReminderNotificationPresenter,
+  isSameFocusCompletion,
   isSameTodayNavigationContext,
   showWindowsReminderNotification,
 }

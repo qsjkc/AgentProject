@@ -24,6 +24,35 @@ function fitWindowBounds(bounds, workArea, { resizeToFit = true } = {}) {
   }
 }
 
+function subtractWorkArea(rectangle, area) {
+  const { left, top, right, bottom } = rectangle
+  const overlapLeft = Math.max(left, area.x)
+  const overlapTop = Math.max(top, area.y)
+  const overlapRight = Math.min(right, area.x + area.width)
+  const overlapBottom = Math.min(bottom, area.y + area.height)
+  if (overlapLeft >= overlapRight || overlapTop >= overlapBottom) return [rectangle]
+  return [
+    { left, top, right, bottom: overlapTop },
+    { left, top: overlapBottom, right, bottom },
+    { left, top: overlapTop, right: overlapLeft, bottom: overlapBottom },
+    { left: overlapRight, top: overlapTop, right, bottom: overlapBottom },
+  ].filter((part) => part.left < part.right && part.top < part.bottom)
+}
+
+function fitWindowAcrossWorkAreas(requested, display, screen, options) {
+  const fitted = fitWindowBounds(requested, display.workArea, options)
+  if (Object.keys(fitted).every((key) => fitted[key] === requested[key])) return fitted
+  // A seam may divide a fully visible window between several displays. Subtract
+  // their work areas so taskbars, gaps and staggered edges still count as offscreen.
+  let uncovered = [{ left: requested.x, top: requested.y,
+    right: requested.x + requested.width, bottom: requested.y + requested.height }]
+  for (const candidate of screen.getAllDisplays()) {
+    uncovered = uncovered.flatMap((rectangle) => subtractWorkArea(rectangle, candidate.workArea))
+    if (!uncovered.length) return requested
+  }
+  return fitted
+}
+
 function restoreWindowBounds(screen, bounds = {}, defaults = {}, options = {}) {
   const requested = normalizeWindowBounds(bounds, defaults)
   const hasPosition = Number.isFinite(bounds.x) && Number.isFinite(bounds.y)
@@ -34,7 +63,13 @@ function restoreWindowBounds(screen, bounds = {}, defaults = {}, options = {}) {
     requested.x = display.workArea.x + Math.round((display.workArea.width - requested.width) / 2)
     requested.y = display.workArea.y + Math.round((display.workArea.height - requested.height) / 2)
   }
+  if (hasPosition && options.allowAcrossDisplays) return fitWindowAcrossWorkAreas(requested, display, screen, options)
   return fitWindowBounds(requested, display.workArea, options)
+}
+
+function fitPetDragBounds(screen, bounds, cursor) {
+  const requested = normalizeWindowBounds(bounds)
+  return fitWindowAcrossWorkAreas(requested, screen.getDisplayNearestPoint(cursor), screen, { resizeToFit: false })
 }
 
 function recoverWindowBounds(windowInstance, screen, options = {}) {
@@ -43,7 +78,8 @@ function recoverWindowBounds(windowInstance, screen, options = {}) {
     || windowInstance.isMinimized() || windowInstance.isMaximized() || windowInstance.isFullScreen()
   ) return false
   const previous = windowInstance.getBounds()
-  const next = restoreWindowBounds(screen, previous, previous, options)
+  const requested = { ...previous, ...options.fixedSize }
+  const next = restoreWindowBounds(screen, requested, requested, options)
   if (Object.keys(next).every((key) => next[key] === previous[key])) return false
   windowInstance.setBounds(next)
   return true
@@ -104,6 +140,7 @@ function createBoundsPersistence({
 
 module.exports = {
   createBoundsPersistence,
+  fitPetDragBounds,
   fitWindowBounds,
   recoverWindowBounds,
   restoreWindowBounds,

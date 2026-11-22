@@ -27,7 +27,7 @@ test('today agenda distinguishes receipt, due time, next reminder and prior-day 
   const original = [...scheduled]
   const result = getTodayReminderAgenda({ scheduled, delivered: [received, earlier], accountContext, now })
   assert.equal(result.earlierUnfinished, 1)
-  assert.equal(result.earlierDestination, 'upcoming')
+  assert.deepEqual(result.earlierGroups, [{ destination: 'upcoming', count: 1 }])
   assert.deepEqual(result.items, [
     { key: 'reminder:3', title: 'Reminder 3', remindAt: Date.parse(start), status: 'due', destination: 'upcoming', targetId: 3 },
     { key: 'reminder:1', title: 'Reminder 1', remindAt: Date.parse(received.remind_at), status: 'delivered', destination: 'delivered', targetId: 1 },
@@ -61,6 +61,10 @@ test('today agenda orders a prior-day reminder by its receipt while keeping the 
     lateDeliveryAt: Date.parse(lateReceipt), status: 'delivered', destination: 'delivered', targetId: 1,
   })
   assert.equal(result.earlierUnfinished, 4)
+  assert.deepEqual(result.earlierGroups, [
+    { destination: 'delivered', count: 2 },
+    { destination: 'upcoming', count: 2 },
+  ])
 })
 
 test('today agenda keeps only pending rows and series from the active user and pet', () => {
@@ -71,10 +75,10 @@ test('today agenda keeps only pending rows and series from the active user and p
   const result = getTodayReminderAgenda({ scheduled, delivered, series, accountContext, now })
   assert.deepEqual(result.items.map((row) => row.key), ['reminder:5'])
   assert.equal(result.earlierUnfinished, 0)
-  assert.equal(result.earlierDestination, null)
+  assert.deepEqual(result.earlierGroups, [])
   for (const invalidContext of [null, { ...accountContext, hasSession: false }, { ...accountContext, userId: null }]) {
     assert.deepEqual(getTodayReminderAgenda({ scheduled, series, accountContext: invalidContext, now }), {
-      items: [], earlierUnfinished: 0, earlierDestination: null,
+      items: [], earlierUnfinished: 0, earlierGroups: [],
     })
   }
 })
@@ -97,12 +101,14 @@ test('today agenda prefers a receipt and deduplicates a recurring preview by occ
   ])
 })
 
-test('today agenda retains delivered receipts from stopped series and directs earlier rows by age', () => {
+test('today agenda retains delivered receipts from stopped series and groups earlier rows by oldest age', () => {
   const scheduled = [
     reminder(5, localTime(22, 16), { series_id: 20 }),
     reminder(6, localTime(22, 10), { series_id: 21 }),
     reminder(7, localTime(20, 10), { series_id: 22 }),
     reminder(8, localTime(19, 10), { series_id: 21 }),
+    reminder(9, localTime(21, 12)), reminder(10, localTime(20, 9)),
+    reminder(1, localTime(21, 11)),
   ]
   const delivered = [
     reminder(1, localTime(21, 11), { triggered_at: localTime(21, 11, 1) }),
@@ -114,8 +120,12 @@ test('today agenda retains delivered receipts from stopped series and directs ea
   ]
   const result = getTodayReminderAgenda({ scheduled, delivered, series, accountContext, now })
   assert.deepEqual(result.items.map((item) => item.key), ['reminder:2'])
-  assert.equal(result.earlierUnfinished, 2)
-  assert.equal(result.earlierDestination, 'recurring')
+  assert.equal(result.earlierUnfinished, 4)
+  assert.deepEqual(result.earlierGroups, [
+    { destination: 'upcoming', count: 2 },
+    { destination: 'recurring', count: 1 },
+    { destination: 'delivered', count: 1 },
+  ])
 })
 
 test('today agenda uses local calendar bounds on both DST clock changes', () => {

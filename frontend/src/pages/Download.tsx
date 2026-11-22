@@ -29,7 +29,10 @@ export default function Download() {
               {release.available ? (
                 <a href={resolveDownloadUrl(release)} className="companion-button companion-button-primary">下载 Windows 安装包 <span aria-hidden="true">↓</span></a>
               ) : (
-                <span role="status" aria-disabled="true" className="download-unavailable">安装包暂未发布</span>
+                <div className="flex flex-wrap items-center gap-3">
+                  <span role="status" aria-disabled="true" className="download-unavailable">安装包暂未发布</span>
+                  <button type="button" onClick={() => void retry()} className="companion-button companion-button-primary">重新检查 <span aria-hidden="true">↻</span></button>
+                </div>
               )}
               <p className="download-footnote">请在 Windows 64 位电脑上安装。当前不提供 macOS 或手机版本。</p>
             </div>

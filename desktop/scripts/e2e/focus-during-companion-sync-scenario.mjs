@@ -1,6 +1,6 @@
 import { assert, assertEqual, waitFor } from './assertions.mjs'
 import { createJwt, createPreferences, createRelationship } from './fixtures.mjs'
-import { expectSnapshot, loginAs, REQUIRED_SELECTORS, resetToLoggedOut } from './p1k-scenarios.mjs'
+import { callE2e, expectSnapshot, loginAs, REQUIRED_SELECTORS, resetToLoggedOut } from './p1k-scenarios.mjs'
 
 const OWNER = { id: 879, username: 'focus-during-companion-sync', email: 'focus-during-companion-sync@example.test', password: 'focus-companion-sync-fixture-879' }
 const ME = '/api/v1/auth/me'
@@ -53,6 +53,7 @@ export async function focusDuringCompanionSyncScenario(context) {
 
   const intention = '恢复后继续整理阅读摘记'
   let restoreRelationship = () => {}
+  let heldRelationship = null
   try {
     await main.input('[data-e2e="focus-intention"]', intention)
     await main.click('[data-e2e="focus-start"]')
@@ -94,19 +95,37 @@ export async function focusDuringCompanionSyncScenario(context) {
     assertEqual(resumed.revision, paused.revision + 1, 'The Today action did not resume the original session exactly once')
     assertEqual(resumed.intention, paused.intention, 'Resuming during companion failure changed the focus intention')
     assertEqual(resumed.durationMs, paused.durationMs, 'Resuming during companion failure changed the session duration')
-    await main.waitForSelector(COMPANION_RETRY)
+    await main.waitForSelector(`${COMPANION_RETRY}:enabled`)
 
     restoreRelationship()
-    await main.click(COMPANION_RETRY)
+    const beforeReconnect = stub.requests.length
+    heldRelationship = stub.holdNext('GET', RELATIONSHIP)
+    await main.evaluate("window.dispatchEvent(new Event('online'))")
+    const relationshipReads = () => stub.requests.slice(beforeReconnect)
+      .filter(({ method, pathname }) => method === 'GET' && pathname === RELATIONSHIP)
+    await waitFor(() => relationshipReads().length > 0, { description: 'a relationship retry after reconnect' })
+    await main.evaluate(`(() => {
+      window.dispatchEvent(new Event('online'))
+      window.dispatchEvent(new Event('focus'))
+    })()`)
+    assert(await callE2e(main, 'simulateSystemResume'), 'Electron accepted the simulated system resume')
+    heldRelationship.release()
     await main.waitForSelector(`${WEEKLY}[aria-busy="false"]`)
     await main.waitForSelector('#delivered-reminders')
     await main.waitForSelector(REMINDER_AGENDA)
     assert(await main.evaluate(`!document.querySelector(${JSON.stringify(COMPANION_RETRY)})`), 'The recovered relationship still shows a retry banner')
     await main.waitForSelector(focusState('running'))
+    assertEqual(relationshipReads().length, 1, 'Concurrent recovery events duplicated the relationship request')
+    assertEqual(stub.requests.slice(beforeReconnect).filter(({ method, pathname }) => method === 'GET' && pathname === ME).length, 0,
+      'Companion reconnect unexpectedly restored the account again')
+    const recovered = await waitForFocusState(main, 'running')
+    assertEqual(recovered.id, resumed.id, 'Companion recovery replaced the running focus session')
+    assertEqual(recovered.revision, resumed.revision, 'Companion recovery modified the running focus session')
     await main.click('[data-e2e="focus-end"]')
     await main.waitForSelector(focusState('idle'))
-    return { verifiedAccount: true, pausedFocusRetained: true, sameSessionResumedOnce: true, cloudManagementRecovered: true }
+    return { verifiedAccount: true, pausedFocusRetained: true, sameSessionResumedOnce: true, cloudManagementRecovered: true, reconnectSingleFlight: true }
   } finally {
+    heldRelationship?.release()
     restoreRelationship()
     await main.evaluate('window.stopCompanionSyncFocusObservation?.()')
   }

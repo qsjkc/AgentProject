@@ -74,6 +74,11 @@ async function expectStepHistoryRow(main, title, date) {
   assertEqual(rows[0].text.includes(title), true, 'Recent completed steps lost the completed title')
 }
 
+async function hideMainPanel(main) {
+  await main.evaluate('window.desktopBridge.hideMainPanel()')
+  await expectSnapshot(main, (snapshot) => snapshot.windows?.mainPanel?.visible === false, 'main panel is natively hidden')
+}
+
 async function expectTodayLanding(main, source) {
   await expectSnapshot(main, (snapshot) => (
     snapshot.windows?.mainPanel?.visible === true
@@ -154,6 +159,17 @@ export async function dailyStepScenario(context) {
   const title = '读完两页书'
   addDailyStepAccounts(context.stub)
   await resetToLoggedOut(context)
+  await main.waitForSelector(REQUIRED_SELECTORS.loginSubmit)
+  await main.evaluate("window.desktopBridge.setLanguage('en')")
+  await hideMainPanel(main)
+  assertEqual(await callE2e(pet, 'clickTrayToday'), 'Today together', 'English tray Today label was not installed')
+  await expectSnapshot(main, (snapshot) => (
+    snapshot.windows?.mainPanel?.visible === true && snapshot.account === null
+  ), 'tray Today opens the signed-out main panel')
+  await main.waitForSelector(REQUIRED_SELECTORS.loginSubmit)
+  assertEqual(await main.evaluate("document.getElementById('companion-today') === null"), true,
+    'The tray opened Today before login')
+  await main.evaluate("window.desktopBridge.setLanguage('zh-CN')")
   await loginAs(context, OWNER)
   await waitForScope(main, OWNER, 'pig')
   await expectStep(main, 'empty')
@@ -166,8 +182,15 @@ export async function dailyStepScenario(context) {
   await main.input(MAIN_CHAT_INPUT, mainDraft)
   await main.click(REQUIRED_SELECTORS.mainTabKnowledge)
   await main.waitForSelector(`${REQUIRED_SELECTORS.mainTabKnowledge}[aria-pressed="true"]`)
-  await main.evaluate('window.desktopBridge.hideMainPanel()')
-  await expectSnapshot(main, (snapshot) => snapshot.windows?.mainPanel?.visible === false, 'main panel is natively hidden')
+  await hideMainPanel(main)
+  assertEqual(await callE2e(pet, 'clickTrayToday'), '今天一起', 'Chinese tray Today label was not installed')
+  await expectTodayLanding(main, 'tray Today shortcut')
+  await expectStep(main, 'planned', title)
+  assertEqual(await readValue(main, MAIN_CHAT_INPUT), mainDraft, 'Tray Today shortcut discarded a main chat draft')
+
+  await main.click(REQUIRED_SELECTORS.mainTabKnowledge)
+  await main.waitForSelector(`${REQUIRED_SELECTORS.mainTabKnowledge}[aria-pressed="true"]`)
+  await hideMainPanel(main)
   await callE2e(pet, 'showWindow', 'pet')
   await pet.click('[data-e2e="pet-open-today"]')
   await expectTodayLanding(main, 'pet Today shortcut')
@@ -221,6 +244,13 @@ export async function dailyStepScenario(context) {
   await main.click('[data-e2e="daily-step-focus"]')
   await waitFor(async () => await readIntention() === title, { description: 'linked step prepared for a second focus' })
   await main.click('[data-e2e="focus-start"]')
+  await main.waitForSelector(`${FOCUS_PANEL}[data-focus-status="running"][aria-busy="false"]`)
+  await main.click('[data-e2e="daily-step-edit"]')
+  await main.input('[data-e2e="daily-step-input"]', `  ${title}  `)
+  await main.click('[data-e2e="daily-step-save"]')
+  await waitFor(() => main.evaluate(`document.activeElement?.dataset.e2e === 'daily-step-edit'`), {
+    description: 'saving an unchanged step restores its Edit shortcut focus',
+  })
   await finishFocusFromCheckpoint(context, true)
   await main.waitForSelector(FOCUS_COMPLETE_STEP)
   await expectStep(main, 'planned', title)
