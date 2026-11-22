@@ -18,7 +18,7 @@
   line-height: 1.5;
 }
 
-.today-reminder-field input {
+.today-reminder-field :is(input, select) {
   min-width: 0;
   width: 100%;
   padding: 7px 8px;
@@ -68,8 +68,9 @@
 .today-reminder .today-reminder-save { border-color: #496844; background: #496844; color: #fffef9; }
 .today-reminder .today-reminder-save:hover:not(:disabled) { background: #365333; }
 .today-reminder button:disabled { opacity: .55; cursor: default; }
-.today-reminder :is(input, button):focus-visible { outline: 2px solid #587553; outline-offset: 2px; }
+.today-reminder :is(input, select, button):focus-visible { outline: 2px solid #587553; outline-offset: 2px; }
 
+.today-reminder-first,
 .today-reminder-error,
 .today-reminder-success {
   margin: 0;

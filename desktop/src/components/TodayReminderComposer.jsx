@@ -2,16 +2,23 @@ import { useEffect, useId, useRef, useState } from 'react'
 import { BellPlus } from 'lucide-react'
 
 import { parseTodayReminderDraft, TODAY_REMINDER_PRESETS, TODAY_REMINDER_TITLE_LIMIT } from '../shared/today-reminder'
+import { parseTodayRepeatReminder } from '../shared/today-repeat-reminder'
 import { toReminderLocalInput } from '../shared/upcoming-reminders'
 import './today-reminder.css'
 
-const EMPTY_DRAFT = { title: '', minutes: 15, localTime: '' }
+const EMPTY_DRAFT = { title: '', repeat: 'once', minutes: 15, localTime: '', repeatClocks: { daily: '', weekdays: '' } }
 
 const COPY = {
   'zh-CN': {
     add: '添加提醒',
     title: '提醒事项',
     placeholder: '比如，给植物浇水',
+    repeat: '重复',
+    once: '仅一次',
+    daily: '每天',
+    weekdays: '每周一至周五',
+    repeatTime: '提醒时间（本机时间）',
+    first: '首次提醒',
     when: '什么时候提醒？',
     preset: (minutes) => minutes === 60 ? '1 小时后' : `${minutes} 分钟后`,
     custom: '自选时间',
@@ -22,6 +29,7 @@ const COPY = {
     saved: '提醒已保存',
     invalid_title: '请输入 1 到 200 个字的提醒事项。',
     invalid_time: '请选择有效的本机日期和时间。',
+    invalid_repeat_time: '请选择有效的本机提醒时间。',
     past_time: '请选择晚于现在的提醒时间。',
     save_failed: '提醒没有保存。请检查连接后重试。',
     save_unconfirmed: '暂时无法确认是否保存。请先查看待提醒事项。',
@@ -30,6 +38,12 @@ const COPY = {
     add: 'Add reminder',
     title: 'Reminder',
     placeholder: 'For example, water the plants',
+    repeat: 'Repeat',
+    once: 'Once',
+    daily: 'Daily',
+    weekdays: 'Weekdays',
+    repeatTime: 'Reminder time (device time)',
+    first: 'First reminder',
     when: 'When should I remind you?',
     preset: (minutes) => minutes === 60 ? 'In 1 hour' : `In ${minutes} min`,
     custom: 'Custom time',
@@ -40,10 +54,23 @@ const COPY = {
     saved: 'Reminder saved',
     invalid_title: 'Enter a reminder between 1 and 200 characters.',
     invalid_time: 'Choose a valid date and time on this device.',
+    invalid_repeat_time: 'Choose a valid local time for the reminder.',
     past_time: 'Choose a future reminder time.',
     save_failed: 'The reminder could not be saved. Check your connection and try again.',
     save_unconfirmed: 'Could not confirm the save. Check upcoming reminders before trying again.',
   },
+}
+
+function parseReminderForm(draft) {
+  if (draft.repeat === 'once') return parseTodayReminderDraft(draft)
+  const title = draft.title.trim()
+  if (!title || title.length > TODAY_REMINDER_TITLE_LIMIT) return { ok: false, reason: 'invalid_title' }
+  const result = parseTodayRepeatReminder({ repeat: draft.repeat, clock: draft.repeatClocks[draft.repeat] })
+  return result.ok ? { ...result, title } : { ok: false, reason: 'invalid_repeat_time' }
+}
+
+function formatReminderDate(value, locale) {
+  return new Intl.DateTimeFormat(locale, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value))
 }
 
 export function TodayReminderComposer({ language, canSave, onCreate, prefill, onPrefillHandled }) {
@@ -52,6 +79,7 @@ export function TodayReminderComposer({ language, canSave, onCreate, prefill, on
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [saved, setSaved] = useState(null)
+  const [previewNow, setPreviewNow] = useState(Date.now)
   const formId = useId()
   const errorId = `${formId}-error`
   const toggleRef = useRef(null)
@@ -63,9 +91,12 @@ export function TodayReminderComposer({ language, canSave, onCreate, prefill, on
   const handledPrefillRef = useRef(null)
   const locale = language === 'zh-CN' ? 'zh-CN' : 'en'
   const copy = COPY[locale]
-  const isCustom = draft.minutes === null
+  const isRepeating = draft.repeat !== 'once'
+  const isCustom = !isRepeating && draft.minutes === null
+  const repeatClock = draft.repeatClocks[draft.repeat]
+  const firstRepeat = repeatClock && parseTodayRepeatReminder({ repeat: draft.repeat, clock: repeatClock }, previewNow)
   const titleError = error === 'invalid_title'
-  const timeError = error === 'invalid_time' || error === 'past_time'
+  const timeError = error === 'invalid_time' || error === 'invalid_repeat_time' || error === 'past_time'
 
   useEffect(() => {
     if (open) {
@@ -76,6 +107,25 @@ export function TodayReminderComposer({ language, canSave, onCreate, prefill, on
       target?.focus()
     }
   }, [open])
+
+  useEffect(() => {
+    if (!open || !isRepeating) return undefined
+    let timer
+    const refresh = () => {
+      window.clearTimeout(timer)
+      const now = Date.now()
+      setPreviewNow(now)
+      timer = window.setTimeout(refresh, 60_000 - now % 60_000)
+    }
+    refresh()
+    window.addEventListener('focus', refresh)
+    const unsubscribeResume = window.desktopBridge?.onSystemResume?.(refresh)
+    return () => {
+      window.clearTimeout(timer)
+      window.removeEventListener('focus', refresh)
+      unsubscribeResume?.()
+    }
+  }, [open, isRepeating])
 
   useEffect(() => {
     if (!prefill || handledPrefillRef.current === prefill) return
@@ -106,8 +156,8 @@ export function TodayReminderComposer({ language, canSave, onCreate, prefill, on
   const submit = async (event) => {
     event.preventDefault()
     if (!canSave || submittingRef.current) return
-    const request = parseTodayReminderDraft(draft)
-    if (!request.ok) {
+    const { ok, ...request } = parseReminderForm(draft)
+    if (!ok) {
       setError(request.reason)
       const field = request.reason === 'invalid_title' ? titleRef : localTimeRef
       field.current?.focus()
@@ -118,7 +168,7 @@ export function TodayReminderComposer({ language, canSave, onCreate, prefill, on
     setBusy(true)
     setError('')
     try {
-      const row = await onCreate({ title: request.title, remindAt: request.remindAt })
+      const row = await onCreate(request)
       if (!row) return
       const remindAt = Number.isFinite(Date.parse(row.remind_at)) ? row.remind_at : request.remindAt
       setSaved({ title: row.title || request.title, remindAt })
@@ -171,21 +221,48 @@ export function TodayReminderComposer({ language, canSave, onCreate, prefill, on
                 onChange={(event) => updateDraft({ title: event.target.value })}
               />
             </label>
-            <fieldset className="today-reminder-options" disabled={busy}>
-              <legend>{copy.when}</legend>
-              {[...TODAY_REMINDER_PRESETS, null].map((minutes) => (
-                <label key={minutes ?? 'custom'}>
-                  <input
-                    type="radio"
-                    name={`${formId}-delay`}
-                    data-e2e={`today-reminder-delay-${minutes ?? 'custom'}`}
-                    checked={draft.minutes === minutes}
-                    onChange={() => updateDraft({ minutes })}
-                  />
-                  {minutes === null ? copy.custom : copy.preset(minutes)}
-                </label>
-              ))}
-            </fieldset>
+            <label className="today-reminder-field">
+              {copy.repeat}
+              <select data-e2e="today-reminder-repeat" value={draft.repeat} disabled={busy}
+                onChange={(event) => updateDraft({ repeat: event.target.value })}>
+                <option value="once">{copy.once}</option>
+                <option value="daily">{copy.daily}</option>
+                <option value="weekdays">{copy.weekdays}</option>
+              </select>
+            </label>
+            {isRepeating ? (
+              <label className="today-reminder-field">
+                {copy.repeatTime}
+                <input
+                  ref={localTimeRef}
+                  type="time"
+                  data-e2e="today-reminder-repeat-time"
+                  step="60"
+                  value={repeatClock}
+                  required
+                  disabled={busy}
+                  aria-invalid={timeError}
+                  aria-describedby={timeError ? errorId : undefined}
+                  onChange={(event) => updateDraft({ repeatClocks: { ...draft.repeatClocks, [draft.repeat]: event.target.value } })}
+                />
+              </label>
+            ) : (
+              <fieldset className="today-reminder-options" disabled={busy}>
+                <legend>{copy.when}</legend>
+                {[...TODAY_REMINDER_PRESETS, null].map((minutes) => (
+                  <label key={minutes ?? 'custom'}>
+                    <input
+                      type="radio"
+                      name={`${formId}-delay`}
+                      data-e2e={`today-reminder-delay-${minutes ?? 'custom'}`}
+                      checked={draft.minutes === minutes}
+                      onChange={() => updateDraft({ minutes })}
+                    />
+                    {minutes === null ? copy.custom : copy.preset(minutes)}
+                  </label>
+                ))}
+              </fieldset>
+            )}
             {isCustom && (
               <label className="today-reminder-field">
                 {copy.localTime}
@@ -204,10 +281,15 @@ export function TodayReminderComposer({ language, canSave, onCreate, prefill, on
                 />
               </label>
             )}
+            {firstRepeat?.ok && (
+              <p className="today-reminder-first" role="status" data-e2e="today-reminder-first">
+                {copy.first} · <time dateTime={firstRepeat.remindAt}>{formatReminderDate(firstRepeat.remindAt, locale)}</time>
+              </p>
+            )}
             {error && <p id={errorId} className="today-reminder-error" data-e2e="today-reminder-error" role="alert">{copy[error]}</p>}
             <div className="today-reminder-actions">
               <button type="submit" className="today-reminder-save" data-e2e="today-reminder-save"
-                disabled={!canSave || busy || !draft.title.trim() || (isCustom && !draft.localTime)}>
+                disabled={!canSave || busy || !draft.title.trim() || (isCustom && !draft.localTime) || (isRepeating && !repeatClock)}>
                 {busy ? copy.saving : copy.save}
               </button>
               <button type="button" data-e2e="today-reminder-cancel" disabled={busy} onClick={close}>{copy.cancel}</button>
@@ -218,9 +300,7 @@ export function TodayReminderComposer({ language, canSave, onCreate, prefill, on
       {saved && (
         <p ref={savedRef} tabIndex={-1} className="today-reminder-success" role="status" data-e2e="today-reminder-success">
           <strong>{copy.saved}</strong>
-          <span>{saved.title} · <time dateTime={saved.remindAt}>
-            {new Intl.DateTimeFormat(locale, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(saved.remindAt))}
-          </time></span>
+          <span>{saved.title} · <time dateTime={saved.remindAt}>{formatReminderDate(saved.remindAt, locale)}</time></span>
         </p>
       )}
     </div>

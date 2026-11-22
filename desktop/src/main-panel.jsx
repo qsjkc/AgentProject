@@ -1916,7 +1916,7 @@ function MainPanelApp() {
     }, currentContext)
   }
 
-  const createTodayReminder = async ({ title, remindAt }) => {
+  const createTodayReminder = async ({ title, remindAt, recurrenceType = 'once', recurrenceTimezone }) => {
     if (!canCreateTodayReminder) return null
     const request = {
       ...getCurrentMainPanelAccountContext(),
@@ -1934,7 +1934,8 @@ function MainPanelApp() {
         pet_type: request.petType,
         title,
         remind_at: remindAt,
-        recurrence_type: 'once',
+        recurrence_type: recurrenceType,
+        ...(recurrenceTimezone && { recurrence_timezone: recurrenceTimezone }),
         email_enabled: false,
       }, request)
       if (!isMainPanelAccountRequestCurrent(request)
