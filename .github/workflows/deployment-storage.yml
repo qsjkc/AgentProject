@@ -1,0 +1,222 @@
+name: Deployment Storage
+
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Inspect storage or retire an archived release's images
+        type: choice
+        default: inspect
+        options: [inspect, retire]
+      old_cd_run_id:
+        description: Successful main CD run that deployed the old release (retire only)
+        type: string
+      build_artifact_id:
+        description: Immutable agentproject-server-images artifact ID from that run (retire only)
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    name: Inspect deployment storage
+    if: github.ref == 'refs/heads/main' && inputs.operation == 'inspect'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: deployment-storage-main
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Set up SSH deploy target
+        shell: bash
+        env:
+          SERVER_HOST_RAW: ${{ secrets.SERVER_HOST }}
+          SERVER_USERNAME_RAW: ${{ secrets.SERVER_USERNAME }}
+          SERVER_APP_DIR_RAW: ${{ secrets.SERVER_APP_DIR }}
+          SERVER_PORT_RAW: ${{ secrets.SERVER_PORT }}
+          SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+        run: bash deploy/configure_ssh_target.sh
+
+      - name: Read filesystem and deployment staging usage
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf -v remote_command 'cd %q && python3 - --directory "$(pwd -P)" --protected-source %q' \
+            "$DEPLOY_APP_DIR" "$GITHUB_SHA"
+          timeout 150s ssh deploy-target "$remote_command" < deploy/deployment_storage.py \
+            | tee "$RUNNER_TEMP/deployment-storage.json"
+
+      - name: Upload storage evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deployment-storage-evidence
+          path: ${{ runner.temp }}/deployment-storage.json
+          if-no-files-found: warn
+          retention-days: 7
+
+  retire:
+    name: Back up and retire an archived release's images
+    if: github.ref == 'refs/heads/main' && inputs.operation == 'retire'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      actions: read
+      contents: read
+    concurrency:
+      group: cd-main
+      cancel-in-progress: false
+    steps:
+      - name: Initialize retirement evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence_dir="$RUNNER_TEMP/deployment-storage-retire/evidence"
+          mkdir -p "$evidence_dir"
+          printf '%s\n' '{"status":"failed","phase":"retirement-not-started"}' > "$evidence_dir/retirement.json"
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify the archived release and image bytes
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OLD_CD_RUN_ID: ${{ inputs.old_cd_run_id }}
+          BUILD_ARTIFACT_ID: ${{ inputs.build_artifact_id }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$OLD_CD_RUN_ID" =~ ^[1-9][0-9]{0,18}$ || ! "$BUILD_ARTIFACT_ID" =~ ^[1-9][0-9]{0,18}$ ]]; then
+            echo 'Retirement requires exact positive decimal CD run and build artifact IDs' >&2
+            exit 1
+          fi
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          api="repos/$GITHUB_REPOSITORY/actions"
+          run="$(gh api "$api/runs/$OLD_CD_RUN_ID")"
+          old_source="$(jq -er --arg id "$OLD_CD_RUN_ID" --arg repo "$GITHUB_REPOSITORY" '
+            select((.id | tostring) == $id and .path == ".github/workflows/cd.yml" and .head_branch == "main"
+              and (.event == "workflow_run" or .event == "workflow_dispatch") and .conclusion == "success"
+              and .repository.full_name == $repo and .head_repository.full_name == $repo)
+            | .head_sha | select(test("^[0-9a-f]{40}$"))' <<< "$run")"
+          if [[ "$old_source" == "$GITHUB_SHA" ]] || ! git merge-base --is-ancestor "$old_source" "$GITHUB_SHA"; then
+            echo 'The archived release must be a strict ancestor of the authorized main commit' >&2
+            exit 1
+          fi
+
+          jobs="$(gh api "$api/runs/$OLD_CD_RUN_ID/jobs?filter=latest&per_page=100")"
+          jq -e 'any(.jobs[]; .name == "Deploy Server" and .conclusion == "success"
+            and any(.steps[]?; .name == "Verify public release and download" and .conclusion == "success"))' <<< "$jobs" > /dev/null
+          artifact="$(gh api "$api/artifacts/$BUILD_ARTIFACT_ID")"
+          zip_digest="$(jq -er --arg id "$BUILD_ARTIFACT_ID" --arg run "$OLD_CD_RUN_ID" --arg sha "$old_source" \
+            --argjson repo_id "$(jq -er '.repository.id' <<< "$run")" '
+            select((.id | tostring) == $id and .name == "agentproject-server-images" and .expired == false
+              and (.workflow_run.id | tostring) == $run and .workflow_run.head_sha == $sha
+              and .workflow_run.head_branch == "main" and .workflow_run.repository_id == $repo_id
+              and .workflow_run.head_repository_id == $repo_id)
+            | .digest | select(test("^sha256:[0-9a-f]{64}$")) | sub("^sha256:"; "")' <<< "$artifact")"
+          jq -e --arg created "$(jq -er '.created_at' <<< "$artifact")" '
+            any(.jobs[]; .name == "Build Verified Server Images" and .conclusion == "success"
+              and .started_at <= $created and $created <= .completed_at
+              and any(.steps[]?; .name == "Upload verified server image artifact" and .conclusion == "success"))' <<< "$jobs" > /dev/null
+
+          work_dir="$RUNNER_TEMP/deployment-storage-retire"
+          archive_dir="$work_dir/archive"
+          mkdir -p "$archive_dir"
+          gh api "$api/artifacts/$BUILD_ARTIFACT_ID/zip" > "$work_dir/build.zip"
+          printf '%s  %s\n' "$zip_digest" "$work_dir/build.zip" | sha256sum --check --status
+          for file in server-images.tar.gz server-images.json; do
+            unzip -p "$work_dir/build.zip" "$file" > "$archive_dir/$file"
+          done
+          python3 deploy/server_images.py verify --directory "$archive_dir" --source-commit "$old_source" \
+            > "$work_dir/evidence/archive-verification.json"
+          jq -n --arg oldCdRunId "$OLD_CD_RUN_ID" --arg buildArtifactId "$BUILD_ARTIFACT_ID" --arg sourceCommit "$old_source" \
+            --arg originalZipSha256 "$zip_digest" --arg protectedSource "$GITHUB_SHA" \
+            '{status:"passed", $oldCdRunId, $buildArtifactId, $sourceCommit, $originalZipSha256, $protectedSource}' \
+            > "$work_dir/evidence/archive-provenance.json"
+
+      - name: Back up the exact verified server image archive
+        id: backup
+        uses: actions/upload-artifact@v4
+        with:
+          name: retired-server-images-backup-attempt-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/deployment-storage-retire/archive/server-images.tar.gz
+            ${{ runner.temp }}/deployment-storage-retire/archive/server-images.json
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Confirm the backup and current main before retirement
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BACKUP_OUTCOME: ${{ steps.backup.outcome }}
+          BACKUP_ARTIFACT_ID: ${{ steps.backup.outputs.artifact-id }}
+        run: |
+          set -euo pipefail
+          if [[ "$BACKUP_OUTCOME" != success || ! "$BACKUP_ARTIFACT_ID" =~ ^[1-9][0-9]{0,18}$ ]]; then
+            echo 'Retirement requires a successful immutable archive backup' >&2
+            exit 1
+          fi
+          backup="$(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$BACKUP_ARTIFACT_ID")"
+          jq -e --arg id "$BACKUP_ARTIFACT_ID" --arg run "$GITHUB_RUN_ID" --arg sha "$GITHUB_SHA" \
+            --arg name "retired-server-images-backup-attempt-$GITHUB_RUN_ATTEMPT" '
+            select((.id | tostring) == $id and .name == $name and .expired == false and .size_in_bytes > 0
+              and (.workflow_run.id | tostring) == $run and .workflow_run.head_sha == $sha
+              and .workflow_run.head_branch == "main" and (.digest | test("^sha256:[0-9a-f]{64}$")))
+            | {status:"passed", backupArtifactId:$id, name, digest, expires_at}' <<< "$backup" \
+            > "$RUNNER_TEMP/deployment-storage-retire/evidence/backup.json"
+          test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')" = "$GITHUB_SHA"
+
+      - name: Set up SSH deploy target
+        shell: bash
+        env:
+          SERVER_HOST_RAW: ${{ secrets.SERVER_HOST }}
+          SERVER_USERNAME_RAW: ${{ secrets.SERVER_USERNAME }}
+          SERVER_APP_DIR_RAW: ${{ secrets.SERVER_APP_DIR }}
+          SERVER_PORT_RAW: ${{ secrets.SERVER_PORT }}
+          SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+        run: bash deploy/configure_ssh_target.sh
+
+      - name: Retire only the verified release images
+        shell: bash
+        env:
+          BACKUP_ARTIFACT_ID: ${{ steps.backup.outputs.artifact-id }}
+        run: |
+          set -euo pipefail
+          [[ "$DEPLOY_APP_DIR" == /* && "$DEPLOY_APP_DIR" != / && "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$BACKUP_ARTIFACT_ID" =~ ^[1-9][0-9]{0,18}$ ]]
+          work_dir="$RUNNER_TEMP/deployment-storage-retire"
+          manifest="$(base64 -w 0 "$work_dir/archive/server-images.json")"
+          printf -v remote_command 'cd %q && python3 - --directory "$(pwd -P)" --protected-source %q --retire-archive-manifest %q --archive-artifact-id %q' \
+            "$DEPLOY_APP_DIR" "$GITHUB_SHA" "$manifest" "$BACKUP_ARTIFACT_ID"
+          report="$work_dir/evidence/retirement.json"
+          status=0
+          timeout 300s ssh -T deploy-target "$remote_command" < deploy/deployment_storage.py > "$report" || status=$?
+          if ! jq -e 'type == "object"' "$report" > /dev/null 2>&1; then
+            jq -n --argjson exitCode "$status" '{status:"failed", phase:"remote-retirement", $exitCode}' > "$report"
+            if [[ "$status" == 0 ]]; then status=1; fi
+          fi
+          cat "$report"
+          if [[ "$status" == 0 ]] && ! jq -e '.status == "passed"' "$report" > /dev/null; then
+            status=1
+          fi
+          exit "$status"
+
+      - name: Upload retirement evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deployment-storage-retirement-evidence-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/deployment-storage-retire/evidence/*.json
+          if-no-files-found: error
+          retention-days: 30
