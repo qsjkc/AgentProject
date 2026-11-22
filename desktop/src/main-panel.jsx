@@ -1504,11 +1504,12 @@ function MainPanelApp() {
 
   useEffect(() => {
     const recover = () => { void sessionRecoveryRef.current.run({ automatic: true }) }
-    window.addEventListener('online', recover)
+    const recoverOnline = () => { void sessionRecoveryRef.current.run({ automatic: true, online: true }) }
+    window.addEventListener('online', recoverOnline)
     window.addEventListener('focus', recover)
     const unsubscribeResume = window.desktopBridge?.onSystemResume?.(recover)
     return () => {
-      window.removeEventListener('online', recover)
+      window.removeEventListener('online', recoverOnline)
       window.removeEventListener('focus', recover)
       unsubscribeResume?.()
     }

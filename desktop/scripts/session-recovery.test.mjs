@@ -24,17 +24,34 @@ function fixture(restore = async () => true) {
   let clock = 1000
   const states = []
   const calls = []
+  const timers = new Map()
+  let timerId = 0
   const controller = createSessionRecoveryController({
     readContext: async () => structuredClone(context),
     restore: async (...args) => { calls.push(args); return restore(...args) },
     onStateChange: (state) => states.push(state),
     now: () => clock,
+    setTimer(callback, delay) {
+      const id = ++timerId
+      timers.set(id, { callback, at: clock + delay })
+      return id
+    },
+    clearTimer: (id) => timers.delete(id),
   })
   return {
     controller, states, calls,
     get context() { return structuredClone(context) },
     setContext(value) { context = value },
-    advance(ms) { clock += ms },
+    advance(ms) {
+      const target = clock + ms
+      for (const [id, { callback, at }] of timers) {
+        if (at > target) continue
+        timers.delete(id)
+        clock = at
+        callback()
+      }
+      clock = target
+    },
   }
 }
 
@@ -69,6 +86,7 @@ test('manual, online, and focus retries share one pending request and automatic 
   const first = f.controller.run({ automatic: true })
   assert.equal(f.controller.run(), first)
   assert.equal(f.controller.run({ automatic: true }), first)
+  assert.equal(f.controller.run({ automatic: true, online: true }), first)
   await Promise.resolve()
   await Promise.resolve()
   hold.resolve(true)
@@ -78,6 +96,84 @@ test('manual, online, and focus retries share one pending request and automatic 
   assert.equal(await f.controller.run({ automatic: true }), false, 'healthy dashboard must not rehydrate on focus')
   assert.equal(f.calls.length, 2)
 })
+
+for (const onlineWhilePending of [false, true]) {
+  const order = onlineWhilePending ? 'during a failing request' : 'during its cooldown'
+  test(`one online event ${order} retries the same saved session`, async () => {
+    const response = deferred()
+    const entered = deferred()
+    let attempts = 0
+    const f = fixture(async () => {
+      if (++attempts > 1) return true
+      entered.resolve()
+      return response.promise
+    })
+    const saved = f.context
+    const pending = f.controller.run()
+    await entered.promise
+    f.advance(600)
+    if (!onlineWhilePending) {
+      response.reject(new Error('temporary outage'))
+      assert.equal(await pending, false)
+    }
+    const online = () => f.controller.run({ automatic: true, online: true })
+    if (onlineWhilePending) {
+      assert.equal(online(), pending)
+      assert.equal(online(), pending)
+      response.reject(new Error('temporary outage'))
+      assert.equal(await pending, false)
+    } else {
+      await online()
+      await online()
+    }
+    f.advance(899)
+    assert.equal(f.calls.length, 1, 'Online recovery must respect the remaining cooldown')
+    f.advance(1)
+    await new Promise(setImmediate)
+    assert.deepEqual(f.calls.map(([context]) => context), [saved, saved])
+    assert.equal(f.states.at(-1).status, 'idle')
+  })
+}
+
+test('a failed online retry does not queue another retry from duplicate online events', async () => {
+  const second = deferred()
+  const entered = deferred()
+  let attempts = 0
+  const f = fixture(async () => {
+    if (++attempts === 1) return false
+    entered.resolve()
+    return second.promise
+  })
+  assert.equal(await f.controller.run(), false)
+  f.advance(1500)
+  const retry = f.controller.run({ automatic: true, online: true })
+  await entered.promise
+  assert.equal(f.controller.run({ automatic: true, online: true }), retry)
+  second.resolve(false)
+  assert.equal(await retry, false)
+  f.advance(3000)
+  await new Promise(setImmediate)
+  assert.equal(f.calls.length, 2)
+  assert.equal(f.states.at(-1).status, 'retryable')
+})
+
+for (const transition of ['server change', 'session generation change', 'invalidation', 'disposal', 'manual retry']) {
+  test(`a queued online retry cannot take over after ${transition}`, async () => {
+    let attempts = 0
+    const f = fixture(async () => ++attempts > 1)
+    assert.equal(await f.controller.run(), false)
+    f.advance(600)
+    await f.controller.run({ automatic: true, online: true })
+    if (transition === 'server change') f.setContext({ ...f.context, server: 'https://fixture-b.invalid/api/v1' })
+    if (transition === 'session generation change') f.setContext({ ...f.context, session: { ...f.context.session, generation: 2 } })
+    if (transition === 'invalidation') f.controller.invalidate()
+    if (transition === 'disposal') f.controller.dispose()
+    if (transition === 'manual retry') assert.equal(await f.controller.run(), true)
+    f.advance(3000)
+    await new Promise(setImmediate)
+    assert.equal(f.calls.length, transition === 'manual retry' ? 2 : 1)
+  })
+}
 
 for (const transition of ['logout', 'account', 'generation', 'server']) {
   for (const completion of ['success', 'failure']) {

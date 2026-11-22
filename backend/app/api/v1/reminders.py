@@ -236,13 +236,14 @@ async def complete_reminder(
 @router.post("/{reminder_id}/trigger", response_model=ReminderResponse)
 async def trigger_reminder(
     reminder_id: int,
+    expected_remind_at: Optional[datetime] = Query(default=None),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     now = utc_now()
     # A desktop poll may finish after the user moves or cancels the reminder.
-    # Check eligibility in the write itself, not against an earlier snapshot.
-    result = await db.execute(
+    # Match the observed schedule in the same write that records its delivery.
+    statement = (
         update(Reminder)
         .where(
             Reminder.id == reminder_id,
@@ -254,6 +255,10 @@ async def trigger_reminder(
         .values(triggered_at=now)
         .execution_options(synchronize_session=False)
     )
+    if expected_remind_at is not None:
+        expected_remind_at = normalize_reminder_datetime(expected_remind_at)
+        statement = statement.where(Reminder.remind_at == expected_remind_at)
+    result = await db.execute(statement)
     if result.rowcount == 1:
         await db.commit()
         return await get_owned_reminder(reminder_id, current_user, db)
@@ -263,6 +268,8 @@ async def trigger_reminder(
         raise HTTPException(status_code=409, detail="Only pending reminders can be triggered")
     if reminder.remind_at > now:
         raise HTTPException(status_code=409, detail="Reminder is not due yet")
-    if reminder.triggered_at is None:
+    if reminder.triggered_at is None or (
+        expected_remind_at is not None and reminder.remind_at != expected_remind_at
+    ):
         raise HTTPException(status_code=409, detail="Reminder changed before it could be triggered")
     return reminder

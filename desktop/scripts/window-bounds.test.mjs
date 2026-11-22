@@ -3,7 +3,7 @@ import { EventEmitter } from 'node:events'
 import { test } from 'node:test'
 import windowBounds from '../electron/window-bounds.cjs'
 
-const { createBoundsPersistence, fitWindowBounds, recoverWindowBounds, restoreWindowBounds } = windowBounds
+const { createBoundsPersistence, createQuickChatPlacement, fitWindowBounds, recoverWindowBounds, restoreWindowBounds, windowBoundsMatch } = windowBounds
 const primary = { workArea: { x: 0, y: 0, width: 1366, height: 728 } }
 const left = { workArea: { x: -1920, y: 0, width: 1920, height: 1040 } }
 const screen = {
@@ -156,4 +156,102 @@ test('position-only persistence retains the stored fixed window size', () => {
   windowInstance.emit('move')
   tick()
   assert.deepEqual(writes[0], { x: 180, y: 160, width: 1100, height: 650 })
+})
+
+const quickSize = { width: 430, height: 420 }
+
+function quickPlacementHarness(savedBounds) {
+  const primaryDisplay = { workArea: { x: 0, y: 0, width: 1200, height: 900 } }
+  const externalDisplay = { workArea: { x: 1200, y: 0, width: 1200, height: 900 } }
+  let displays = [primaryDisplay, externalDisplay]
+  let anchor = { x: 234, y: 90 }
+  const placementScreen = {
+    getAllDisplays: () => displays,
+    getPrimaryDisplay: () => primaryDisplay,
+    getDisplayMatching: (bounds) => displays.length === 2 && bounds.x + bounds.width / 2 >= 1200
+      ? externalDisplay : primaryDisplay,
+  }
+  return {
+    placement: createQuickChatPlacement({ screen: placementScreen, size: quickSize, savedBounds, getAnchor: () => anchor }),
+    moveAnchor: (position) => { anchor = position },
+    removeExternalDisplay: () => { displays = [primaryDisplay] },
+  }
+}
+
+test('default and known docked Quick Chat uses the current pet anchor when reopened', () => {
+  for (const saved of [{}, { x: 235, y: 90 }, { x: 1050, y: 60, placement: 'docked' }]) {
+    const { placement, moveAnchor } = quickPlacementHarness(saved)
+    const oldAnchor = { x: 234, y: 90, ...quickSize }
+    assert.equal(placement.isManual(), false)
+    assert.deepEqual(placement.initialBounds, oldAnchor)
+    moveAnchor({ x: 852, y: 210 })
+    const newAnchor = { x: 852, y: 210, ...quickSize }
+    assert.deepEqual(placement.resolveBounds(oldAnchor), newAnchor)
+    assert.deepEqual(placement.serialize(newAnchor), { ...newAnchor, placement: 'docked' })
+  }
+})
+
+test('manual Quick Chat retains its current position on a surviving display independently of the pet', () => {
+  for (const saved of [{ x: 650, y: 60 }, { x: 234, y: 90, placement: 'manual' }]) {
+    const { placement, moveAnchor, removeExternalDisplay } = quickPlacementHarness(saved)
+    const { x, y } = saved
+    assert.equal(placement.isManual(), true)
+    assert.deepEqual(placement.initialBounds, { x, y, ...quickSize })
+    moveAnchor({ x: 750, y: 210 })
+    removeExternalDisplay()
+    // The user may reopen before the debounce has saved the latest native move.
+    const live = { x: x + 40, y: y + 20, width: 431, height: 421 }
+    assert.deepEqual(placement.resolveBounds(live), { x: live.x, y: live.y, ...quickSize })
+  }
+})
+
+test('manual Quick Chat allows a covered seam and clamps its own position when a display is removed', () => {
+  const { placement, moveAnchor, removeExternalDisplay } = quickPlacementHarness({ x: 1050, y: 60 })
+  const onSeam = { x: 1050, y: 60, ...quickSize }
+  assert.deepEqual(placement.initialBounds, onSeam)
+  moveAnchor({ x: 40, y: 300 })
+  removeExternalDisplay()
+  const fitted = { x: 770, y: 60, ...quickSize }
+  assert.deepEqual(placement.resolveBounds(onSeam), fitted)
+  assert.deepEqual(placement.serialize(fitted), { ...fitted, placement: 'manual' })
+})
+
+test('a manual drag returning to the saved coordinates still records the placement choice once', () => {
+  const { placement } = quickPlacementHarness({})
+  const { windowInstance, writes, tick } = persistenceHarness({ serialize: placement.serialize })
+  const initial = windowInstance.getBounds()
+  placement.noteManualMove(initial, initial)
+  assert.equal(placement.isManual(), false)
+  const moved = { ...initial, x: initial.x + 40 }
+  placement.noteManualMove(initial, moved)
+  windowInstance.bounds = moved
+  windowInstance.emit('move')
+  windowInstance.bounds = initial
+  windowInstance.emit('move')
+  assert.equal(writes.length, 0)
+  tick()
+  assert.deepEqual(writes, [{ ...initial, ...quickSize, placement: 'manual' }])
+  windowInstance.emit('move')
+  tick()
+  assert.equal(writes.length, 1)
+})
+
+test('manual Quick Chat tolerates rounded native size without nudging its position', () => {
+  const { placement } = quickPlacementHarness({ x: 449, y: 108, placement: 'manual' })
+  const window = createWindow()
+  const rounded = { ...placement.initialBounds, width: 431 }
+  window.bounds = rounded
+  const options = { resizeToFit: false, fixedSize: quickSize, sizeTolerance: 1 }
+  for (let resizeEvent = 0; resizeEvent < 3; resizeEvent += 1) {
+    assert.equal(recoverWindowBounds(window, screen, options), false)
+  }
+  assert.equal(window.updates.length, 0)
+  const reopened = placement.resolveBounds(window.getBounds())
+  assert.equal(windowBoundsMatch(rounded, reopened, 1), true)
+  assert.equal(windowBoundsMatch(rounded, reopened), false)
+  assert.deepEqual(placement.serialize(rounded), { ...reopened, placement: 'manual' })
+
+  window.bounds = { ...rounded, x: 2800 }
+  assert.equal(recoverWindowBounds(window, screen, options), true)
+  assert.deepEqual(window.getBounds(), { x: 936, y: 108, ...quickSize })
 })

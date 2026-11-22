@@ -63,9 +63,11 @@ const { createLoginAttemptController } = require('./login-attempt.cjs')
 const { createPetDragController } = require('./pet-drag.cjs')
 const {
   createBoundsPersistence,
+  createQuickChatPlacement,
   fitWindowBounds,
   recoverWindowBounds,
   restoreWindowBounds,
+  windowBoundsMatch,
 } = require('./window-bounds.cjs')
 
 const {
@@ -85,6 +87,7 @@ const {
 let store
 let petWindow
 let quickChatWindow
+let quickChatPlacement
 let mainPanelWindow
 let tray
 let quitting = false
@@ -145,6 +148,8 @@ const QUICK_CHAT_WIDTH = 430
 const QUICK_CHAT_HEIGHT = 420
 const PET_WINDOW_SIZE = { width: PET_WINDOW_WIDTH, height: PET_WINDOW_HEIGHT }
 const QUICK_CHAT_WINDOW_SIZE = { width: QUICK_CHAT_WIDTH, height: QUICK_CHAT_HEIGHT }
+// A native report can differ from the nominal Quick Chat size by one DIP.
+const MANUAL_QUICK_CHAT_SIZE_TOLERANCE = 1
 const petDrag = createPetDragController({ getWindow: () => petWindow, screen, windowSize: PET_WINDOW_SIZE })
 const MAIN_PANEL_WIDTH = 1100
 const MAIN_PANEL_HEIGHT = 780
@@ -811,6 +816,7 @@ function persistBounds(key, windowInstance, options = { saveSize: true }) {
     read: () => getStore().get(key),
     write: (bounds) => getStore().set(key, bounds),
     saveSize: options.saveSize,
+    serialize: options.serialize,
   })
   boundsPersistence.add(persistence)
   windowInstance.once('closed', () => boundsPersistence.delete(persistence))
@@ -828,7 +834,10 @@ function clampWindowPosition(x, y, width, height, displayOverride = null) {
 
 function recoverDesktopWindowPositions() {
   recoverWindowBounds(petWindow, screen, { resizeToFit: false, allowAcrossDisplays: true, fixedSize: PET_WINDOW_SIZE })
-  recoverWindowBounds(quickChatWindow, screen, { resizeToFit: false, fixedSize: QUICK_CHAT_WINDOW_SIZE })
+  recoverWindowBounds(quickChatWindow, screen, {
+    resizeToFit: false, allowAcrossDisplays: true, fixedSize: QUICK_CHAT_WINDOW_SIZE,
+    sizeTolerance: quickChatPlacement?.isManual() ? MANUAL_QUICK_CHAT_SIZE_TOLERANCE : 0,
+  })
   recoverWindowBounds(mainPanelWindow, screen)
   syncQuickChatPosition()
 }
@@ -1970,17 +1979,8 @@ function getQuickChatAnchorPosition(width, height) {
   return clampWindowPosition(nextX, nextY, width, height, display)
 }
 
-function getQuickChatPosition(width, height) {
-  const quickBounds = getStore().get('quickBounds') || {}
-  if (Number.isFinite(quickBounds.x) && Number.isFinite(quickBounds.y)) {
-    return clampWindowPosition(quickBounds.x, quickBounds.y, width, height)
-  }
-
-  return getQuickChatAnchorPosition(width, height)
-}
-
 function syncQuickChatPosition() {
-  if (!quickChatWindow || quickChatWindow.isDestroyed() || !quickChatWindow.isVisible()) {
+  if (!quickChatWindow || quickChatWindow.isDestroyed() || !quickChatWindow.isVisible() || quickChatPlacement?.isManual()) {
     return null
   }
 
@@ -2173,14 +2173,14 @@ function createQuickChatWindow() {
     return
   }
 
-  const quickBounds = getStore().get('quickBounds') || {}
-  quickChatWindow = new BrowserWindow({
-    width: QUICK_CHAT_WIDTH,
-    height: QUICK_CHAT_HEIGHT,
-    ...getQuickChatPosition(
-      QUICK_CHAT_WIDTH,
-      QUICK_CHAT_HEIGHT,
-    ),
+  const placement = createQuickChatPlacement({
+    screen,
+    size: QUICK_CHAT_WINDOW_SIZE,
+    savedBounds: getStore().get('quickBounds') || {},
+    getAnchor: () => getQuickChatAnchorPosition(QUICK_CHAT_WIDTH, QUICK_CHAT_HEIGHT),
+  })
+  const windowInstance = new BrowserWindow({
+    ...placement.initialBounds,
     title: 'Detachym 快捷聊天',
     icon: getWindowIconPath(),
     show: false,
@@ -2199,13 +2199,18 @@ function createQuickChatWindow() {
     },
   })
 
+  quickChatWindow = windowInstance
+  quickChatPlacement = placement
   quickChatWindow.__role = 'quick-chat'
   attachRendererNavigationGuard(quickChatWindow, 'quick-chat.html')
   attachRendererCapabilityLifecycle(quickChatWindow)
   quickChatWindow.setTitle(getWindowTitle('quickChat'))
   quickChatWindow.removeMenu()
   quickChatWindow.setMenuBarVisibility(false)
-  persistBounds('quickBounds', quickChatWindow)
+  quickChatWindow.on('will-move', (_event, nextBounds) => {
+    placement.noteManualMove(windowInstance.getBounds(), nextBounds)
+  })
+  persistBounds('quickBounds', quickChatWindow, { serialize: placement.serialize })
   quickChatWindow.on('close', (event) => {
     if (!quitting) {
       event.preventDefault()
@@ -2303,9 +2308,11 @@ function openQuickChat() {
   }
   reloadCrashedRenderer(quickChatWindow)
 
-  const nextPosition = getQuickChatPosition(QUICK_CHAT_WIDTH, QUICK_CHAT_HEIGHT)
-  quickChatWindow.setBounds({ ...nextPosition, ...QUICK_CHAT_WINDOW_SIZE })
-  getStore().set('quickBounds', { ...getStore().get('quickBounds'), x: nextPosition.x, y: nextPosition.y })
+  const current = quickChatWindow.getBounds()
+  const nextBounds = quickChatPlacement.resolveBounds(current)
+  const sizeTolerance = quickChatPlacement.isManual() ? MANUAL_QUICK_CHAT_SIZE_TOLERANCE : 0
+  if (!windowBoundsMatch(current, nextBounds, sizeTolerance)) quickChatWindow.setBounds(nextBounds)
+  getStore().set('quickBounds', quickChatPlacement.serialize(nextBounds))
   sendPetStateToWindow(quickChatWindow, getPetState())
   sendVoiceSettingsToWindow(quickChatWindow, getVoiceSettings())
   quickChatWindow.show()

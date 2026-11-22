@@ -14,30 +14,61 @@ export function createSessionRecoveryController({
   onStateChange = () => {},
   now = Date.now,
   retryCooldownMs = 1500,
+  setTimer = setTimeout,
+  clearTimer = clearTimeout,
 }) {
   let generation = 0
   let disposed = false
   let pending = null
   let status = 'idle'
   let lastStartedAt = -Infinity
-  const publish = (nextStatus, error = null) => {
+  let retryContext = null
+  let onlineQueued = false
+  let onlineTimer = null
+  const clearOnlineRetry = () => {
+    if (onlineTimer !== null) clearTimer(onlineTimer)
+    onlineTimer = null
+    onlineQueued = false
+  }
+  const scheduleOnlineRetry = () => {
+    if (!onlineQueued || onlineTimer !== null || !retryContext) return
+    const scheduledGeneration = generation
+    onlineTimer = setTimer(() => {
+      if (generation !== scheduledGeneration) return
+      onlineTimer = null
+      void controller.run({ automatic: true, online: true })
+    }, Math.max(0, lastStartedAt + retryCooldownMs - now()))
+  }
+  const publish = (nextStatus, error = null, expected = null) => {
     status = nextStatus
+    retryContext = nextStatus === 'retryable' ? { server: expected.server, session: { ...expected.session } } : null
     onStateChange({ status, error })
   }
 
-  return {
-    run({ automatic = false, context = null } = {}) {
+  const controller = {
+    run({ automatic = false, context = null, online = false } = {}) {
       if (disposed) return Promise.resolve(false)
-      if (pending) return pending
-      if (automatic && (status !== 'retryable' || now() - lastStartedAt < retryCooldownMs)) {
+      const fromOnline = automatic && online
+      if (pending) {
+        if (fromOnline && !pending.fromOnline) onlineQueued = true
+        return pending.promise
+      }
+      if (automatic && status !== 'retryable') return Promise.resolve(false)
+      if (automatic && now() - lastStartedAt < retryCooldownMs) {
+        if (fromOnline) {
+          onlineQueued = true
+          scheduleOnlineRetry()
+        }
         return Promise.resolve(false)
       }
+      const initialContext = fromOnline ? retryContext : context
+      clearOnlineRetry()
       const operationGeneration = ++generation
       const isCurrent = () => !disposed && generation === operationGeneration
       lastStartedAt = now()
       // Defer execution so even synchronous callbacks cannot bypass single flight.
       const operation = Promise.resolve().then(async () => {
-        let expected = context
+        let expected = initialContext
         const isContextCurrent = async () => {
           const current = await readContext()
           return isCurrent() && sameContext(expected, current)
@@ -54,31 +85,39 @@ export function createSessionRecoveryController({
             if (isCurrent()) publish('idle')
             return false
           }
-          if (isCurrent()) publish(restored ? 'idle' : 'retryable')
+          if (isCurrent()) publish(restored ? 'idle' : 'retryable', null, expected)
           return Boolean(restored)
         } catch (error) {
           if (!isCurrent()) return false
           let current = false
           try { current = await isContextCurrent() } catch { /* IPC may be unavailable during shutdown. */ }
-          if (isCurrent()) publish(current ? 'retryable' : 'idle', current ? error : null)
+          if (isCurrent()) publish(current ? 'retryable' : 'idle', current ? error : null, expected)
           return false
         } finally {
-          if (pending === operation) pending = null
+          if (pending?.promise === operation) {
+            pending = null
+            if (status === 'retryable') scheduleOnlineRetry()
+            else clearOnlineRetry()
+          }
         }
       })
-      pending = operation
+      pending = { promise: operation, fromOnline }
       publish('recovering')
       return operation
     },
     invalidate() {
       generation += 1
       pending = null
+      clearOnlineRetry()
       if (!disposed) publish('idle')
     },
     dispose() {
       disposed = true
       generation += 1
       pending = null
+      clearOnlineRetry()
+      retryContext = null
     },
   }
+  return controller
 }
