@@ -48,6 +48,13 @@ function parseDateLabel(date) {
   return Number.isFinite(millis) && day.toISOString().slice(0, 10) === date ? millis : null
 }
 
+function shiftDateLabel(date, days) {
+  const millis = parseDateLabel(date)
+  if (millis === null) return null
+  const shifted = new Date(millis + days * UTC_DAY_MS).toISOString().split('T')[0]
+  return shifted.length === 10 ? shifted : null
+}
+
 function parseSavedRecord(raw) {
   try {
     return JSON.parse(raw ?? 'null')
@@ -68,6 +75,14 @@ function getSavedSlot(record) {
   if (parseDateLabel(record?.date) === null) return null
   const step = normalizeStep(record)
   return step ? { date: record.date, ...step } : null
+}
+
+function getSavedTomorrowPlan(record) {
+  const plan = record?.tomorrowPlan
+  const title = getDailyStepTitle(plan?.title)
+  return title && parseDateLabel(plan.date) !== null && (plan.completed === undefined || plan.completed === false)
+    ? { date: plan.date, title }
+    : null
 }
 
 function getCompletedHistory(record, slot) {
@@ -91,13 +106,26 @@ function newestCompletions(history) {
     .sort((left, right) => right.date.localeCompare(left.date))
 }
 
+function saveDailyStepRecord(storage, storageKey, slot, history, tomorrowPlan) {
+  const completedHistory = newestCompletions(history).slice(0, COMPLETED_HISTORY_DAYS)
+  if (!slot && !completedHistory.length && !tomorrowPlan) {
+    storage.removeItem(storageKey)
+    return
+  }
+  const record = { ...slot, completedHistory }
+  if (tomorrowPlan) record.tomorrowPlan = tomorrowPlan
+  storage.setItem(storageKey, JSON.stringify(record))
+}
+
 export function readDailyStep(storageKey, date, getStorage = getLocalStorage) {
   if (!storageKey || parseDateLabel(date) === null) return null
   const record = readSavedRecord(storageKey, getStorage)
   const slot = getSavedSlot(record)
   if (slot?.date === date) return { title: slot.title, completed: slot.completed }
   const title = getCompletedHistory(record, slot).get(date)
-  return title ? { title, completed: true } : null
+  if (title) return { title, completed: true }
+  const tomorrowPlan = getSavedTomorrowPlan(record)
+  return tomorrowPlan?.date === date ? { title: tomorrowPlan.title, completed: false } : null
 }
 
 export function readCompletedDailySteps(storageKey, date, getStorage = getLocalStorage) {
@@ -112,11 +140,21 @@ export function readCompletedDailySteps(storageKey, date, getStorage = getLocalS
 }
 
 export function readDailyStepCarryOver(storageKey, date, getStorage = getLocalStorage) {
-  const today = parseDateLabel(date)
-  if (!storageKey || today === null) return null
-  const previous = new Date(today - UTC_DAY_MS)
-  const candidate = readDailyStep(storageKey, previous.toISOString().slice(0, 10), getStorage)
+  const previous = shiftDateLabel(date, -1)
+  if (!storageKey || !previous) return null
+  const candidate = readDailyStep(storageKey, previous, getStorage)
   return candidate?.completed === false ? candidate : null
+}
+
+export function readTomorrowDailyStep(storageKey, date, getStorage = getLocalStorage) {
+  const tomorrow = shiftDateLabel(date, 1)
+  if (!storageKey || !tomorrow) return null
+  const record = readSavedRecord(storageKey, getStorage)
+  const plan = getSavedTomorrowPlan(record)
+  if (plan?.date !== tomorrow) return null
+  const slot = getSavedSlot(record)
+  if (slot?.date === tomorrow || getCompletedHistory(record, slot).has(tomorrow)) return null
+  return plan
 }
 
 export function writeDailyStep(storageKey, date, value, getStorage = getLocalStorage) {
@@ -128,17 +166,35 @@ export function writeDailyStep(storageKey, date, value, getStorage = getLocalSto
     const record = parseSavedRecord(storage.getItem(storageKey))
     const slot = getSavedSlot(record)
     const history = getCompletedHistory(record, slot)
+    const tomorrowPlan = getSavedTomorrowPlan(record)
     if (step?.completed) history.set(date, step.title)
     else history.delete(date)
 
     const retainedSlot = slot?.date === date ? null : slot
     const nextSlot = step ? { date, ...step } : retainedSlot
-    const completedHistory = newestCompletions(history).slice(0, COMPLETED_HISTORY_DAYS)
-    if (nextSlot || completedHistory.length) {
-      storage.setItem(storageKey, JSON.stringify({ ...nextSlot, completedHistory }))
-    } else {
-      storage.removeItem(storageKey)
-    }
+    saveDailyStepRecord(storage, storageKey, nextSlot, history, tomorrowPlan?.date === date ? null : tomorrowPlan)
+    return true
+  } catch {
+    return false
+  }
+}
+
+export function writeTomorrowDailyStep(storageKey, date, titleOrNull, getStorage = getLocalStorage) {
+  const tomorrow = shiftDateLabel(date, 1)
+  const title = getDailyStepTitle(titleOrNull)
+  if (!storageKey || !tomorrow || (titleOrNull !== null && !title)) return false
+  try {
+    const storage = getStorage()
+    if (!storage) return false
+    const record = parseSavedRecord(storage.getItem(storageKey))
+    const plan = getSavedTomorrowPlan(record)
+    if (titleOrNull === null && plan?.date !== tomorrow) return true
+
+    const slot = getSavedSlot(record)
+    const history = getCompletedHistory(record, slot)
+    // If the clock moved back, a saved step or completion already belongs to this date.
+    if (title && (slot?.date === tomorrow || history.has(tomorrow))) return false
+    saveDailyStepRecord(storage, storageKey, slot, history, title ? { date: tomorrow, title } : null)
     return true
   } catch {
     return false

@@ -30,6 +30,7 @@ import { capabilityRenewalScenario, prepareCapabilityRenewalFixture } from './ca
 import { desktopReleaseScenario } from './desktop-release-scenario.mjs'
 import { sessionRecoveryScenario, optionalDashboardRecoveryScenario, sessionRecoveryBoundaryScenario } from './session-recovery-scenarios.mjs'
 import { dailyStepScenario } from './daily-step-scenario.mjs'
+import { dailyStepTomorrowScenario } from './daily-step-tomorrow-scenario.mjs'
 import { todayReminderScenario } from './today-reminder-scenario.mjs'
 import { todayRecurringReminderScenario } from './today-recurring-reminder-scenario.mjs'
 import { todayAgendaScenario } from './today-agenda-scenario.mjs'
@@ -56,6 +57,7 @@ const ADDITIONAL_SCENARIOS = Object.freeze({
   'today-agenda-consistency': todayAgendaConsistencyScenario,
   'today-agenda-row-target': todayAgendaRowTargetScenario,
   'focus-during-companion-sync': focusDuringCompanionSyncScenario,
+  'daily-step-tomorrow': dailyStepTomorrowScenario,
 })
 const SCENARIOS = Object.freeze({ ...BASE_SCENARIOS, ...ADDITIONAL_SCENARIOS })
 const FULL_SCENARIO_ORDER = Object.freeze([...BASE_SCENARIO_ORDER, ...Object.keys(ADDITIONAL_SCENARIOS)])
