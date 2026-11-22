@@ -86,7 +86,6 @@ let store
 let petWindow
 let quickChatWindow
 let mainPanelWindow
-const petDrag = createPetDragController({ getWindow: () => petWindow, screen })
 let tray
 let quitting = false
 let debugLogPath = null
@@ -144,6 +143,9 @@ const PET_VISIBLE_WIDTH = 126
 const PET_VISIBLE_HEIGHT = 148
 const QUICK_CHAT_WIDTH = 430
 const QUICK_CHAT_HEIGHT = 420
+const PET_WINDOW_SIZE = { width: PET_WINDOW_WIDTH, height: PET_WINDOW_HEIGHT }
+const QUICK_CHAT_WINDOW_SIZE = { width: QUICK_CHAT_WIDTH, height: QUICK_CHAT_HEIGHT }
+const petDrag = createPetDragController({ getWindow: () => petWindow, screen, windowSize: PET_WINDOW_SIZE })
 const MAIN_PANEL_WIDTH = 1100
 const MAIN_PANEL_HEIGHT = 780
 const MAIN_PANEL_INTENT_READY_TIMEOUT_MS = 5000
@@ -820,8 +822,8 @@ function clampWindowPosition(x, y, width, height, displayOverride = null) {
 }
 
 function recoverDesktopWindowPositions() {
-  recoverWindowBounds(petWindow, screen, { resizeToFit: false, allowAcrossDisplays: true })
-  recoverWindowBounds(quickChatWindow, screen, { resizeToFit: false })
+  recoverWindowBounds(petWindow, screen, { resizeToFit: false, allowAcrossDisplays: true, fixedSize: PET_WINDOW_SIZE })
+  recoverWindowBounds(quickChatWindow, screen, { resizeToFit: false, fixedSize: QUICK_CHAT_WINDOW_SIZE })
   recoverWindowBounds(mainPanelWindow, screen)
   syncQuickChatPosition()
 }
@@ -838,8 +840,7 @@ function scheduleDisplayRecovery() {
 function getPetBounds() {
   const petBounds = getStore().get('petBounds') || {}
   const bounds = {
-    width: PET_WINDOW_WIDTH,
-    height: PET_WINDOW_HEIGHT,
+    ...PET_WINDOW_SIZE,
     x: Number.isFinite(petBounds.x) ? petBounds.x : 90,
     y: Number.isFinite(petBounds.y) ? petBounds.y : 90,
   }
@@ -1949,7 +1950,7 @@ function getQuickChatAnchorPosition(width, height) {
     return clampWindowPosition(120, 120, width, height)
   }
 
-  const petBounds = petWindow.getBounds()
+  const petBounds = { ...petWindow.getBounds(), ...PET_WINDOW_SIZE }
   const petCenter = {
     x: petBounds.x + Math.round(petBounds.width / 2),
     y: petBounds.y + Math.round(petBounds.height / 2),
@@ -1979,9 +1980,9 @@ function syncQuickChatPosition() {
   }
 
   const quickBounds = quickChatWindow.getBounds()
-  const nextPosition = getQuickChatAnchorPosition(quickBounds.width, quickBounds.height)
+  const nextPosition = getQuickChatAnchorPosition(QUICK_CHAT_WIDTH, QUICK_CHAT_HEIGHT)
   if (nextPosition.x !== quickBounds.x || nextPosition.y !== quickBounds.y) {
-    quickChatWindow.setPosition(nextPosition.x, nextPosition.y)
+    quickChatWindow.setBounds({ ...nextPosition, ...QUICK_CHAT_WINDOW_SIZE })
   }
   return nextPosition
 }
@@ -1994,11 +1995,11 @@ function showPetWindow({ focus = false } = {}) {
     return null
   }
 
-  const bounds = petWindow.getBounds()
+  const bounds = { ...petWindow.getBounds(), ...PET_WINDOW_SIZE }
   const restoredBounds = restoreWindowBounds(screen, bounds, bounds, { resizeToFit: false, allowAcrossDisplays: true })
   if (restoredBounds.x !== bounds.x || restoredBounds.y !== bounds.y) {
     petDrag.cancel()
-    petWindow.setPosition(restoredBounds.x, restoredBounds.y)
+    petWindow.setBounds(restoredBounds)
   }
   getStore().set('petBounds', restoredBounds)
 
@@ -2286,10 +2287,8 @@ function openQuickChat() {
     return false
   }
 
-  const quickBounds = quickChatWindow.getBounds()
-  const nextPosition = getQuickChatPosition(quickBounds.width, quickBounds.height)
-  quickChatWindow.setSize(quickBounds.width, quickBounds.height)
-  quickChatWindow.setPosition(nextPosition.x, nextPosition.y)
+  const nextPosition = getQuickChatPosition(QUICK_CHAT_WIDTH, QUICK_CHAT_HEIGHT)
+  quickChatWindow.setBounds({ ...nextPosition, ...QUICK_CHAT_WINDOW_SIZE })
   getStore().set('quickBounds', { ...getStore().get('quickBounds'), x: nextPosition.x, y: nextPosition.y })
   sendPetStateToWindow(quickChatWindow, getPetState())
   sendVoiceSettingsToWindow(quickChatWindow, getVoiceSettings())

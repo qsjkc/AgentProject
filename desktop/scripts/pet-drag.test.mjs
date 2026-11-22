@@ -4,7 +4,7 @@ import petDrag from '../electron/pet-drag.cjs'
 import windowBounds from '../electron/window-bounds.cjs'
 
 const { createPetDragController } = petDrag
-const { fitPetDragBounds, restoreWindowBounds } = windowBounds
+const { fitPetDragBounds, recoverWindowBounds, restoreWindowBounds } = windowBounds
 const size = { width: 220, height: 240 }
 
 function display(x, y, width, height) {
@@ -32,17 +32,22 @@ function makeWindow(x, y) {
     visible: true,
     destroyed: false,
     moves: [],
+    writes: [],
     isDestroyed() { return this.destroyed },
     isVisible() { return this.visible },
     getBounds() { return this.bounds },
-    setPosition(x, y) { this.moves.push({ x, y }); this.bounds = { ...this.bounds, x, y } },
+    setBounds(bounds) {
+      this.moves.push({ x: bounds.x, y: bounds.y })
+      this.writes.push(bounds)
+      this.bounds = bounds
+    },
   }
 }
 
 test('a sustained mouse drag follows a fixed grab point across both directions of an aligned display seam', () => {
   const screen = makeScreen([display(-1920, 0, 1920, 1040), display(0, 0, 1920, 1040)])
   const window = makeWindow(-220, 250)
-  const drag = createPetDragController({ getWindow: () => window, screen })
+  const drag = createPetDragController({ getWindow: () => window, screen, windowSize: size })
   const id = 'mouse-drag'
   const offsetX = 90
   const offsetY = 160
@@ -88,7 +93,7 @@ test('clamped repeats never write native positions again and touch uses its own 
   const screen = makeScreen([display(0, 0, 800, 600)])
   screen.cursor = { x: 30, y: 40 }
   const window = makeWindow(578, 200)
-  const drag = createPetDragController({ getWindow: () => window, screen })
+  const drag = createPetDragController({ getWindow: () => window, screen, windowSize: size })
   const id = 'touch-drag'
   assert.equal(drag.begin({ id, offsetX: 50, offsetY: 90, pointerType: 'touch' }), true)
   for (const screenX of [631, 640, 650, 670]) drag.move({ id, screenX, screenY: 290 })
@@ -101,7 +106,7 @@ test('clamped repeats never write native positions again and touch uses its own 
 test('rejects invalid starts and discards stale input after replacement, hide or cancellation', () => {
   const screen = makeScreen([display(0, 0, 900, 700)])
   let window = makeWindow(200, 200)
-  const drag = createPetDragController({ getWindow: () => window, screen })
+  const drag = createPetDragController({ getWindow: () => window, screen, windowSize: size })
   const start = { id: 1, offsetX: 70, offsetY: 100, pointerType: 'pen' }
   const move = { id: 1, screenX: 400, screenY: 300 }
   assert.equal(drag.move({}), false)
@@ -127,4 +132,38 @@ test('rejects invalid starts and discards stale input after replacement, hide or
   drag.cancel()
   assert.equal(drag.end(move), false)
   assert.deepEqual(window.moves, [])
+})
+
+test('repeated fractional-DPI reports cannot grow the fixed pet or shrink its drag region', () => {
+  const screen = makeScreen([display(0, 0, 1800, 1000)])
+  const window = makeWindow(300, 200)
+  // Model a getBounds round-trip that reports the fixed rectangle two DIPs
+  // larger. A SetPosition-style operation would pass those values back.
+  window.getBounds = () => ({ ...window.bounds, width: window.bounds.width + 2, height: window.bounds.height + 2 })
+  const drag = createPetDragController({ getWindow: () => window, screen, windowSize: size })
+  const id = 'fractional-dpi'
+  assert.equal(drag.begin({ id, offsetX: 90, offsetY: 150, pointerType: 'mouse' }), true)
+  for (let index = 1; index <= 240; index += 1) {
+    screen.cursor = { x: 390 + index * 5, y: 350 + index }
+    assert.equal(drag.move({ id, screenX: 0, screenY: 0 }), true)
+    assert.deepEqual(window.bounds, { x: 300 + index * 5, y: 200 + index, ...size })
+  }
+  assert.equal(window.writes.length, 240)
+  assert.equal(window.writes.every(({ width, height }) => width === size.width && height === size.height), true)
+  screen.cursor = { x: 1799, y: 999 }
+  assert.equal(drag.end({ id, screenX: 0, screenY: 0, cancelled: false }), true)
+  assert.deepEqual(window.bounds, { x: 1580, y: 760, ...size })
+})
+
+test('fixed-window display recovery fits nominal size without reapplying rounded reports', () => {
+  const screen = makeScreen([display(0, 0, 800, 600)])
+  const window = makeWindow(90, 90)
+  Object.assign(window, {
+    bounds: { x: 670, y: 490, width: 450, height: 400 },
+    isMinimized: () => false,
+    isMaximized: () => false,
+    isFullScreen: () => false,
+  })
+  assert.equal(recoverWindowBounds(window, screen, { resizeToFit: false, fixedSize: size }), true)
+  assert.deepEqual(window.bounds, { x: 580, y: 360, ...size })
 })

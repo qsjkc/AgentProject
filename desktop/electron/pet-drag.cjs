@@ -9,7 +9,7 @@ function isDragId(id) {
     || (Number.isSafeInteger(id) && id >= 0)
 }
 
-function createPetDragController({ getWindow, screen }) {
+function createPetDragController({ getWindow, screen, windowSize }) {
   let active = null
 
   function current(id) {
@@ -22,8 +22,7 @@ function createPetDragController({ getWindow, screen }) {
     if (!isUsableWindow(window) || !isDragId(id) || (active?.window === window && active.id === id)
       || !Number.isFinite(offsetX) || !Number.isFinite(offsetY)
       || !['mouse', 'touch', 'pen'].includes(pointerType)) return false
-    const bounds = window.getBounds()
-    if (offsetX < 0 || offsetX >= bounds.width || offsetY < 0 || offsetY >= bounds.height) return false
+    if (offsetX < 0 || offsetX >= windowSize.width || offsetY < 0 || offsetY >= windowSize.height) return false
     active = { id, offsetX, offsetY, pointerType, window }
     return true
   }
@@ -36,8 +35,10 @@ function createPetDragController({ getWindow, screen }) {
     if (!Number.isFinite(cursor?.x) || !Number.isFinite(cursor?.y)) return false
     const { window, offsetX, offsetY } = active
     const bounds = window.getBounds()
-    const next = fitPetDragBounds(screen, { ...bounds, x: cursor.x - offsetX, y: cursor.y - offsetY }, cursor)
-    if (next.x !== bounds.x || next.y !== bounds.y) window.setPosition(next.x, next.y)
+    const next = fitPetDragBounds(screen, { ...windowSize, x: cursor.x - offsetX, y: cursor.y - offsetY }, cursor)
+    // On Windows, Electron's setPosition reads the reported window size and
+    // passes it back to SetBounds. At fractional DPI that can grow a fixed window.
+    if (next.x !== bounds.x || next.y !== bounds.y) window.setBounds(next)
     return true
   }
 

@@ -78,7 +78,8 @@ function recoverWindowBounds(windowInstance, screen, options = {}) {
     || windowInstance.isMinimized() || windowInstance.isMaximized() || windowInstance.isFullScreen()
   ) return false
   const previous = windowInstance.getBounds()
-  const next = restoreWindowBounds(screen, previous, previous, options)
+  const requested = { ...previous, ...options.fixedSize }
+  const next = restoreWindowBounds(screen, requested, requested, options)
   if (Object.keys(next).every((key) => next[key] === previous[key])) return false
   windowInstance.setBounds(next)
   return true
