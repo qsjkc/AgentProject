@@ -301,7 +301,7 @@ const desktopBridge = {
   },
   scheduleReminderWakeup,
   onReminderWakeup: (callback) => {
-    const listener = () => callback()
+    const listener = (_event, unmuteScope) => callback(unmuteScope)
     ipcRenderer.on('desktop:reminder-wakeup', listener)
     return () => ipcRenderer.removeListener('desktop:reminder-wakeup', listener)
   },
@@ -417,6 +417,7 @@ if (e2eEnabled) {
     showWindow: (role) => invokeE2eControl('showWindow', role),
     hideWindow: (role) => invokeE2eControl('hideWindow', role),
     clickTrayToday: () => invokeE2eControl('clickTrayToday'),
+    clickTrayMuteNotifications: () => invokeE2eControl('clickTrayMuteNotifications'),
     clickFocusCompletionNotification: () => invokeE2eControl('clickFocusCompletionNotification'),
     setReminderNotificationOutcome: (outcome) => invokeE2eControl('setReminderNotificationOutcome', outcome),
     setReminderNotificationReplyHold: (hold) => invokeE2eControl('setReminderNotificationReplyHold', hold),

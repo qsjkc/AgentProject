@@ -794,6 +794,54 @@ function observeReminderListUpdates(main) {
   })()`)
 }
 
+export async function unmuteReminderScenario(context) {
+  await resetAuthenticated(context)
+  const { pet } = context.pages
+  const account = context.stub.fixture.accounts.get(USERS.A.id)
+  const originalReminders = account.reminders
+  const originalMuted = (await callE2e(pet, 'snapshot')).notificationsMuted
+  const toggle = () => callE2e(pet, 'clickTrayMuteNotifications')
+  account.reminders = []
+  try {
+    if (!originalMuted) assertEqual(await toggle(), true, 'The actual tray mute callback is available')
+    await expectSnapshot(pet, (snapshot) => snapshot.notificationsMuted === true, 'the tray persisted mute')
+    await callE2e(pet, 'hideWindow', 'pet')
+    await waitFor(() => pet.evaluate("document.visibilityState === 'hidden'"), { description: 'pet remains hidden for the muted reminder' })
+    const reminder = createReminderRecord({
+      user: USERS.A, id: context.stub.fixture.nextReminderId++, title: '取消静音后的待处理提醒',
+      petType: 'pig', remindAt: new Date(Date.now() - 1000),
+    })
+    const before = await callE2e(pet, 'snapshot')
+    const readStart = context.stub.requests.length
+    account.reminders = [reminder]
+    await callE2e(pet, 'flushReminderPoll')
+    assert(context.stub.requests.slice(readStart).some((request) => request.method === 'GET'
+      && request.pathname === '/api/v1/reminders' && new URLSearchParams(request.search).has('due_before')),
+      'The hidden pet must read the due reminder before unmuting')
+    assert(!reminder.triggered_at, 'The muted, hidden reminder was acknowledged without presentation')
+    assertEqual((await callE2e(pet, 'snapshot')).reminderNotificationAttempts, before.reminderNotificationAttempts,
+      'The muted channel submitted a native notification')
+
+    const unmutedAt = Date.now()
+    assertEqual(await toggle(), true, 'The actual tray unmute callback is available')
+    await expectSnapshot(pet, (snapshot) => snapshot.notificationsMuted === false, 'the tray persisted unmute')
+    await waitFor(() => reminder.triggered_at, { timeoutMs: 5000, description: 'unmute resumes a hidden reminder before regular reconciliation' })
+    const latencyMs = Date.parse(reminder.triggered_at) - unmutedAt
+    assert(latencyMs >= 0 && latencyMs <= 5000, 'The resumed reminder missed the five-second window', { latencyMs })
+    assertEqual((await callE2e(pet, 'snapshot')).reminderNotificationAttempts - before.reminderNotificationAttempts, 1,
+      'Unmute submitted the native notification more than once')
+    assertEqual(context.stub.requests.filter((request) => request.method === 'POST'
+      && request.pathname === `/api/v1/reminders/${reminder.id}/trigger`).length, 1, 'Unmute acknowledged the occurrence exactly once')
+    assertEqual(reminder.status, 'pending', 'Unmute must keep the reminder available for explicit completion')
+    assert(await pet.evaluate("document.visibilityState === 'hidden'"), 'The unmute check must not reveal the pet')
+    return { actualTrayCallback: true, hidden: true, nativeSubmissions: 1, acknowledgments: 1, latencyMs }
+  } finally {
+    account.reminders = originalReminders
+    if ((await callE2e(pet, 'snapshot')).notificationsMuted !== originalMuted) await toggle()
+    await callE2e(pet, 'showWindow', 'pet')
+  }
+}
+
 export async function reminderConfirmationRetryScenario(context) {
   await resetAuthenticated(context)
   const { main, pet } = context.pages
@@ -1658,6 +1706,7 @@ export const SCENARIOS = Object.freeze({
   'reduced-motion': reducedMotionScenario,
   'failed-knowledge-upload': failedKnowledgeUploadScenario,
   'hidden-reminder-deadline': hiddenReminderDeadlineScenario,
+  'unmute-reminder': withProactiveCompanionDisabled(unmuteReminderScenario),
   'reminder-confirmation-retry': reminderConfirmationRetryScenario,
   'quick-chat-reminder-sync': quickChatReminderSyncScenario,
   'reminder-notification-receipt-recovery': reminderNotificationReceiptRecoveryScenario,

@@ -157,6 +157,7 @@ const e2eRuntime = {
 }
 
 const TRAY_OPEN_TODAY_ID = 'tray-open-today'
+const TRAY_MUTE_NOTIFICATIONS_ID = 'tray-mute-notifications'
 const trayMessages = {
   'zh-CN': {
     trayTooltip: 'Detachym 桌宠',
@@ -495,9 +496,9 @@ function getReminderWakeupController() {
   return reminderWakeupController
 }
 
-function requestPetReminderRefresh() {
+function requestPetReminderRefresh(unmuteScope = null) {
   if (petWindow && !petWindow.isDestroyed() && !petWindow.webContents.isLoading()) {
-    petWindow.webContents.send('desktop:reminder-wakeup')
+    petWindow.webContents.send('desktop:reminder-wakeup', unmuteScope)
   }
 }
 
@@ -2138,7 +2139,7 @@ function createPetWindow() {
   petWindow.on('move', () => {
     syncQuickChatPosition()
   })
-  petWindow.on('show', requestPetReminderRefresh)
+  petWindow.on('show', () => requestPetReminderRefresh())
   petWindow.webContents.on('did-finish-load', () => {
     sendPetStateToWindow(petWindow, getPetState())
     sendVoiceSettingsToWindow(petWindow, getVoiceSettings())
@@ -2447,11 +2448,17 @@ function buildTrayMenu() {
       },
     },
     {
+      id: TRAY_MUTE_NOTIFICATIONS_ID,
       label: messages.muteNotifications,
       type: 'checkbox',
       checked: Boolean(getStore().get('mute')),
       click: ({ checked }) => {
+        const wasMuted = Boolean(getStore().get('mute'))
         getStore().set('mute', checked)
+        if (wasMuted && !checked) {
+          const scope = getTodayNavigationContext()
+          if (scope) requestPetReminderRefresh(scope)
+        }
       },
     },
     { type: 'separator' },
@@ -2717,6 +2724,7 @@ function getE2eSnapshot() {
     activityJournal: e2eRuntime.activityJournal.map((entry) => ({ ...entry })),
     reminderNotificationAttempts: e2eRuntime.reminderNotification.attempts,
     reminderNotificationReplyHeld: Boolean(e2eRuntime.reminderNotification.releaseReply),
+    notificationsMuted: Boolean(getStore().get('mute')),
     focusCompletionClickPending: Boolean(e2eRuntime.focusCompletionNotification?.listenerCount('click')),
     companionNavigationPending: Boolean(mainPanelTodayCoordinator?.hasPending()),
   }
@@ -2905,6 +2913,12 @@ async function handleE2eControl(event, method, ...args) {
     if (!item?.enabled || !item.visible) return false
     item.click({}, null, null)
     return item.label
+  }
+  if (method === 'clickTrayMuteNotifications') {
+    const item = e2eRuntime.trayMenu?.getMenuItemById(TRAY_MUTE_NOTIFICATIONS_ID)
+    if (!item?.enabled || !item.visible) return false
+    item.click({}, null, null)
+    return true
   }
   if (method === 'clickFocusCompletionNotification') {
     return e2eRuntime.focusCompletionNotification?.emit('click') ?? false

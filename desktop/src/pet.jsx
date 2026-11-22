@@ -116,6 +116,7 @@ import {
   createReminderDeliveryController,
   createReminderPollController,
   getReminderPollPlan,
+  isReminderWakeScopeCurrent,
   isTransientReminderReadError,
   REMINDER_RECONCILE_MS,
 } from './shared/reminder-poll'
@@ -2891,7 +2892,22 @@ function PetApp() {
     })
 
     reminderPollRef.current = controller.request
-    const unsubscribe = window.desktopBridge?.onReminderWakeup?.(() => void controller.request())
+    const unsubscribe = window.desktopBridge?.onReminderWakeup?.(async (unmuteScope) => {
+      if (unmuteScope == null) {
+        void controller.request()
+        return
+      }
+      try {
+        const [server, session] = await Promise.all([getApiBaseUrl(), getSessionSnapshot()])
+        const context = getCurrentPetAccountContext()
+        if (mounted && isSessionSnapshotCurrent(context.session, session)
+          && isReminderWakeScopeCurrent(unmuteScope, context, server)) {
+          await controller.request({ presentationAvailable: true })
+        }
+      } catch (error) {
+        if (mounted) loggerRef.current.error('reminder:wakeup-failed', error)
+      }
+    })
     const onVisible = () => {
       if (document.visibilityState === 'visible') void controller.request()
     }

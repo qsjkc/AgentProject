@@ -5,6 +5,15 @@ export const REMINDER_BACKLOG_DELAY_MS = 250
 
 const REMINDER_RECEIPTS_KEY = 'detachym.pending-reminder-receipts.v1'
 
+export function isReminderWakeScopeCurrent(scope, context, server) {
+  return Boolean(scope && typeof server === 'string' && server
+    && context?.hasSession === true && typeof context.petType === 'string' && context.petType
+    && Number.isSafeInteger(context.userId) && context.userId > 0
+    && Number.isSafeInteger(context.session?.generation) && context.session.generation >= 0
+    && scope.server === server && scope.userId === context.userId
+    && scope.petType === context.petType && scope.generation === context.session.generation)
+}
+
 function getReminderReceiptKey({ server, userId, petType }, reminder) {
   if (!server || !reminder || reminder.user_id !== userId || reminder.pet_type !== petType
     || !Number.isSafeInteger(reminder.id) || reminder.id <= 0
@@ -60,7 +69,7 @@ export function createReminderDeliveryController({ getStorage = () => globalThis
           persist()
         })
       }
-      if (!presented.has(key)) return { retry: true }
+      if (!presented.has(key)) return { retry: true, retryOnPresentationAvailable: true }
       if (!await acknowledge()) return
       presented.delete(key)
       persist()
@@ -89,23 +98,32 @@ export function isTransientReminderReadError(error) {
 }
 
 // Events that arrive during a request must cause a fresh read afterwards.
-// Reconnecting permits one early read retry. Other failures keep their cooldown.
+// Network recovery and unmuting each allow one matching early retry per cooldown.
 export function createReminderPollController({ poll, schedule, onError = () => {}, now = Date.now }) {
   let pending = null
   let requested = null
   let disposed = false
   let retryAt = 0
-  let retryOnReconnect = false
+  let retryReason = null
+  const usedEarlyRetries = new Set()
   let contextRetries = 0
 
-  function request({ reconnected = false } = {}) {
+  const canRetryEarly = (options) => retryReason !== null && options?.[retryReason] === true
+
+  function request(options = {}) {
     if (disposed) return Promise.resolve()
     if (pending) {
-      if (requested !== 'reconnect') requested = reconnected ? 'reconnect' : 'refresh'
+      requested ??= {}
+      requested.reconnected ||= options.reconnected === true
+      requested.presentationAvailable ||= options.presentationAvailable === true
       return pending
     }
-    let retriedOnReconnect = now() < retryAt
-    if (retriedOnReconnect && !(reconnected && retryOnReconnect)) return Promise.resolve(schedule(retryAt))
+    if (now() < retryAt) {
+      if (!canRetryEarly(options)) return Promise.resolve(schedule(retryAt))
+      usedEarlyRetries.add(retryReason)
+    } else {
+      usedEarlyRetries.clear()
+    }
     pending = Promise.resolve().then(async () => {
       while (!disposed) {
         requested = null
@@ -128,19 +146,26 @@ export function createReminderPollController({ poll, schedule, onError = () => {
         if (disposed) return
         if (result?.retry) {
           retryAt = now() + REMINDER_RECONCILE_MS
-          retryOnReconnect = result.retryOnReconnect === true && !retriedOnReconnect
-          if (!retryOnReconnect || requested !== 'reconnect') requested = null
+          retryReason = result.retryOnReconnect === true ? 'reconnected'
+            : result.retryOnPresentationAvailable === true ? 'presentationAvailable' : null
+          if (usedEarlyRetries.has(retryReason)) retryReason = null
+          if (!canRetryEarly(requested)) requested = null
         } else {
           retryAt = 0
-          retryOnReconnect = false
+          retryReason = null
+          usedEarlyRetries.clear()
         }
         if (!requested) {
           const nextAt = result?.retry ? retryAt : result?.nextAt
           await schedule(Number.isFinite(nextAt) ? nextAt : now() + REMINDER_RECONCILE_MS)
         }
         if (!requested || disposed) return
-        retriedOnReconnect = now() < retryAt
-        if (retriedOnReconnect && !(retryOnReconnect && requested === 'reconnect')) return
+        if (now() < retryAt) {
+          if (!canRetryEarly(requested)) return
+          usedEarlyRetries.add(retryReason)
+        } else {
+          usedEarlyRetries.clear()
+        }
       }
     }).finally(() => { pending = null })
     return pending
