@@ -448,7 +448,25 @@ jobs:
             exit 1
           fi
 
+      - name: Check whether the same CD run already switched
+        id: resume
+        shell: bash
+        run: |
+          set -euo pipefail
+          if (( GITHUB_RUN_ATTEMPT <= 1 )); then
+            exit 0
+          fi
+          if python3 -B deploy/verify_release_resume.py --app-dir "$DEPLOY_APP_DIR" \
+            --source-commit "$DEPLOY_SOURCE_SHA" --run-id "$GITHUB_RUN_ID" > resume-probe.json; then
+            echo 'verify_only=true' >> "$GITHUB_OUTPUT"
+            echo 'Verified the already switched release for this CD run. Checking its public download again.'
+          else
+            echo 'The existing release did not qualify for verification-only retry. Running the full deployment gates.'
+            cat resume-probe.json
+          fi
+
       - name: Prepare remote directories
+        if: steps.resume.outputs.verify_only != 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -470,6 +488,7 @@ jobs:
           python3 deploy/verify_release_transition.py running-release.json
 
       - name: Check server platform and disk capacity
+        if: steps.resume.outputs.verify_only != 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -496,6 +515,7 @@ jobs:
           REMOTE_CAPACITY
 
       - name: Upload committed runtime configuration
+        if: steps.resume.outputs.verify_only != 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -515,6 +535,7 @@ jobs:
           rm -f -- deploy-runtime.tgz
 
       - name: Stage and load verified server images
+        if: steps.resume.outputs.verify_only != 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -533,6 +554,7 @@ jobs:
           REMOTE_IMAGES
 
       - name: Stage verified desktop download
+        if: steps.resume.outputs.verify_only != 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -553,10 +575,11 @@ jobs:
           fi
 
       - name: Deploy on server
+        if: steps.resume.outputs.verify_only != 'true'
         shell: bash
         run: |
           set -euo pipefail
-          ssh deploy-target "cd '$DEPLOY_APP_DIR' && PUBLIC_DEPLOY_HOST='$DEPLOY_HOST' DEPLOY_SOURCE_SHA='$DEPLOY_SOURCE_SHA' DESKTOP_RELEASE_VERSION='$DESKTOP_ARTIFACT_VERSION' DESKTOP_RELEASE_FILE='$DESKTOP_ARTIFACT_FILENAME' DESKTOP_RELEASE_BYTES='$DESKTOP_ARTIFACT_BYTES' DESKTOP_RELEASE_SHA256='$DESKTOP_ARTIFACT_SHA256' bash -s" <<'REMOTE_DEPLOY'
+          ssh deploy-target "cd '$DEPLOY_APP_DIR' && PUBLIC_DEPLOY_HOST='$DEPLOY_HOST' DEPLOY_SOURCE_SHA='$DEPLOY_SOURCE_SHA' DEPLOY_RUN_ID='$GITHUB_RUN_ID' DESKTOP_RELEASE_VERSION='$DESKTOP_ARTIFACT_VERSION' DESKTOP_RELEASE_FILE='$DESKTOP_ARTIFACT_FILENAME' DESKTOP_RELEASE_BYTES='$DESKTOP_ARTIFACT_BYTES' DESKTOP_RELEASE_SHA256='$DESKTOP_ARTIFACT_SHA256' bash -s" <<'REMOTE_DEPLOY'
           set -euo pipefail
 
           if [ ! -f .env ]; then
@@ -688,7 +711,9 @@ jobs:
 
           docker compose ps
           python3 deploy/server_images.py inspect --directory "$IMAGE_RELEASE_DIR" \
-            --source-commit "$DEPLOY_SOURCE_SHA" --running > "$IMAGE_RELEASE_DIR/running-images.json"
+            --source-commit "$DEPLOY_SOURCE_SHA" --running \
+            | python3 -c 'import json, sys; print(json.dumps({**json.load(sys.stdin), "workflowRunId": sys.argv[1]}))' \
+                "$DEPLOY_RUN_ID" > "$IMAGE_RELEASE_DIR/running-images.json"
           REMOTE_DEPLOY
 
       - name: Download running image provenance
@@ -700,9 +725,15 @@ jobs:
 
       - name: Verify public release and download
         shell: bash
+        env:
+          VERIFY_ONLY: ${{ steps.resume.outputs.verify_only }}
         run: |
           set -euo pipefail
-          PUBLIC_ORIGIN="$(ssh deploy-target "cd '$DEPLOY_APP_DIR' && cat '.public-origin-$DEPLOY_SOURCE_SHA'")"
+          if [[ "$VERIFY_ONLY" == true ]]; then
+            PUBLIC_ORIGIN="$(python3 -c 'import json; print(json.load(open("resume-probe.json"))["origin"])')"
+          else
+            PUBLIC_ORIGIN="$(ssh deploy-target "cd '$DEPLOY_APP_DIR' && cat '.public-origin-$DEPLOY_SOURCE_SHA'")"
+          fi
           public_verify_args=(
             --directory desktop-release --package desktop/package.json
             --source-commit "$DEPLOY_SOURCE_SHA" --manifest desktop-release/desktop-release.json
@@ -732,7 +763,18 @@ jobs:
             cat public-installer-download.json
             exit "$result"
           fi
-          ssh deploy-target "cd '$DEPLOY_APP_DIR' && mv '.desktop-release-$DEPLOY_SOURCE_SHA.json' .deployed-release.json"
+          MAIN_SHA="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')"
+          if [[ "$MAIN_SHA" != "$DEPLOY_SOURCE_SHA" ]]; then
+            echo 'main changed during public verification; refusing to publish stale release evidence' >&2
+            exit 1
+          fi
+          if [[ "$VERIFY_ONLY" == true ]]; then
+            python3 -B deploy/verify_release_resume.py --app-dir "$DEPLOY_APP_DIR" \
+              --source-commit "$DEPLOY_SOURCE_SHA" --run-id "$GITHUB_RUN_ID" \
+              --proof resume-probe.json --public-download public-installer-download.json > resume-publication.json
+          else
+            ssh deploy-target "cd '$DEPLOY_APP_DIR' && mv '.desktop-release-$DEPLOY_SOURCE_SHA.json' .deployed-release.json"
+          fi
 
       - name: Upload release provenance and public verification
         if: always()
@@ -748,4 +790,6 @@ jobs:
             server-images/server-images.json
             runtime-bundle.json
             runtime-install.json
+            resume-probe.json
+            resume-publication.json
           if-no-files-found: warn
