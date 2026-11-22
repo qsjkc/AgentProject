@@ -1,6 +1,7 @@
 const { randomUUID } = require('node:crypto')
 
 const MAX_RETAINED_REMINDER_NOTIFICATIONS = 32
+const MAX_ACCEPTED_REMINDER_OCCURRENCES = 256
 
 function isSameTodayNavigationContext(current, expected) {
   return Boolean(current && expected
@@ -53,6 +54,34 @@ function showWindowsReminderNotification(notification, bindNavigation) {
   // Windows posts click and later failure callbacks to the UI thread. Retain only accepted toasts.
   bindNavigation(notification)
   return true
+}
+
+function createWindowsReminderNotificationPresenter({ bindNavigation, isMuted }) {
+  const accepted = new Set()
+  return (context, payload, createNotification) => {
+    const { reminderId, reminderTime } = payload
+    // Match the renderer's occurrence receipt and keep sub-millisecond precision.
+    const key = context && Number.isSafeInteger(reminderId) && reminderId > 0
+      && typeof reminderTime === 'string' && reminderTime.length <= 64 && Number.isFinite(Date.parse(reminderTime))
+      ? JSON.stringify([context.server, context.userId, context.petType, context.generation, reminderId, reminderTime])
+      : null
+    // A cached receipt acknowledges an already accepted toast without submitting another one.
+    if (key && accepted.has(key)) return true
+    if (isMuted()) return false
+
+    let notification
+    try {
+      notification = createNotification()
+    } catch {
+      return false
+    }
+    if (!showWindowsReminderNotification(notification, bindNavigation)) return false
+    if (key) {
+      accepted.add(key)
+      if (accepted.size > MAX_ACCEPTED_REMINDER_OCCURRENCES) accepted.delete(accepted.values().next().value)
+    }
+    return true
+  }
 }
 
 function createMainPanelIntentCoordinator({
@@ -306,6 +335,7 @@ module.exports = {
   createMainPanelIntentCoordinator,
   createMainPanelIntentListenerRegistry,
   createReminderNotificationNavigation,
+  createWindowsReminderNotificationPresenter,
   isSameTodayNavigationContext,
   showWindowsReminderNotification,
 }

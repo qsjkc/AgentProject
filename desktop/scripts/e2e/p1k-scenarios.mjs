@@ -17,6 +17,7 @@ export const REQUIRED_E2E_BRIDGE_API = Object.freeze({
     'snapshot',
     'showWindow',
     'setReminderNotificationOutcome',
+    'setReminderNotificationReplyHold',
     'prepareOnboarding',
     'expireOperationCapabilities',
     'switchAccount',
@@ -833,6 +834,53 @@ export async function reminderConfirmationRetryScenario(context) {
   }
 }
 
+export async function reminderNotificationReceiptRecoveryScenario(context) {
+  await resetAuthenticated(context)
+  const { main, pet } = context.pages
+  const account = context.stub.fixture.accounts.get(USERS.A.id)
+  const previousReminders = account.reminders
+  account.reminders = []
+  const reminder = createReminderRecord({
+    user: USERS.A,
+    id: context.stub.fixture.nextReminderId++, title: '系统接受后重载的提醒',
+    remindAt: new Date(Date.now() - 1000),
+  })
+  const triggerAttempts = () => context.stub.requests.filter((request) => (
+    request.method === 'POST' && request.pathname === `/api/v1/reminders/${reminder.id}/trigger`
+  )).length
+
+  try {
+    await callE2e(main, 'hideWindow', 'pet')
+    await waitFor(() => pet.evaluate("document.visibilityState === 'hidden'"), { description: 'pet hidden for first submission' })
+    assertEqual(await callE2e(main, 'setReminderNotificationReplyHold', true), true, 'Fixture can hold a successful native reply')
+    const before = (await callE2e(main, 'snapshot')).reminderNotificationAttempts
+    account.reminders = [reminder]
+    await pet.evaluate('void window.desktopBridge.e2e.flushReminderPoll()')
+    const held = await expectSnapshot(main, (snapshot) => snapshot.reminderNotificationReplyHeld, 'accepted native notification with held IPC reply')
+    assertEqual(held.reminderNotificationAttempts, before + 1, 'The held reply follows exactly one simulated native submission')
+    const hasReceipt = await pet.evaluate(`JSON.parse(localStorage.getItem('detachym.pending-reminder-receipts.v1') || '[]')
+      .some((record) => record[3] === ${reminder.id} && record[4] === ${JSON.stringify(reminder.remind_at)})`)
+    assertEqual(hasReceipt, false, 'The renderer saved a receipt before receiving acceptance')
+    assertEqual(triggerAttempts(), 0, 'The renderer triggered the reminder before receiving acceptance')
+
+    await callE2e(main, 'setReminderNotificationOutcome', 'failed')
+    await pet.reload()
+    assert(await pet.evaluate("document.visibilityState === 'hidden'"), 'Pet became visible after reloading')
+    await waitFor(() => reminder.triggered_at, { description: 'reloaded hidden pet acknowledges previously accepted notification' })
+    await callE2e(pet, 'flushReminderPoll')
+    const after = await callE2e(main, 'snapshot')
+    assertEqual(after.reminderNotificationAttempts, held.reminderNotificationAttempts, 'Reload submitted the same notification twice')
+    assertEqual(triggerAttempts(), 1, 'Reload did not trigger the reminder exactly once')
+    assert(!await pet.evaluate(`document.querySelector('.pet-bubble')?.textContent.includes(${JSON.stringify(reminder.title)})`), 'Hidden recovery showed the reminder bubble')
+    return { simulatedNativeSubmissions: after.reminderNotificationAttempts - before, triggerAttempts: triggerAttempts(), hiddenReload: true, receiptMissingBeforeReload: true }
+  } finally {
+    account.reminders = previousReminders
+    await callE2e(main, 'setReminderNotificationReplyHold', false)
+    await callE2e(main, 'setReminderNotificationOutcome', 'show')
+    await callE2e(main, 'showWindow', 'pet')
+  }
+}
+
 export async function reminderReconnectScenario(context) {
   await resetAuthenticated(context)
   await hideMainPanel(context)
@@ -1477,6 +1525,7 @@ export const SCENARIOS = Object.freeze({
   'failed-knowledge-upload': failedKnowledgeUploadScenario,
   'hidden-reminder-deadline': hiddenReminderDeadlineScenario,
   'reminder-confirmation-retry': reminderConfirmationRetryScenario,
+  'reminder-notification-receipt-recovery': reminderNotificationReceiptRecoveryScenario,
   'reminder-reconnect': withProactiveCompanionDisabled(reminderReconnectScenario),
   'conversation-return': conversationReturnScenario,
   'quick-chat-refresh-recovery': quickChatRefreshRecoveryScenario,

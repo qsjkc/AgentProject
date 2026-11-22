@@ -2839,6 +2839,8 @@ function PetApp() {
               title: 'Detachym',
               body: copy,
               reminderServer: server,
+              reminderId: reminder.id,
+              reminderTime: reminder.remind_at,
             }, operationContext.authoritative) === true
             if (nativeShown) recordPresentation()
           } finally {
