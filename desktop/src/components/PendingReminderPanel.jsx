@@ -384,9 +384,12 @@ export function PendingReminderPanel({
             return (
               <div
                 className={`pending-reminder-item ${isOnboardingHighlight ? 'is-onboarding-highlight' : ''}`}
+                data-reminder-row-id={String(reminder.id)}
                 data-e2e-reminder-id={String(reminder.id)}
                 key={reminder.id}
+                tabIndex={-1}
                 role="group"
+                aria-label={reminder.title}
                 aria-busy={savingId === reminder.id || retryingId === reminder.id || skippingId === reminder.id}
                 aria-describedby={isOnboardingHighlight ? `pending-reminder-onboarding-${reminder.id}` : undefined}
               >

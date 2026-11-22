@@ -34,11 +34,29 @@ import { todayReminderScenario } from './today-reminder-scenario.mjs'
 import { todayRecurringReminderScenario } from './today-recurring-reminder-scenario.mjs'
 import { todayAgendaScenario } from './today-agenda-scenario.mjs'
 import { todayAgendaConsistencyScenario } from './today-agenda-consistency-scenario.mjs'
+import { todayAgendaRowTargetScenario } from './today-agenda-row-target-scenario.mjs'
 import { todayFocusHandoffScenario } from './today-focus-handoff-scenario.mjs'
 import { startStubServer } from './stub-server.mjs'
 
-const SCENARIOS = Object.freeze({ ...BASE_SCENARIOS, 'pet-parity': petParityScenario, 'dressed-pets': dressedPetScenario, 'focus-history': focusHistoryScenario, 'capability-renewal': capabilityRenewalScenario, 'desktop-release': desktopReleaseScenario, 'session-recovery': sessionRecoveryScenario, 'optional-dashboard-recovery': optionalDashboardRecoveryScenario, 'session-recovery-boundaries': sessionRecoveryBoundaryScenario, 'daily-step': dailyStepScenario, 'today-reminder': todayReminderScenario, 'today-agenda': todayAgendaScenario, 'today-recurring-reminder': todayRecurringReminderScenario, 'today-focus-handoff': todayFocusHandoffScenario, 'today-agenda-consistency': todayAgendaConsistencyScenario })
-const FULL_SCENARIO_ORDER = Object.freeze([...BASE_SCENARIO_ORDER, 'pet-parity', 'dressed-pets', 'focus-history', 'capability-renewal', 'desktop-release', 'session-recovery', 'optional-dashboard-recovery', 'session-recovery-boundaries', 'daily-step', 'today-reminder', 'today-agenda', 'today-recurring-reminder', 'today-focus-handoff', 'today-agenda-consistency'])
+const ADDITIONAL_SCENARIOS = Object.freeze({
+  'pet-parity': petParityScenario,
+  'dressed-pets': dressedPetScenario,
+  'focus-history': focusHistoryScenario,
+  'capability-renewal': capabilityRenewalScenario,
+  'desktop-release': desktopReleaseScenario,
+  'session-recovery': sessionRecoveryScenario,
+  'optional-dashboard-recovery': optionalDashboardRecoveryScenario,
+  'session-recovery-boundaries': sessionRecoveryBoundaryScenario,
+  'daily-step': dailyStepScenario,
+  'today-reminder': todayReminderScenario,
+  'today-agenda': todayAgendaScenario,
+  'today-recurring-reminder': todayRecurringReminderScenario,
+  'today-focus-handoff': todayFocusHandoffScenario,
+  'today-agenda-consistency': todayAgendaConsistencyScenario,
+  'today-agenda-row-target': todayAgendaRowTargetScenario,
+})
+const SCENARIOS = Object.freeze({ ...BASE_SCENARIOS, ...ADDITIONAL_SCENARIOS })
+const FULL_SCENARIO_ORDER = Object.freeze([...BASE_SCENARIO_ORDER, ...Object.keys(ADDITIONAL_SCENARIOS)])
 
 const execFileAsync = promisify(execFile)
 const E2E_TEMP_PREFIX = 'detachym-e2e-'

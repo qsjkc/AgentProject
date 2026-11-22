@@ -217,10 +217,15 @@ const REMINDER_AGENDA_TARGETS = {
   recurring: 'recurring-reminders',
 }
 
-function openReminderAgendaTarget(destination) {
-  const target = document.getElementById(REMINDER_AGENDA_TARGETS[destination])
-  target?.scrollIntoView({ block: 'start' })
-  target?.focus({ preventScroll: true })
+function openReminderAgendaTarget(destination, targetId) {
+  const section = document.getElementById(REMINDER_AGENDA_TARGETS[destination])
+  if (!section) return
+  const rowAttribute = destination === 'recurring' ? 'data-reminder-series-id' : 'data-reminder-row-id'
+  const row = Number.isSafeInteger(targetId) && targetId > 0
+    ? section.querySelector(`[${rowAttribute}="${targetId}"]`) : null
+  const target = row || section
+  target.scrollIntoView({ block: row ? 'nearest' : 'start' })
+  target.focus({ preventScroll: true })
 }
 
 function PetDailySummaryPanel({ language, petType, summary, loading, onRetry }) {

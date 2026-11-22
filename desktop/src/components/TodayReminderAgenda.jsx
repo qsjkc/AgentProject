@@ -189,7 +189,8 @@ export function TodayReminderAgenda({ language, accountContext, onNavigate }) {
           {items.slice(0, VISIBLE_ITEMS).map((item) => (
             <li key={item.key}>
               <button type="button" className="today-agenda-item" data-e2e="today-agenda-item"
-                data-status={item.status} data-destination={item.destination} onClick={() => onNavigate(item.destination)}>
+                data-status={item.status} data-destination={item.destination} data-target-id={item.targetId}
+                onClick={() => onNavigate(item.destination, item.targetId)}>
                 <time dateTime={new Date(item.remindAt).toISOString()}>{timeFormat.format(item.remindAt)}</time>
                 <span className="today-agenda-item-copy">
                   <span className="today-agenda-item-title">{item.title}</span>

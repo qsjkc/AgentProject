@@ -215,7 +215,8 @@ export function RecurringReminderPanel({ language, petType, accountContext, onUp
           {seriesItems.map((series) => {
             const isPaused = series.status === 'paused'
             return (
-              <div className="recurring-reminder-item" key={series.id} aria-busy={savingId === series.id}>
+              <div className="recurring-reminder-item" key={series.id} data-reminder-series-id={String(series.id)}
+                tabIndex={-1} role="group" aria-label={series.title} aria-busy={savingId === series.id}>
                 <div className="pending-reminder-copy">
                   <div className="pending-reminder-title">{series.title}</div>
                   <div className="recurring-reminder-schedule">

@@ -239,7 +239,8 @@ function UpcomingReminderList({ language, petType, accountContext }) {
       {!loading && !loadError && reminders.length === 0 && <div className="pending-reminder-empty" data-e2e="upcoming-reminder-empty">{copy.empty}</div>}
       {reminders.length > 0 && <div className="pending-reminder-list">
         {reminders.map((reminder) => (
-          <div className="pending-reminder-item" key={reminder.id} data-e2e-upcoming-reminder-id={String(reminder.id)}
+          <div className="pending-reminder-item" key={reminder.id} data-reminder-row-id={String(reminder.id)}
+            data-e2e-upcoming-reminder-id={String(reminder.id)} tabIndex={-1}
             role="group" aria-label={reminder.title} aria-busy={busy?.id === reminder.id}>
             <div className="pending-reminder-copy">
               <div className="pending-reminder-title">{reminder.title}</div>

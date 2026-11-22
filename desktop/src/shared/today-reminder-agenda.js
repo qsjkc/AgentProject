@@ -49,6 +49,7 @@ export function getTodayReminderAgenda({ delivered, scheduled, series, accountCo
       remindAt,
       status: received ? 'delivered' : remindAt <= now ? 'due' : 'scheduled',
       destination: received ? 'delivered' : seriesId !== null ? 'recurring' : 'upcoming',
+      targetId: !received && seriesId !== null ? seriesId : id,
       seriesId,
     })
   }
@@ -76,7 +77,7 @@ export function getTodayReminderAgenda({ delivered, scheduled, series, accountCo
     const occurrence = `${id}:${remindAt}`
     if (occurrences.has(occurrence)) continue
     occurrences.add(occurrence)
-    items.push({ key: `series:${occurrence}`, title: row.title, remindAt, status: 'projected', destination: 'recurring' })
+    items.push({ key: `series:${occurrence}`, title: row.title, remindAt, status: 'projected', destination: 'recurring', targetId: id })
   }
 
   items.sort((left, right) => left.remindAt - right.remindAt || left.key.localeCompare(right.key))
