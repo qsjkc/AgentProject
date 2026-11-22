@@ -1,5 +1,8 @@
 from concurrent.futures import ThreadPoolExecutor
 import json
+from pathlib import Path
+import subprocess
+import sys
 from threading import Barrier, Event
 from types import SimpleNamespace
 import uuid
@@ -7,6 +10,15 @@ import uuid
 import pytest
 
 from app.services.rag.service import RAGService
+
+
+def test_application_import_defers_chroma_until_rag_use():
+    subprocess.run(
+        [sys.executable, "-B", "-c", "import sys; from app.main import app; assert 'chromadb' not in sys.modules"],
+        cwd=Path(__file__).resolve().parents[1],
+        check=True,
+        timeout=30,
+    )
 
 
 class RecordingCollection:
