@@ -834,7 +834,43 @@ export async function unmuteReminderScenario(context) {
       && request.pathname === `/api/v1/reminders/${reminder.id}/trigger`).length, 1, 'Unmute acknowledged the occurrence exactly once')
     assertEqual(reminder.status, 'pending', 'Unmute must keep the reminder available for explicit completion')
     assert(await pet.evaluate("document.visibilityState === 'hidden'"), 'The unmute check must not reveal the pet')
-    return { actualTrayCallback: true, hidden: true, nativeSubmissions: 1, acknowledgments: 1, latencyMs }
+
+    assertEqual(await toggle(), true, 'The actual tray mute callback is available')
+    const muted = await expectSnapshot(pet, (snapshot) => snapshot.notificationsMuted === true, 'the tray persisted mute again')
+    const reopenedReminder = createReminderRecord({
+      user: USERS.A, id: context.stub.fixture.nextReminderId++, title: '重新显示桌宠后的待处理提醒',
+      petType: 'pig', remindAt: new Date(Date.now() - 1000),
+    })
+    const reopenedReadStart = context.stub.requests.length
+    account.reminders = [reopenedReminder]
+    await callE2e(pet, 'flushReminderPoll')
+    assert(context.stub.requests.slice(reopenedReadStart).some((request) => request.method === 'GET'
+      && request.pathname === '/api/v1/reminders' && new URLSearchParams(request.search).has('due_before')),
+      'The hidden pet must read the due reminder before showing the bubble channel')
+    assert(!reopenedReminder.triggered_at, 'The second reminder was acknowledged while hidden and muted')
+
+    const rendererTimeOrigin = await pet.evaluate('performance.timeOrigin')
+    const reopenedAt = Date.now()
+    await callE2e(pet, 'showWindow', 'pet')
+    await waitFor(() => reopenedReminder.triggered_at, { timeoutMs: 5000, description: 'showing the pet resumes the muted reminder before regular reconciliation' })
+    const reopenedLatencyMs = Date.parse(reopenedReminder.triggered_at) - reopenedAt
+    assert(reopenedLatencyMs >= 0 && reopenedLatencyMs <= 5000, 'The reopened pet missed the five-second window', { reopenedLatencyMs })
+    assertEqual(await pet.evaluate('performance.timeOrigin'), rendererTimeOrigin, 'The reopened pet replaced its renderer')
+    assert(await pet.evaluate(`document.querySelector('.pet-bubble')?.textContent.includes(${JSON.stringify(reopenedReminder.title)})`), 'The reopened pet did not show the reminder in its bubble')
+    const reopened = await callE2e(pet, 'snapshot')
+    assertEqual(reopened.notificationsMuted, true, 'Reopening the pet changed the tray mute setting')
+    assertEqual(reopened.reminderNotificationAttempts, muted.reminderNotificationAttempts, 'Reopening submitted a muted native notification')
+    assertEqual(context.stub.requests.filter((request) => request.method === 'POST'
+      && request.pathname === `/api/v1/reminders/${reopenedReminder.id}/trigger`).length, 1, 'Reopening must acknowledge the occurrence exactly once')
+    assertEqual(reopenedReminder.status, 'pending', 'Reopening must keep the reminder available for explicit completion')
+    return {
+      actualTrayCallback: true,
+      hidden: true,
+      nativeSubmissions: 1,
+      acknowledgments: 1,
+      latencyMs,
+      reopened: { latencyMs: reopenedLatencyMs, nativeSubmissions: 0, acknowledgments: 1, sameRenderer: true },
+    }
   } finally {
     account.reminders = originalReminders
     if ((await callE2e(pet, 'snapshot')).notificationsMuted !== originalMuted) await toggle()

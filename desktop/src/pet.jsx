@@ -2901,7 +2901,7 @@ function PetApp() {
       }
     })
     const onVisible = () => {
-      if (document.visibilityState === 'visible') void controller.request()
+      if (document.visibilityState === 'visible') void controller.request({ presentationAvailable: true })
     }
     const onOnline = () => void controller.request({ reconnected: true })
     document.addEventListener('visibilitychange', onVisible)
