@@ -119,6 +119,23 @@ async function verifyLanguage(main, configPath) {
   return { language, initialLanguage: original }
 }
 
+async function verifyRendererStorage(main) {
+  const key = JSON.stringify('detachym.windows-upgrade-acceptance')
+  const marker = `renderer-storage:${process.env.GITHUB_RUN_ID}:${process.env.GITHUB_RUN_ATTEMPT}`
+  if (mode === 'set-language') {
+    const stored = await main.evaluate(`(() => {
+      if (localStorage.getItem(${key}) !== null) return false
+      localStorage.setItem(${key}, ${JSON.stringify(marker)})
+      return localStorage.getItem(${key})
+    })()`)
+    assert(stored === marker, 'Baseline renderer did not store a fresh upgrade marker')
+    return 'seeded'
+  }
+  assert(await main.evaluate(`localStorage.getItem(${key})`) === marker,
+    'Candidate renderer did not retain the baseline local storage marker')
+  return 'preserved'
+}
+
 const report = { status: 'running', expectedVersion: version, renderers: [] }
 const env = { ...process.env }
 for (const key of ['DETACHYM_E2E', 'DETACHYM_API_BASE_URL', 'ELECTRON_RENDERER_URL', 'ELECTRON_RUN_AS_NODE']) {
@@ -177,7 +194,17 @@ try {
   const main = clients.get('main-panel.html')
   await main.waitForSelector('[data-e2e="login-submit"]')
   report.cleanLoginPrompt = true
-  if (upgrade) Object.assign(report, await verifyLanguage(main, report.configPath))
+  if (upgrade) {
+    Object.assign(report, await verifyLanguage(main, report.configPath))
+    report.rendererLocalStorage = await verifyRendererStorage(main)
+    // Electron closes the CDP socket without replying to Browser.close.
+    // Wait for normal shutdown so the renderer storage can finish writing.
+    void main.send('Browser.close', {}, { timeoutMs: 2000 }).catch(() => {})
+    await waitFor(() => child.exitCode !== null || child.signalCode !== null,
+      { description: 'normal installed Electron shutdown', timeoutMs: 10_000 })
+    assert(child.exitCode === 0, 'Installed Electron did not exit successfully')
+    report.gracefulExit = true
+  }
   report.status = 'passed'
 } catch (error) {
   report.status = 'failed'

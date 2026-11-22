@@ -52,6 +52,7 @@ function Invoke-UpgradeLaunch([string]$Phase, [string]$Version, [string]$Mode, [
         $launch.language -notin @('en', 'zh-CN') -or -not $launch.profilePath) {
         throw "$Phase launch did not verify the default profile and signed-out state"
     }
+    if ($launch.gracefulExit -ne $true) { throw "$Phase did not shut down normally" }
     if (Get-Process -Name Detachym -ErrorAction SilentlyContinue) { throw "$Phase left Detachym running" }
     $checks.Add([ordered]@{ name = "$Phase-installed-renderers"; status = 'passed'; launch = $launch })
     return $launch
@@ -84,6 +85,7 @@ try {
     $first = Get-FilesAndRegistration 'baseline' $installDirectory $baseline.version
     $checks.Add($first)
     $before = Invoke-UpgradeLaunch 'baseline' $baseline.version 'set-language'
+    if ($before.rendererLocalStorage -ne 'seeded') { throw 'Baseline renderer did not store the upgrade marker' }
 
     # Let NSIS locate the registered installation and perform the in-place update.
     Invoke-InstallerProcess 'upgrade' (Join-Path $CandidateDirectory $candidate.filename) @('/S')
@@ -96,6 +98,8 @@ try {
         throw 'The in-place update did not preserve the default profile language'
     }
     $checks.Add([ordered]@{ name = 'language-preserved-in-default-profile'; status = 'passed'; language = $after.language })
+    if ($after.rendererLocalStorage -ne 'preserved') { throw 'Candidate renderer did not retain the upgrade marker' }
+    $checks.Add([ordered]@{ name = 'renderer-local-storage-preserved'; status = 'passed' })
     $report.status = 'passed'
 } catch {
     $report.status = 'failed'
