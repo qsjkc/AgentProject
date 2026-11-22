@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { Check, Pause, Play, RefreshCw, Sprout } from 'lucide-react'
 
 import { captureApiOperationContext } from '../shared/api'
 import { captureFocusSnapshot, formatFocusTime, getFocusSnapshotRemainingMs, isFocusSnapshotCurrent } from '../shared/focus-session'
 import { getFocusHistoryRefreshDelay, getFocusHistorySummary } from '../shared/focus-history'
+import { TodayFocusHandoff } from './TodayFocusHandoff'
 import './focus-session.css'
 
-export function FocusSessionPanel({ language, accountContext, stepIntent, onStepIntentHandled, onOpenToday }) {
+export function FocusSessionPanel({ language, accountContext, stepIntent, onStepIntentHandled, onOpenToday, handoffHost, onOpenFocus }) {
   const zh = language === 'zh-CN'
   const languageRef = useRef(zh)
   languageRef.current = zh
@@ -175,6 +177,15 @@ export function FocusSessionPanel({ language, accountContext, stepIntent, onStep
 
   return (
     <section id="companion-focus" tabIndex={-1} className="focus-panel" data-pet-type={accountContext.petType} aria-label={zh ? '陪我专注' : 'Focus together'} data-e2e="focus-panel" data-focus-status={state ? status : 'loading'} aria-busy={loading || busy}>
+      {handoffHost && active && createPortal(<TodayFocusHandoff
+        state={state}
+        busy={busy}
+        language={language}
+        onAction={() => {
+          onOpenFocus()
+          if (status === 'paused') void act('resume')
+        }}
+      />, handoffHost)}
       <div className="focus-heading"><Sprout size={17} aria-hidden="true" /><h2>{zh ? '陪我专注' : 'Focus together'}</h2><span>{zh ? '一小段就好' : 'One little stretch'}</span></div>
       {!state ? (
         <p className="focus-copy" role="status">{loading ? (zh ? '正在找回我们的进度…' : 'Finding our place…') : (zh ? '稍后再一起开始。' : 'We can begin in a moment.')}</p>

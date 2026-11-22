@@ -761,6 +761,7 @@ function MainPanelApp() {
   const [intentOverride, setIntentOverride] = useState(null)
   const [focusNavigationVersion, setFocusNavigationVersion] = useState(0)
   const [focusStepIntent, setFocusStepIntent] = useState(null)
+  const [focusHandoffHost, setFocusHandoffHost] = useState(null)
   const [todayNavigation, setTodayNavigation] = useState(null)
   const [todayReminderPrefill, setTodayReminderPrefill] = useState(null)
   const [reminderAgendaSources, setReminderAgendaSources] = useState(null)
@@ -3197,6 +3198,7 @@ function MainPanelApp() {
   const todaySection = (
     <section key="companion-today" className="main-today" id="companion-today" tabIndex={-1} aria-labelledby="companion-today-heading" data-e2e="companion-today">
       <h2 id="companion-today-heading"><Sprout size={17} aria-hidden="true" />{language === 'zh-CN' ? '今天一起' : 'Today together'}</h2>
+      <div ref={setFocusHandoffHost} />
       <DailyStepPanel
         key={`daily-step-${todayContextKey}`}
         language={language}
@@ -3389,6 +3391,8 @@ function MainPanelApp() {
                 stepIntent={focusStepIntent?.contextKey === todayContextKey ? focusStepIntent : null}
                 onStepIntentHandled={handleFocusStepIntent}
                 onOpenToday={focusTodaySection}
+                handoffHost={focusHandoffHost}
+                onOpenFocus={handleOpenFocus}
               />
               <PetWeeklySummaryPanel
                 key={`weekly-${user?.id || 'anonymous'}:${currentPetType}:${activeSessionSnapshotRef.current?.generation ?? 'none'}:${accountRequestEpochRef.current}`}
