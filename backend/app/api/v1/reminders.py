@@ -1,7 +1,7 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import flag_modified
@@ -20,6 +20,7 @@ from app.schemas.reminder import (
     ReminderStatus,
     ReminderUpdate,
     normalize_reminder_datetime,
+    serialize_utc_datetime,
 )
 from app.services.pet_relationships import award_pet_relationship
 from app.services.reminder_recurrence import create_recurring_reminder
@@ -106,10 +107,12 @@ async def create_reminder(
 
 @router.get("", response_model=List[ReminderResponse])
 async def list_reminders(
+    response: Response,
     pet_type: Optional[PetType] = Query(default=None),
     status: Optional[ReminderStatus] = Query(default=None),
     due_before: Optional[datetime] = Query(default=None),
     triggered: Optional[bool] = Query(default=None),
+    lookahead_seconds: Optional[int] = Query(default=None, ge=0, le=120),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -118,7 +121,14 @@ async def list_reminders(
         query = query.where(Reminder.pet_type == pet_type)
     if status:
         query = query.where(Reminder.status == status)
-    if due_before:
+    if lookahead_seconds is not None or due_before is not None:
+        now = utc_now()
+        response.headers["X-Detachym-Reminder-Time"] = serialize_utc_datetime(now)
+        response.headers["Cache-Control"] = "no-store"
+        if lookahead_seconds is not None:
+            # A client can send due_before for servers that predate the relative horizon.
+            due_before = now + timedelta(seconds=lookahead_seconds)
+    if due_before is not None:
         query = query.where(Reminder.remind_at <= normalize_reminder_datetime(due_before))
     if triggered is not None:
         query = query.where(

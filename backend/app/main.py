@@ -86,6 +86,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["X-Detachym-Reminder-Time"],
 )
 
 app.include_router(api_router, prefix=settings.API_PREFIX)
