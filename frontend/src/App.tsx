@@ -61,7 +61,7 @@ function RequireAdmin({ children }: { children: ReactNode }) {
 }
 
 function AuthBootstrap() {
-  const { token, fetchUser, logout, setToken } = useAuthStore()
+  const { token, fetchUser, logout, resumeUserSync, setToken } = useAuthStore()
   const location = useLocation()
 
   useEffect(() => {
@@ -71,12 +71,14 @@ function AuthBootstrap() {
       }
     }
     window.addEventListener(AUTH_EXPIRED_EVENT, logout)
+    window.addEventListener('online', resumeUserSync)
     window.addEventListener('storage', syncSession)
     return () => {
       window.removeEventListener(AUTH_EXPIRED_EVENT, logout)
+      window.removeEventListener('online', resumeUserSync)
       window.removeEventListener('storage', syncSession)
     }
-  }, [logout, setToken])
+  }, [logout, resumeUserSync, setToken])
 
   useEffect(() => {
     if (token) {

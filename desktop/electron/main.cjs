@@ -112,7 +112,7 @@ const boundsPersistence = new Set()
 let displayRecoveryTimer = null
 let focusSessionController = null
 let reminderWakeupController = null
-const hiddenPetReminderRecovery = new WeakMap()
+const petReminderRecovery = new WeakMap()
 
 const rendererHeartbeatState = Object.create(null)
 const petOnboardingEngagementSamples = new Map()
@@ -507,16 +507,16 @@ function getReminderWakeupController() {
   return reminderWakeupController
 }
 
-function recoverHiddenPetReminderRenderer(windowInstance, afterCrash = false) {
+function recoverPetReminderRenderer(windowInstance, afterCrash = false) {
   if (quitting || !windowInstance || windowInstance !== petWindow || windowInstance.isDestroyed()
-    || windowInstance.isVisible() || !getTodayNavigationContext()) return
+    || !getTodayNavigationContext()) return
   const sender = windowInstance.webContents
-  const lastAttempt = hiddenPetReminderRecovery.get(sender)
+  const lastAttempt = petReminderRecovery.get(sender)
   // A replacement must stay healthy for a reconciliation interval before another automatic reload.
   if (afterCrash && lastAttempt && (lastAttempt.readyAt === null
     || performance.now() - lastAttempt.readyAt < REMINDER_RECONCILE_MS)) return
   if (reloadCrashedRenderer(windowInstance)) {
-    hiddenPetReminderRecovery.set(sender, { readyAt: null })
+    petReminderRecovery.set(sender, { readyAt: null })
     logDesktop('pet-reminder-renderer-recovery', { afterCrash })
   }
 }
@@ -525,7 +525,7 @@ function requestPetReminderRefresh(unmuteScope = null) {
   if (!petWindow || petWindow.isDestroyed()) return
   const sender = petWindow.webContents
   if (sender.isCrashed()) {
-    recoverHiddenPetReminderRenderer(petWindow)
+    recoverPetReminderRenderer(petWindow)
     return
   }
   if (!sender.isLoading()) sender.send('desktop:reminder-wakeup', unmuteScope)
@@ -1312,10 +1312,10 @@ function attachRendererCapabilityLifecycle(windowInstance) {
     loginAttempts.cancelOwner(sender)
     operationCapabilities.revokeSender(sender)
     reminderWakeupController?.cancelOwner(sender)
-    if (windowInstance === petWindow && !windowInstance.isDestroyed() && !windowInstance.isVisible()) {
+    if (windowInstance === petWindow && !windowInstance.isDestroyed()) {
       const context = getTodayNavigationContext()
       if (context) setImmediate(() => {
-        if (isTodayNavigationContextCurrent(context)) recoverHiddenPetReminderRenderer(windowInstance, true)
+        if (isTodayNavigationContextCurrent(context)) recoverPetReminderRenderer(windowInstance, true)
       })
     }
   })
@@ -3098,7 +3098,7 @@ function registerIpc() {
     const authorization = authorizeRendererAccountMutation(event, expectedContext, ['pet'], { requiredScope: 'pet' })
     if (!authorization.ok || !isApiServerCurrent(expectedContext)) return false
     const scheduled = getReminderWakeupController().schedule(event.sender, at, sequence)
-    const recovery = hiddenPetReminderRecovery.get(event.sender)
+    const recovery = petReminderRecovery.get(event.sender)
     if (scheduled && recovery?.readyAt === null) recovery.readyAt = performance.now()
     return scheduled
   })
