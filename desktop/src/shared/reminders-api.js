@@ -1,4 +1,5 @@
 import { desktopApiRequest } from './api'
+import { REMINDER_RECONCILE_MS } from './reminder-poll.js'
 
 export function createReminder(payload, operationContext) {
   return desktopApiRequest('/reminders', {
@@ -21,6 +22,24 @@ export function getPendingReminders(petType, dueBefore = null, triggered = null,
 export function getPendingReminderSummary(petType, operationContext) {
   const params = new URLSearchParams({ pet_type: petType })
   return desktopApiRequest(`/reminders/pending-summary?${params.toString()}`, {}, operationContext)
+}
+
+export function getReminderPollSnapshot(petType, operationContext) {
+  const legacyDueBefore = Date.now() + REMINDER_RECONCILE_MS
+  const params = new URLSearchParams({
+    pet_type: petType,
+    status: 'pending',
+    triggered: 'false',
+    due_before: new Date(legacyDueBefore).toISOString(),
+    lookahead_seconds: String(REMINDER_RECONCILE_MS / 1000),
+  })
+  return desktopApiRequest(`/reminders?${params.toString()}`, {}, operationContext, (reminders, headers) => {
+    const serverTime = Date.parse(headers.get('X-Detachym-Reminder-Time') ?? '')
+    // Older services still apply due_before and retain their local-clock behavior.
+    return Number.isFinite(serverTime)
+      ? { reminders, now: serverTime, dueBefore: serverTime + REMINDER_RECONCILE_MS }
+      : { reminders, now: Date.now(), dueBefore: legacyDueBefore }
+  })
 }
 
 export function completeReminder(reminderId, operationContext) {

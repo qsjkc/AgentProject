@@ -26,7 +26,6 @@ function clockHarness() {
   const timers = new Map()
   const events = []
   const controller = createReminderWakeupController({
-    now: () => clock,
     getContextKey: () => contextKey,
     isOwnerCurrent: (candidate) => candidate === owner,
     onWake: (sender) => events.push({ sender, at: clock }),
@@ -57,7 +56,7 @@ function clockHarness() {
 
 test('the main-process reminder clock wakes at the known deadline and keeps a 30s fallback', () => {
   const h = clockHarness()
-  assert.equal(h.controller.schedule(h.owner(), h.now() + 1250, 1), true)
+  assert.equal(h.controller.schedule(h.owner(), 1250, 1), true)
   h.advance(1249)
   assert.equal(h.events.length, 0)
   h.advance(1)
@@ -69,16 +68,16 @@ test('the main-process reminder clock wakes at the known deadline and keeps a 30
 
 test('a far-future deadline is bounded by the external-change reconciliation interval', () => {
   const h = clockHarness()
-  h.controller.schedule(h.owner(), h.now() + 86_400_000, 1)
+  h.controller.schedule(h.owner(), 86_400_000, 1)
   h.advance(REMINDER_RECONCILE_MS)
   assert.equal(h.events.length, 1)
 })
 
 test('late scheduling replies cannot replace a newer reminder deadline', () => {
   const h = clockHarness()
-  h.controller.schedule(h.owner(), h.now() + 1000, 2)
-  assert.equal(h.controller.schedule(h.owner(), h.now() + 30_000, 1), false)
-  assert.equal(h.controller.schedule(h.owner(), h.now() + 30_000, 2), false)
+  h.controller.schedule(h.owner(), 1000, 2)
+  assert.equal(h.controller.schedule(h.owner(), 30_000, 1), false)
+  assert.equal(h.controller.schedule(h.owner(), 30_000, 2), false)
   h.advance(1000)
   assert.equal(h.events.length, 1)
 })
@@ -86,7 +85,7 @@ test('late scheduling replies cannot replace a newer reminder deadline', () => {
 test('account, pet, server, logout and session changes revoke a previously armed reminder clock', () => {
   for (const key of ['server-b:user-a:pig:1', 'server-a:user-b:pig:2', 'server-a:user-a:cat:1', 'server-a:user-a:pig:2', null]) {
     const h = clockHarness()
-    h.controller.schedule(h.owner(), h.now() + 10, 1)
+    h.controller.schedule(h.owner(), 10, 1)
     const staleCallback = [...h.timers.values()][0].callback
     h.setContext(key)
     h.controller.syncContext()
@@ -99,12 +98,12 @@ test('account, pet, server, logout and session changes revoke a previously armed
 
 test('window destruction and renderer reload cancel timers, including already queued callbacks', () => {
   const h = clockHarness()
-  h.controller.schedule(h.owner(), h.now() + 10, 10)
+  h.controller.schedule(h.owner(), 10, 10)
   const staleCallback = [...h.timers.values()][0].callback
   h.controller.cancelOwner(h.owner())
   staleCallback()
   assert.equal(h.events.length, 0)
-  assert.equal(h.controller.schedule(h.owner(), h.now() + 10, 1), true)
+  assert.equal(h.controller.schedule(h.owner(), 10, 1), true)
   h.setOwner(null)
   h.advance(10)
   assert.equal(h.events.length, 0)
@@ -113,7 +112,7 @@ test('window destruction and renderer reload cancel timers, including already qu
 
 test('resume performs one immediate check after sleep without replaying stale timer ticks', () => {
   const h = clockHarness()
-  h.controller.schedule(h.owner(), h.now() + 1000, 1)
+  h.controller.schedule(h.owner(), 1000, 1)
   const staleCallback = [...h.timers.values()][0].callback
   h.advance(60_000, false)
   assert.equal(h.controller.wake(), true)
@@ -124,11 +123,11 @@ test('resume performs one immediate check after sleep without replaying stale ti
 
 test('invalid scheduling inputs and unknown owners cannot arm a reminder clock', () => {
   const h = clockHarness()
-  for (const at of [NaN, Infinity, 'soon', null]) assert.equal(h.controller.schedule(h.owner(), at, 1), false)
-  for (const sequence of [0, -1, NaN, 1.2, '1']) assert.equal(h.controller.schedule(h.owner(), h.now(), sequence), false)
-  assert.equal(h.controller.schedule({}, h.now(), 1), false)
+  for (const delayMs of [-1, NaN, Infinity, 'soon', null]) assert.equal(h.controller.schedule(h.owner(), delayMs, 1), false)
+  for (const sequence of [0, -1, NaN, 1.2, '1']) assert.equal(h.controller.schedule(h.owner(), 0, sequence), false)
+  assert.equal(h.controller.schedule({}, 0, 1), false)
   h.controller.dispose()
-  assert.equal(h.controller.schedule(h.owner(), h.now(), 1), false)
+  assert.equal(h.controller.schedule(h.owner(), 0, 1), false)
   assert.equal(h.timers.size, 0)
 })
 
@@ -279,6 +278,24 @@ test('overdue reminders are ordered by deadline and ID, including exact-deadline
   const now = 1_000_000
   assert.equal(getReminderPollPlan([row(3, now + 1), row(2, now), row(1, now)], now).reminder.id, 1)
   assert.equal(getReminderPollPlan([row(3, now), row(2, now - 1)], now).reminder.id, 2)
+})
+
+test('a server sample rounded down to milliseconds cannot make a submillisecond deadline due early', async () => {
+  const deadline = '2026-11-23T03:28:16.460001Z'
+  const roundedDown = Date.parse(deadline)
+  const reminder = row(18, roundedDown, { user_id: 1, pet_type: 'pig', remind_at: deadline })
+  assert.deepEqual(getReminderPollPlan([reminder], roundedDown), { reminder: null, nextAt: roundedDown + 1 })
+  assert.equal(getReminderPollPlan([reminder], roundedDown + 1).reminder.remind_at, deadline)
+
+  const profile = receiptProfile()
+  const controller = profile.open()
+  await controller.deliver({
+    context: reminderContext, reminder, present: (remember) => remember(), acknowledge: () => false,
+  })
+  controller.reconcile(reminderContext, [], roundedDown)
+  assert.equal(profile.receipts().length, 1)
+  controller.reconcile(reminderContext, [], roundedDown + 1)
+  assert.equal(profile.receipts().length, 0)
 })
 
 test('creation and wakeup during an in-flight reminder read merge into one fresh read', async () => {

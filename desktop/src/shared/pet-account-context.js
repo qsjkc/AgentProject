@@ -89,6 +89,7 @@ export async function executeSessionBoundRequest({
   renewOperationContext,
   validateOperationContext,
   timeoutMs,
+  mapResponse,
 }) {
   let requestContext = operationContext ? { ...operationContext } : null
   const initiatingSnapshot = normalizeSessionSnapshot(
@@ -156,7 +157,7 @@ export async function executeSessionBoundRequest({
     const payload = await response.json()
     signal.throwIfAborted()
     await assertCurrent()
-    return payload
+    return mapResponse ? mapResponse(payload, response.headers) : payload
   }, { signal: options.signal, timeoutMs })
 }
 

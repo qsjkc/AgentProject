@@ -229,7 +229,7 @@ export async function clearSessionToken(expectedSession) {
   return result
 }
 
-async function request(path, options = {}, operationContext = null) {
+async function request(path, options = {}, operationContext = null, mapResponse) {
   const effectiveContext = withLocalOperationContext(operationContext)
   const result = await executeSessionBoundRequest({
     path,
@@ -243,6 +243,7 @@ async function request(path, options = {}, operationContext = null) {
     },
     fetchImpl: fetch,
     timeoutMs: path === '/chat/message' || path === '/rag/upload' ? 120_000 : undefined,
+    mapResponse,
     clearSessionSnapshot: clearSessionToken,
     renewOperationContext: async (context) => (
       !context?.authoritative
