@@ -160,6 +160,63 @@ export async function testAuth(importModule) {
   assert.equal(offline.store.getState().user.id, 1, 'a network failure can be retried')
   assert.equal(offline.store.getState().error, null)
 
+  for (const reconnectBeforeFailure of [false, true]) {
+    const firstProfile = deferred()
+    const recoveredProfile = deferred()
+    const error = { code: 'ERR_NETWORK' }
+    let profileCalls = 0
+    const reconnecting = setup(() => ++profileCalls === 1 ? firstProfile.promise : recoveredProfile.promise)
+    const state = reconnecting.store.getState
+    const failedRequest = state().fetchUser()
+    const signalReconnect = () => {
+      state().resumeUserSync()
+      state().resumeUserSync()
+    }
+    if (reconnectBeforeFailure) {
+      signalReconnect()
+      assert.equal(profileCalls, 1, 'online does not replace an active profile request')
+    }
+    firstProfile.reject(error)
+    await failedRequest
+    if (!reconnectBeforeFailure) signalReconnect()
+    assert.equal(profileCalls, 2, 'online retries a failed profile exactly once in either ordering')
+    const retry = state().fetchUser()
+    recoveredProfile.resolve({ ...user, preferences })
+    await retry
+    signalReconnect()
+    assert.equal(profileCalls, 2, 'online leaves an already restored profile alone')
+    assert.equal(state().user.id, user.id)
+    assert.equal(state().error, null)
+    assert.equal(reconnecting.storage.getItem('token'), 'session-a')
+  }
+
+  for (const outcome of ['success', 'unauthorized', 'rate-limited', 'session-switch', 'logout', 'external-session-switch', 'retry-fails']) {
+    const firstProfile = deferred()
+    let profileCalls = 0
+    const reconnecting = setup(() => {
+      profileCalls += 1
+      return profileCalls === 1 ? firstProfile.promise : Promise.reject({ response: { status: 503 } })
+    })
+    const state = reconnecting.store.getState
+    const request = state().fetchUser()
+    state().resumeUserSync()
+    if (outcome === 'session-switch') state().setToken('session-b')
+    if (outcome === 'logout') state().logout()
+    if (outcome === 'external-session-switch') reconnecting.storage.setItem('token', 'session-b')
+    if (outcome === 'success') firstProfile.resolve({ ...user, preferences })
+    else if (outcome === 'unauthorized') firstProfile.reject({ response: { status: 401 } })
+    else if (outcome === 'rate-limited') firstProfile.reject({ response: { status: 429 } })
+    else firstProfile.reject({ response: { status: 503 } })
+    await request
+    await new Promise((resolve) => setImmediate(resolve))
+    assert.equal(profileCalls, outcome === 'retry-fails' ? 2 : 1, outcome)
+    if (outcome === 'unauthorized' || outcome === 'logout') assert.equal(state().token, null, outcome)
+    if (outcome.includes('session-switch')) {
+      assert.equal(state().token, 'session-b', outcome)
+      assert.equal(state().user, null, outcome)
+    }
+  }
+
   const invalid = setup(async () => { throw { response: { status: 401 } } })
   await invalid.store.getState().fetchUser()
   assert.equal(invalid.storage.getItem('token'), null)
@@ -203,5 +260,5 @@ export async function testAuth(importModule) {
   for (const from of [undefined, '//external.test', 'https://external.test', '/\\external.test', '/login', '/register?x=1']) {
     assert.equal(getLoginDestination(from), '/account')
   }
-  console.log('frontend auth regression tests passed (deduplication, logout, switching, delayed storage events, retry, expiration, navigation)')
+  console.log('frontend auth regression tests passed (deduplication, logout, switching, delayed storage events, reconnect, expiration, navigation)')
 }
