@@ -94,11 +94,11 @@ async function notifyPetReminderEventWithRenewedContext(payload, expectedContext
   return ipcRenderer.invoke('desktop:notify-pet-reminder-event', payload, renewedContext)
 }
 
-async function scheduleReminderWakeup(at, expectedContext) {
+async function scheduleReminderWakeup(delayMs, expectedContext) {
   const sequence = ++reminderWakeupSequence
   const renewedContext = await renewExpectedContext(expectedContext, 'pet')
   if (!renewedContext?.authoritative?.id) return false
-  return invokeForRendererInstance('desktop:schedule-reminder-wakeup', at, renewedContext, sequence)
+  return invokeForRendererInstance('desktop:schedule-reminder-wakeup', delayMs, renewedContext, sequence)
 }
 
 const mainPanelIntentListeners = createMainPanelIntentListenerRegistry({

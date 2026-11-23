@@ -4,7 +4,10 @@ import { build } from 'esbuild'
 import { fileURLToPath } from 'node:url'
 
 const bundled = await build({
-  entryPoints: [fileURLToPath(new URL('../src/shared/api.js', import.meta.url))],
+  stdin: {
+    contents: "export * from './api.js'; export { getReminderPollSnapshot } from './reminders-api.js';",
+    resolveDir: fileURLToPath(new URL('../src/shared', import.meta.url)),
+  },
   bundle: true,
   write: false,
   platform: 'node',
@@ -57,6 +60,36 @@ async function withFixture(run) {
 
 const changedContext = (error) => error.code === 'AUTH_CONTEXT_CHANGED'
 
+test('reminder polling uses the server sample and also sends a bounded legacy cutoff', async () => {
+  await withFixture(async ({ api, context, setFetch, calls }) => {
+    const serverTime = '2026-11-23T03:28:16.460001Z'
+    setFetch(async () => ({
+      ...response([{ id: 1 }]), headers: new Headers({ 'X-Detachym-Reminder-Time': serverTime }),
+    }))
+    const localStart = Date.now()
+    const snapshot = await api.getReminderPollSnapshot('pig', context)
+    assert.deepEqual(snapshot, {
+      reminders: [{ id: 1 }], now: Date.parse(serverTime), dueBefore: Date.parse(serverTime) + 30_000,
+    })
+    const url = new URL(calls[0].url)
+    assert.equal(url.pathname, '/api/v1/reminders')
+    assert.equal(url.searchParams.get('lookahead_seconds'), '30')
+    assert.equal(url.searchParams.get('triggered'), 'false')
+    const cutoff = Date.parse(url.searchParams.get('due_before'))
+    assert(cutoff >= localStart + 30_000 && cutoff <= Date.now() + 30_000)
+  })
+})
+
+test('legacy reminder servers keep the local fallback and the cutoff actually sent', async () => {
+  await withFixture(async ({ api, context, setFetch, calls }) => {
+    setFetch(async () => ({ ...response([]), headers: new Headers() }))
+    const start = Date.now()
+    const snapshot = await api.getReminderPollSnapshot('pig', context)
+    assert(snapshot.now >= start && snapshot.now <= Date.now())
+    assert.equal(snapshot.dueBefore, Date.parse(new URL(calls[0].url).searchParams.get('due_before')))
+  })
+})
+
 test('a reminder trigger cannot be sent to a newly selected server', async () => {
   await withFixture(async ({ api, context, switchServer, calls }) => {
     switchServer()
@@ -73,16 +106,16 @@ test('server changes during capability validation reject the reminder before any
   })
 })
 
-test('a late reminder response after a server switch cannot schedule or deliver its result', async () => {
+test('a late reminder response after a server switch cannot provide a reminder or clock sample', async () => {
   await withFixture(async ({ api, context, switchServer, setFetch, calls }) => {
     const body = deferred()
     setFetch(async () => ({ ...response(null), json: () => body.promise }))
-    const read = api.desktopApiRequest('/reminders', {}, context)
+    const read = api.getReminderPollSnapshot('pig', context)
     while (!calls.length) await Promise.resolve()
     switchServer()
     body.resolve([{ id: 1 }])
     await assert.rejects(read, changedContext)
-    assert.equal(calls[0].url, `${context.server}/reminders`)
+    assert.equal(new URL(calls[0].url).origin, new URL(context.server).origin)
   })
 })
 

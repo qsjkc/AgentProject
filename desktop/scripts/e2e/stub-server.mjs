@@ -445,14 +445,27 @@ export class StubServer {
       let reminders = [...account.reminders]
       const petType = requestUrl.searchParams.get('pet_type')
       const status = requestUrl.searchParams.get('status')
-      const dueBefore = Date.parse(requestUrl.searchParams.get('due_before') || '')
+      const lookahead = requestUrl.searchParams.get('lookahead_seconds')
+      const serverTime = new Date()
+      let dueBefore = Date.parse(requestUrl.searchParams.get('due_before') || '')
+      if (lookahead !== null) {
+        const seconds = Number(lookahead)
+        if (!lookahead.trim() || !Number.isInteger(seconds) || seconds < 0 || seconds > 120) {
+          json(response, 422, { detail: 'Invalid reminder lookahead' })
+          return
+        }
+        dueBefore = serverTime.getTime() + seconds * 1_000
+      }
       const triggered = requestUrl.searchParams.get('triggered')
       if (petType) reminders = reminders.filter((item) => item.pet_type === petType)
       if (status) reminders = reminders.filter((item) => item.status === status)
       if (Number.isFinite(dueBefore)) reminders = reminders.filter((item) => Date.parse(item.remind_at) <= dueBefore)
       if (triggered === 'true') reminders = reminders.filter((item) => item.triggered_at)
       if (triggered === 'false') reminders = reminders.filter((item) => !item.triggered_at)
-      json(response, 200, reminders)
+      json(response, 200, reminders, Number.isFinite(dueBefore) ? {
+        'access-control-expose-headers': 'X-Detachym-Reminder-Time',
+        'X-Detachym-Reminder-Time': serverTime.toISOString(),
+      } : {})
       return
     }
     if (path === '/reminders/pending-summary' && method === 'GET') {

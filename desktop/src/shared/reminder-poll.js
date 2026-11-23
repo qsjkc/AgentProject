@@ -5,6 +5,14 @@ export const REMINDER_BACKLOG_DELAY_MS = 250
 
 const REMINDER_RECEIPTS_KEY = 'detachym.pending-reminder-receipts.v1'
 
+function reminderDeadlineMs(timestamp) {
+  const milliseconds = Date.parse(timestamp)
+  // JS truncates the server's fractional precision. Round the deadline up so
+  // it cannot appear due in a whole millisecond that began before the deadline.
+  const submillisecond = typeof timestamp === 'string' && timestamp.match(/\.\d{3}(\d+)(?:Z|[+-]\d{2}:?\d{2})$/i)?.[1]
+  return submillisecond && /[1-9]/.test(submillisecond) ? milliseconds + 1 : milliseconds
+}
+
 export function isReminderWakeScopeCurrent(scope, context, server) {
   return Boolean(scope && typeof server === 'string' && server
     && context?.hasSession === true && typeof context.petType === 'string' && context.petType
@@ -52,7 +60,7 @@ export function createReminderDeliveryController({ getStorage = () => globalThis
       for (const [key, [receiptServer, receiptUser, receiptPet, , deadline]] of presented) {
         // A fresh untriggered list can also confirm a POST whose reply was lost.
         if (receiptServer === server && receiptUser === userId && receiptPet === petType
-          && Date.parse(deadline) <= dueBefore && !pending.has(key)) {
+          && reminderDeadlineMs(deadline) <= dueBefore && !pending.has(key)) {
           presented.delete(key)
           changed = true
         }
@@ -80,13 +88,14 @@ export function createReminderDeliveryController({ getStorage = () => globalThis
 
 export function getReminderPollPlan(reminders, now) {
   const pending = (Array.isArray(reminders) ? reminders : [])
-    .filter((reminder) => reminder?.status === 'pending' && !reminder.triggered_at
-      && Number.isFinite(Date.parse(reminder.remind_at)))
-    .sort((left, right) => Date.parse(left.remind_at) - Date.parse(right.remind_at) || left.id - right.id)
+    .filter((reminder) => reminder?.status === 'pending' && !reminder.triggered_at)
+    .map((reminder) => ({ reminder, dueAt: reminderDeadlineMs(reminder.remind_at) }))
+    .filter(({ dueAt }) => Number.isFinite(dueAt))
+    .sort((left, right) => left.dueAt - right.dueAt || left.reminder.id - right.reminder.id)
   const first = pending[0]
-  const dueAt = first ? Date.parse(first.remind_at) : Infinity
+  const dueAt = first?.dueAt ?? Infinity
   return {
-    reminder: dueAt <= now ? first : null,
+    reminder: first && dueAt <= now ? first.reminder : null,
     nextAt: Math.min(now + REMINDER_RECONCILE_MS, dueAt),
   }
 }

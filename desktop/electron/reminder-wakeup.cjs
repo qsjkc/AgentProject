@@ -6,7 +6,6 @@ function createReminderWakeupController({
   getContextKey,
   isOwnerCurrent,
   onWake,
-  now = Date.now,
   setTimer = setTimeout,
   clearTimer = clearTimeout,
 }) {
@@ -35,14 +34,14 @@ function createReminderWakeupController({
       && contextKey === getContextKey() && isOwnerCurrent(owner)
   }
 
-  function arm(at) {
+  function arm(delayMs) {
     clear()
     const generation = timerGeneration
     timer = setTimer(() => {
       if (generation !== timerGeneration) return
       timer = null
       wake()
-    }, Math.max(1, Math.min(REMINDER_RECONCILE_MS, at - now())))
+    }, Math.max(1, Math.min(REMINDER_RECONCILE_MS, Math.ceil(delayMs))))
     timer?.unref?.()
   }
 
@@ -52,21 +51,21 @@ function createReminderWakeupController({
       return false
     }
     // Keep reconciliation alive if the renderer cannot re-arm after an error.
-    arm(now() + REMINDER_RECONCILE_MS)
+    arm(REMINDER_RECONCILE_MS)
     onWake(owner)
     return true
   }
 
   return {
-    schedule(nextOwner, at, nextSequence) {
+    schedule(nextOwner, delayMs, nextSequence) {
       const nextKey = getContextKey()
       if (disposed || !nextKey || !isOwnerCurrent(nextOwner)
-        || !Number.isFinite(at) || !Number.isSafeInteger(nextSequence) || nextSequence < 1) return false
+        || !Number.isFinite(delayMs) || delayMs < 0 || !Number.isSafeInteger(nextSequence) || nextSequence < 1) return false
       if (owner === nextOwner && contextKey === nextKey && nextSequence <= sequence) return false
       owner = nextOwner
       contextKey = nextKey
       sequence = nextSequence
-      arm(at)
+      arm(delayMs)
       return true
     },
     wake,

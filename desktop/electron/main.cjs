@@ -3090,14 +3090,14 @@ function registerIpc() {
     return true
   })
   ipcMain.handle('desktop:schedule-reminder-wakeup', async (
-    event, at, expectedContext, sequence, rendererInstanceNonce,
+    event, delayMs, expectedContext, sequence, rendererInstanceNonce,
   ) => {
     if (!operationCapabilities.isRendererInstanceCurrent({
       sender: event.sender, senderRole: getIpcSenderRole(event), rendererInstanceNonce,
     })) return false
     const authorization = authorizeRendererAccountMutation(event, expectedContext, ['pet'], { requiredScope: 'pet' })
     if (!authorization.ok || !isApiServerCurrent(expectedContext)) return false
-    const scheduled = getReminderWakeupController().schedule(event.sender, at, sequence)
+    const scheduled = getReminderWakeupController().schedule(event.sender, delayMs, sequence)
     const recovery = petReminderRecovery.get(event.sender)
     if (scheduled && recovery?.readyAt === null) recovery.readyAt = performance.now()
     return scheduled

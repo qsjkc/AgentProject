@@ -254,6 +254,60 @@ async def test_due_before_accepts_z_timestamp(client: AsyncClient):
 
 
 @pytest.mark.asyncio
+async def test_relative_reminder_horizon_and_header_use_the_same_server_time(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch,
+):
+    from app.api.v1 import reminders as reminders_api
+
+    headers = await register_and_login(client, "reminder-clock-owner", "reminder-clock-owner@example.com")
+    headers["Origin"] = "null"  # Electron's packaged renderer loads from file://.
+    server_now = datetime(2026, 7, 6, 7, 0, 0, 123456)
+    sampled_at = []
+
+    def sample_server_time():
+        sampled_at.append(server_now)
+        return server_now
+
+    monkeypatch.setattr(reminders_api, "utc_now", sample_server_time)
+    path = "/api/v1/reminders"
+    horizon = server_now + timedelta(seconds=30)
+    deadlines = [server_now, horizon, horizon + timedelta(microseconds=1)]
+    reminder_ids = []
+    for remind_at in deadlines:
+        created = await client.post(path, headers=headers, json={
+            "pet_type": "pig", "title": "Timed reminder", "remind_at": remind_at.isoformat() + "Z",
+            "email_enabled": False,
+        })
+        assert created.status_code == 200
+        reminder_ids.append(created.json()["id"])
+
+    pending = {"pet_type": "pig", "status": "pending", "triggered": "false"}
+    fallback = (server_now + timedelta(minutes=2)).isoformat() + "Z"
+    response = await client.get(path, headers=headers, params={
+        **pending, "due_before": fallback, "lookahead_seconds": 30,
+    })
+    assert response.status_code == 200
+    assert sampled_at == [server_now]
+    assert response.headers["X-Detachym-Reminder-Time"] == server_now.isoformat() + "Z"
+    assert response.headers["Cache-Control"] == "no-store"
+    assert response.headers["Access-Control-Allow-Origin"] == "null"
+    assert response.headers["Access-Control-Expose-Headers"] == "X-Detachym-Reminder-Time"
+    assert [item["id"] for item in response.json()] == reminder_ids[:2]
+
+    due_only = await client.get(path, headers=headers, params={**pending, "lookahead_seconds": 0})
+    assert [item["id"] for item in due_only.json()] == reminder_ids[:1]
+
+    legacy = await client.get(path, headers=headers, params={**pending, "due_before": fallback})
+    assert [item["id"] for item in legacy.json()] == reminder_ids
+    assert legacy.headers["X-Detachym-Reminder-Time"] == server_now.isoformat() + "Z"
+
+    for invalid in ("-1", "121", "0.5"):
+        response = await client.get(path, headers=headers, params={**pending, "lookahead_seconds": invalid})
+        assert response.status_code == 422
+        assert "X-Detachym-Reminder-Time" not in response.headers
+
+
+@pytest.mark.asyncio
 async def test_reminders_are_owned_by_current_user(client: AsyncClient):
     alice_headers = await register_and_login(client, "alice-reminders", "alice-reminders@example.com")
     bob_headers = await register_and_login(client, "bob-reminders", "bob-reminders@example.com")

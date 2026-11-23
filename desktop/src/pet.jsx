@@ -112,7 +112,7 @@ import {
 } from './shared/pet-onboarding-state'
 import { PET_ONBOARDING_MAIN_PANEL_INTENT } from './shared/pet-onboarding-main'
 import { getPetLabelKey } from './shared/pet-labels'
-import { getPendingReminders, markReminderTriggered } from './shared/reminders-api'
+import { getReminderPollSnapshot, markReminderTriggered } from './shared/reminders-api'
 import {
   createReminderDeliveryController,
   createReminderPollController,
@@ -268,7 +268,9 @@ function PetApp() {
   const relationshipLoadEpochRef = useRef(0)
   const reminderPollRef = useRef(null)
   const reminderDeliveryRef = useRef(null)
-  if (!reminderDeliveryRef.current) reminderDeliveryRef.current = createReminderDeliveryController()
+  if (!reminderDeliveryRef.current) {
+    reminderDeliveryRef.current = createReminderDeliveryController({ now: () => performance.now() })
+  }
   const companionSettingsRef = useRef(DEFAULT_COMPANION_SETTINGS)
   const companionStateRef = useRef(DEFAULT_COMPANION_STATE)
   const companionStateReadyRef = useRef(false)
@@ -2793,10 +2795,9 @@ function PetApp() {
       latestOperation = operationContext
       // Re-read at every deadline: a reminder may have been canceled or moved
       // while its wakeup timer was waiting. Future rows only choose the deadline.
-      const dueBefore = Date.now() + REMINDER_RECONCILE_MS
-      let reminders
+      let snapshot
       try {
-        reminders = await getPendingReminders(requestContext.petType, new Date(dueBefore), false, operationContext)
+        snapshot = await getReminderPollSnapshot(requestContext.petType, operationContext)
       } catch (error) {
         if (!isTransientReminderRequestError(error)) throw error
         if (!isCurrent()) return
@@ -2804,9 +2805,10 @@ function PetApp() {
         return { retry: true, retryOnReconnect: true }
       }
       if (!isCurrent()) return
+      const { reminders, now, dueBefore } = snapshot
       reminderDeliveryRef.current.reconcile(operationContext, reminders, dueBefore)
-      const plan = getReminderPollPlan(reminders, Date.now())
-      if (!plan.reminder) return { nextAt: plan.nextAt }
+      const plan = getReminderPollPlan(reminders, now)
+      if (!plan.reminder) return { nextAt: performance.now() + (plan.nextAt - now) }
       const reminder = plan.reminder
       return reminderDeliveryRef.current.deliver({
         context: operationContext,
@@ -2854,14 +2856,16 @@ function PetApp() {
 
     const controller = createReminderPollController({
       poll,
+      now: () => performance.now(),
       onError: (error) => loggerRef.current.error('reminder:poll-failed', error),
       schedule: async (at) => {
         if (!mounted || !hasSessionRef.current) return
         if (fallbackTimer !== null) window.clearTimeout(fallbackTimer)
+        const remaining = () => Math.max(1, Math.min(REMINDER_RECONCILE_MS, Math.ceil(at - performance.now())))
         let scheduled = false
         try {
           if (latestOperation) {
-            scheduled = await window.desktopBridge?.scheduleReminderWakeup?.(at, latestOperation)
+            scheduled = await window.desktopBridge?.scheduleReminderWakeup?.(remaining(), latestOperation)
           }
         } catch (error) {
           if (mounted) loggerRef.current.error('reminder:wakeup-failed', error)
@@ -2869,8 +2873,7 @@ function PetApp() {
         if (!mounted || scheduled === true) return
         // Initial authentication can still be settling. Keep a fallback until
         // the first authorized main-process clock has been registered.
-        fallbackTimer = window.setTimeout(() => void controller.request(),
-          Math.max(1, Math.min(REMINDER_RECONCILE_MS, at - Date.now())))
+        fallbackTimer = window.setTimeout(() => void controller.request(), remaining())
       }
     })
 
